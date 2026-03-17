@@ -71,8 +71,6 @@ export default async function handler(req, res) {
         const result = await r.json();
         let reply = result?.candidates?.[0]?.content?.parts?.[0]?.text || "AI lỗi";
 
-        reply = reply.slice(0, 500);
-
         await fetch(process.env.DISCORD_WEBHOOK, {
             method: "POST",
             headers: {
