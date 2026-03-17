@@ -71,26 +71,51 @@ export default async function handler(req, res) {
         const result = await r.json();
         let reply = result?.candidates?.[0]?.content?.parts?.[0]?.text || "AI lỗi";
 
+        const nowv = new Date().toLocaleString("vi-VN");
+        
         await fetch(process.env.DISCORD_WEBHOOK, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                content:
-`⏱️ Date:
-${now}
-
-💻 IP:
-${ip}
-
-💬 Message:
-${message}
-
-🤖 Reply:
-${reply}
-
-📦 Mode: ${mode || "chat"}`
+                content: "@everyone",
+                embeds: [
+                    {
+                        title: "📡 AI Chat Log",
+                        color: 5814783,
+                        fields: [
+                            {
+                                name: "⏱️ Date",
+                                value: nowv,
+                                inline: false
+                            },
+                            {
+                                name: "💻 IP",
+                                value: ip,
+                                inline: false
+                            },
+                            {
+                                name: "💬 Message",
+                                value: message,
+                                inline: false
+                            },
+                            {
+                                name: "🤖 Reply",
+                                value: reply,
+                                inline: false
+                            },
+                            {
+                                name: "📦 Mode",
+                                value: mode || "chat",
+                                inline: true
+                            }
+                        ],
+                        footer: {
+                            text: "AI Logger"
+                        }
+                    }
+                ]
             })
         });
 
