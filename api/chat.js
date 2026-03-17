@@ -48,7 +48,7 @@ export default async function handler(req, res) {
 
     let prompt = message;
 
-    if (mode === "script") {
+    if (mode === "chat") {
         prompt = "(Ai name: infU)(vi-vn) executor roblox:\n" + message;
     }
   
