@@ -1,3 +1,6 @@
+export const config = {
+  runtime: "nodejs"
+};
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).send('Method Not Allowed');
@@ -42,6 +45,7 @@ export default async function handler(req, res) {
 
     console.log(response.body);
     console.log(typeof response.body);
+    console.log(response.headers["content-type"]);
 
     if (!response.ok || !data.success) {
       // In ra console log của Vercel để bạn tiện theo dõi nếu key đó bị lỗi/hết hạn
