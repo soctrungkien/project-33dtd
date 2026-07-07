@@ -20,7 +20,9 @@ export default async function handler(req, res) {
   const selectedApiKey = apiKeys[randomIndex];
 
   // Lấy nội dung cần paste (Chấp nhận cả JSON hoặc Text thô)
-  let content = typeof req.body === 'string' ? req.body : req.body.content;
+  const content = typeof req.body === "string"
+  ? req.body
+  : String(req.body ?? "");
 
   if (!content) {
     return res.status(400).send("Error: No content provided.");
@@ -37,6 +39,9 @@ export default async function handler(req, res) {
     });
 
     const data = await response.json();
+
+    console.log(response.body);
+    console.log(typeof response.body);
 
     if (!response.ok || !data.success) {
       // In ra console log của Vercel để bạn tiện theo dõi nếu key đó bị lỗi/hết hạn
