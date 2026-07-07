@@ -1,63 +1,79 @@
 export const config = {
-  runtime: "nodejs"
+  api: {
+    bodyParser: true
+  }
 };
+
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).send('Method Not Allowed');
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
   }
 
-  // Lấy chuỗi chứa nhiều API Key
-  const keysEnv = process.env.PASTEFY_API_KEYS;
-  if (!keysEnv) {
-    return res.status(500).send("Missing PASTEFY_API_KEYS env");
+  if (req.method !== "POST") {
+    return res.status(405).send("Method Not Allowed");
   }
 
-  // Chuyển chuỗi thành mảng các key và lọc bỏ khoảng trắng
-  const apiKeys = keysEnv.split(',').map(key => key.trim()).filter(Boolean);
-  if (apiKeys.length === 0) {
-    return res.status(500).send("No valid API keys found");
+  const keys = (process.env.PASTEFY_API_KEYS || "")
+    .split(",")
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  if (!keys.length) {
+    return res.status(500).send("Missing PASTEFY_API_KEYS");
   }
 
-  // Chọn ngẫu nhiên một API Key từ danh sách để phân phối tải (Load Balancing)
-  const randomIndex = Math.floor(Math.random() * apiKeys.length);
-  const selectedApiKey = apiKeys[randomIndex];
+  let content = "";
 
-  // Lấy nội dung cần paste (Chấp nhận cả JSON hoặc Text thô)
-  const content = typeof req.body === "string"
-  ? req.body
-  : String(req.body ?? "");
-
-  if (!content) {
-    return res.status(400).send("Error: No content provided.");
+  if (typeof req.body === "string") {
+    content = req.body;
+  } else if (req.body && typeof req.body.content === "string") {
+    content = req.body.content;
+  } else if (req.body) {
+    content = JSON.stringify(req.body);
   }
+
+  if (!content.trim()) {
+    return res.status(400).send("No content");
+  }
+
+  const apiKey = keys[Math.floor(Math.random() * keys.length)];
 
   try {
-    const response = await fetch('https://pastefy.app/api/v2/paste', {
-      method: 'POST',
+    const r = await fetch("https://pastefy.app/api/v2/paste", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${selectedApiKey}` // Sử dụng key được chọn ngẫu nhiên
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify({ content })
+      body: JSON.stringify({
+        content
+      })
     });
 
-    const data = await response.json();
+    const text = await r.text();
 
-    console.log(response.body);
-    console.log(typeof response.body);
-    console.log(response.headers["content-type"]);
-
-    if (!response.ok || !data.success) {
-      // In ra console log của Vercel để bạn tiện theo dõi nếu key đó bị lỗi/hết hạn
-      console.error(`Key index ${randomIndex} failed: ${data.message || 'Unknown error'}`);
-      return res.status(response.status).send(data.message || 'Pastefy Error');
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return res.status(500).send(text);
     }
 
-    // Trả về duy nhất link RAW dạng text thuần
-    res.setHeader('Content-Type', 'text/plain');
-    return res.status(200).send(`https://pastefy.app/${data.paste.id}/raw`);
+    if (!r.ok || !json.success) {
+      return res.status(r.status).send(json.message || "Pastefy Error");
+    }
 
-  } catch (error) {
-    return res.status(500).send(error.message);
+    res.setHeader("Content-Type", "text/plain");
+    return res.status(200).send(
+      `https://pastefy.app/${json.paste.id}/raw`
+    );
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).send(err.message);
   }
-}
+  }
