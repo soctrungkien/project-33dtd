@@ -1,6 +1,6 @@
-import { Redis } from "@upstash/redis";
+import Redis from "ioredis";
 
-const kv = Redis.fromEnv();
+const kv = new Redis(process.env.REDIS_URL);
 
 export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
@@ -64,18 +64,24 @@ export default async function handler(req, res) {
                 await sendTelegramMessage(chatId, "⚠️ Thiếu đoạn code Lua cần chạy.");
                 return res.status(200).send('OK');
             }
-            await kv.set('script', {
-                code: luaCode,
-                timestamp: Date.now()
-            });
+            await kv.set(
+                `script:${target}`,
+                JSON.stringify({
+                    code: luaCode,
+                    timestamp: Date.now()
+                })
+            );
             await sendTelegramMessage(chatId, `🎯 Gửi code trực tiếp đến acc: [${target}]`);
         } else {
             // Nếu không phải tên acc, coi như chạy cho TẤT CẢ (All)
             luaCode = args.slice(1).join(' ');
-            await kv.set('global_script', {
-                code: luaCode,
-                timestamp: Date.now()
-            });
+            await kv.set(
+                "global_script",
+                JSON.stringify({
+                    code: luaCode,
+                    timestamp: Date.now()
+                })
+            );
             await sendTelegramMessage(chatId, `🚀 Gửi code trực tiếp đến TẤT CẢ tài khoản...`);
         }
         return res.status(200).send('OK');
@@ -86,7 +92,7 @@ export default async function handler(req, res) {
         const cmdName = args[1].toLowerCase();
         const cmdCode = args.slice(2).join(' ');
         
-        await kv.hset("custom_commands", [cmdName, cmdCode]);
+        await kv.hset("custom_commands", cmdName, cmdCode);
         await sendTelegramMessage(chatId, `✅ Đã thêm lệnh tùy chỉnh: [${cmdName}]`);
         return res.status(200).send('OK');
     }
