@@ -80,7 +80,7 @@ export default async function handler(req, res) {
         const cmdName = args[1].toLowerCase();
         const cmdCode = args.slice(2).join(' ');
         
-        await kv.hset('custom_commands', { [cmdName]: cmdCode });
+        await kv.hset("custom_commands", [cmdName, cmdCode]);
         await sendTelegramMessage(chatId, `✅ Đã thêm lệnh tùy chỉnh: [${cmdName}]`);
         return res.status(200).send('OK');
     }
