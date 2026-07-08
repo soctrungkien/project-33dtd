@@ -7,9 +7,7 @@ export default async function handler(req, res) {
     const chatId = message.chat.id;
     const allowedChatId = Number(process.env.TELEGRAM_CHAT_ID);
 
-    if (chatId !== allowedChatId) {
-        return res.status(200).send('No Auth');
-    }
+    
 
     const text = message.text.trim();
 
