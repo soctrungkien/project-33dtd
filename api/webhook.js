@@ -20,7 +20,7 @@ export default async function handler(req, res) {
     const command = args[0].toLowerCase();
 
     // ==========================================
-    // LỆNH MỚI: XEM DANH SÁCH TÊN NGƯỜI CHƠI ĐANG KẾT NỐI
+    // LỆNH: XEM DANH SÁCH TÊN NGƯỜI CHƠI ĐANG KẾT NỐI
     // ==========================================
     if (command === '/players') {
         const keys = await kv.keys('player:*') || [];
@@ -33,7 +33,7 @@ export default async function handler(req, res) {
             const playerName = key.replace('player:', '');
             const secondsAgo = Math.floor((now - Number(lastPing)) / 1000);
             
-            // Quá 15 giây không lấy script coi như acc bị ngắt kết nối (Disconnnected)
+            // Quá 15 giây không lấy script coi như acc bị ngắt kết nối (Disconnected)
             if (secondsAgo < 15) {
                 msg += `🟢 *${playerName}* (Đang treo - cách đây ${secondsAgo}s)\n`;
             } else {
@@ -48,46 +48,51 @@ export default async function handler(req, res) {
     }
 
     // ==========================================
-    // LỆNH MỚI: CHẠY LỤA TRỰC TIẾP TỪ TELEGRAM (/run)
+    // LỆNH MỚI: CHẠY LUA CHO TẤT CẢ (/runall)
+    // Cú pháp: /runall <đoạn_code_lua>
     // ==========================================
-    if (command === '/run' && args.length >= 2) {
-        let target = args[1].toLowerCase();
-        let luaCode = "";
-
-        const keys = await kv.keys('player:*') || [];
-        const activePlayers = keys.map(k => k.replace('player:', '').toLowerCase());
-
-        // Kiểm tra xem tham số tiếp theo là tên riêng của 1 acc đang online hay không
-        if (activePlayers.includes(target)) {
-            luaCode = args.slice(2).join(' ');
-            if (!luaCode) {
-                await sendTelegramMessage(chatId, "⚠️ Thiếu đoạn code Lua cần chạy.");
-                return res.status(200).send('OK');
-            }
-            await kv.set(
-                `script:${target}`,
-                JSON.stringify({
-                    code: luaCode,
-                    timestamp: Date.now()
-                })
-            );
-            await sendTelegramMessage(chatId, `🎯 Gửi code trực tiếp đến acc: [${target}]`);
-        } else {
-            // Nếu không phải tên acc, coi như chạy cho TẤT CẢ (All)
-            luaCode = args.slice(1).join(' ');
-            await kv.set(
-                "global_script",
-                JSON.stringify({
-                    code: luaCode,
-                    timestamp: Date.now()
-                })
-            );
-            await sendTelegramMessage(chatId, `🚀 Gửi code trực tiếp đến TẤT CẢ tài khoản...`);
+    if (command === '/runall') {
+        const luaCode = args.slice(1).join(' ');
+        if (!luaCode) {
+            await sendTelegramMessage(chatId, "⚠️ Thiếu đoạn code Lua cần chạy cho tất cả.");
+            return res.status(200).send('OK');
         }
+
+        await kv.set(
+            "global_script",
+            JSON.stringify({
+                code: luaCode,
+                timestamp: Date.now()
+            })
+        );
+        await sendTelegramMessage(chatId, `🚀 Gửi code trực tiếp đến TẤT CẢ tài khoản...`);
         return res.status(200).send('OK');
     }
 
-    // 1. THÊM LỆNH TÙY CHỈNH: /addcmd <tên_lệnh> <đoạn_code_lua>
+    // ==========================================
+    // LỆNH MỚI: CHẠY LUA CHO 1 ACC CỤ THỂ (/run)
+    // Cú pháp: /run <tên_acc> <đoạn_code_lua>
+    // ==========================================
+    if (command === '/run' && args.length >= 3) {
+        const target = args[1].toLowerCase();
+        const luaCode = args.slice(2).join(' ');
+
+        await kv.set(
+            `script:${target}`,
+            JSON.stringify({
+                code: luaCode,
+                timestamp: Date.now()
+            })
+        );
+        await sendTelegramMessage(chatId, `🎯 Gửi code trực tiếp đến acc: [${target}]`);
+        return res.status(200).send('OK');
+    }
+
+    // ==========================================
+    // LỆNH QUẢN LÝ CUSTOM COMMANDS
+    // ==========================================
+    
+    // Thêm lệnh tùy chỉnh: /addcmd <tên_lệnh> <đoạn_code_lua>
     if (command === '/addcmd' && args.length >= 3) {
         const cmdName = args[1].toLowerCase();
         const cmdCode = args.slice(2).join(' ');
@@ -97,7 +102,7 @@ export default async function handler(req, res) {
         return res.status(200).send('OK');
     }
 
-    // 2. XEM DANH SÁCH LỆNH: /listcmd
+    // Xem danh sách lệnh: /listcmd
     if (command === '/listcmd') {
         const cmds = await kv.hgetall('custom_commands') || {};
         let msg = "📜 *Danh sách lệnh tùy chỉnh:*\n";
@@ -111,28 +116,25 @@ export default async function handler(req, res) {
         return res.status(200).send('OK');
     }
 
-    // 3. XÓA LỆNH TÙY CHỈNH: /delcmd <tên_lệnh>
+    // Xóa lệnh tùy chỉnh: /delcmd <tên_lệnh>
     if (command === '/delcmd' && args.length >= 2) {
         await kv.hdel('custom_commands', args[1].toLowerCase());
         await sendTelegramMessage(chatId, `🗑️ Đã xóa lệnh: [${args[1]}]`);
         return res.status(200).send('OK');
     }
 
-    // 4. RA LỆNH ĐIỀU KHIỂN MULTI-ACC: <tên_acc hoặc all> <lệnh hoặc /run code>
-    if (args.length >= 2) {
-        const targetAcc = args[0];
-        const action = args[1].toLowerCase();
-        let luaCode = "";
-
+    // ==========================================
+    // LỆNH ĐIỀU KHIỂN MULTI-ACC QUA /r
+    // ==========================================
+    if (command === '/r' && args.length >= 2) {
         const customCmds = await kv.hgetall('custom_commands') || {};
-        if (customCmds[action]) {
-            luaCode = customCmds[action];
-        } else if (text.includes(' /run ')) {
-            luaCode = text.substring(text.indexOf(' /run ') + 6);
-        }
 
-        if (luaCode) {
-            if (targetAcc.toLowerCase() === 'all') {
+        // Trường hợp 1: /r <tên_lệnh> -> Gửi tới TẤT CẢ (All)
+        if (args.length === 2) {
+            const action = args[1].toLowerCase();
+            const luaCode = customCmds[action];
+
+            if (luaCode) {
                 await kv.set(
                     "global_script",
                     JSON.stringify({
@@ -140,16 +142,30 @@ export default async function handler(req, res) {
                         timestamp: Date.now()
                     })
                 );
-                await sendTelegramMessage(chatId, `🚀 Đang gửi lệnh tới TẤT CẢ tài khoản...`);
+                await sendTelegramMessage(chatId, `🚀 Đang gửi lệnh [${action}] tới TẤT CẢ tài khoản...`);
             } else {
+                await sendTelegramMessage(chatId, `⚠️ Không tìm thấy lệnh tùy chỉnh: [${action}]`);
+            }
+            return res.status(200).send('OK');
+        }
+
+        // Trường hợp 2: /r <tên_acc> <tên_lệnh> -> Gửi tới 1 tài khoản cụ thể
+        if (args.length >= 3) {
+            const targetAcc = args[1].toLowerCase();
+            const action = args[2].toLowerCase();
+            const luaCode = customCmds[action];
+
+            if (luaCode) {
                 await kv.set(
-                    `script:${targetAcc.toLowerCase()}`,
+                    `script:${targetAcc}`,
                     JSON.stringify({
                         code: luaCode,
                         timestamp: Date.now()
                     })
                 );
-                await sendTelegramMessage(chatId, `🎯 Đang gửi lệnh tới tài khoản: [${targetAcc}]`);
+                await sendTelegramMessage(chatId, `🎯 Đang gửi lệnh [${action}] tới tài khoản: [${targetAcc}]`);
+            } else {
+                await sendTelegramMessage(chatId, `⚠️ Không tìm thấy lệnh tùy chỉnh: [${action}]`);
             }
             return res.status(200).send('OK');
         }
