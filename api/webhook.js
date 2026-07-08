@@ -17,6 +17,62 @@ export default async function handler(req, res) {
     const args = text.split(' ');
     const command = args[0].toLowerCase();
 
+    // ==========================================
+    // LỆNH MỚI: XEM DANH SÁCH TÊN NGƯỜI CHƠI ĐANG KẾT NỐI
+    // ==========================================
+    if (command === '/players') {
+        const keys = await kv.keys('player:*') || [];
+        let msg = "🎮 *DANH SÁCH ACC ROBLOX ĐANG KẾT NỐI:*\n\n";
+        let hasPlayers = false;
+        const now = Date.now();
+
+        for (const key of keys) {
+            const lastPing = await kv.get(key);
+            const playerName = key.replace('player:', '');
+            const secondsAgo = Math.floor((now - Number(lastPing)) / 1000);
+            
+            // Quá 15 giây không lấy script coi như acc bị ngắt kết nối (Disconnnected)
+            if (secondsAgo < 15) {
+                msg += `🟢 *${playerName}* (Đang treo - cách đây ${secondsAgo}s)\n`;
+            } else {
+                msg += `🔴 *${playerName}* (Mất kết nối - cách đây ${secondsAgo}s)\n`;
+            }
+            hasPlayers = true;
+        }
+
+        if (!hasPlayers) msg += "⚠️ Hệ thống chưa ghi nhận tài khoản nào đang chạy.";
+        await sendTelegramMessage(chatId, msg);
+        return res.status(200).send('OK');
+    }
+
+    // ==========================================
+    // LỆNH MỚI: CHẠY LỤA TRỰC TIẾP TỪ TELEGRAM (/run)
+    // ==========================================
+    if (command === '/run' && args.length >= 2) {
+        let target = args[1].toLowerCase();
+        let luaCode = "";
+
+        const keys = await kv.keys('player:*') || [];
+        const activePlayers = keys.map(k => k.replace('player:', '').toLowerCase());
+
+        // Kiểm tra xem tham số tiếp theo là tên riêng của 1 acc đang online hay không
+        if (activePlayers.includes(target)) {
+            luaCode = args.slice(2).join(' ');
+            if (!luaCode) {
+                await sendTelegramMessage(chatId, "⚠️ Thiếu đoạn code Lua cần chạy.");
+                return res.status(200).send('OK');
+            }
+            await kv.set(`script:${target}`, { code: luaCode, timestamp: Date.now() });
+            await sendTelegramMessage(chatId, `🎯 Gửi code trực tiếp đến acc: [${target}]`);
+        } else {
+            // Nếu không phải tên acc, coi như chạy cho TẤT CẢ (All)
+            luaCode = args.slice(1).join(' ');
+            await kv.set('global_script', { code: luaCode, timestamp: Date.now() });
+            await sendTelegramMessage(chatId, `🚀 Gửi code trực tiếp đến TẤT CẢ tài khoản...`);
+        }
+        return res.status(200).send('OK');
+    }
+
     // 1. THÊM LỆNH TÙY CHỈNH: /addcmd <tên_lệnh> <đoạn_code_lua>
     if (command === '/addcmd' && args.length >= 3) {
         const cmdName = args[1].toLowerCase();
