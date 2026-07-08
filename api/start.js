@@ -1,46 +1,68 @@
 export default async function handler(req, res) {
-    if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+    // 1. IN LOG METHOD ĐỂ KIỂM TRA ĐƯỜNG TRUYỀN
+    console.log("Method:", req.method);
+    console.log("Headers:", JSON.stringify(req.headers));
+
+    if (req.method !== 'POST') {
+        console.log("❌ Lỗi: Yêu cầu không phải là POST");
+        return res.status(405).send('Method Not Allowed');
+    }
+
+    // 2. IN LOG TOÀN BỘ NỘI DUNG TIN NHẮN TỪ TELEGRAM
+    console.log("Body nhận được từ Telegram:", JSON.stringify(req.body, null, 2));
 
     const { message } = req.body;
-    if (!message || !message.text) return res.status(200).send('OK');
+    if (!message || !message.text) {
+        console.log("⚠️ Cảnh báo: Không tìm thấy nội dung chữ (text) trong message");
+        return res.status(200).send('OK');
+    }
 
     const chatId = message.chat.id;
-    const allowedChatId = Number(process.env.TELEGRAM_CHAT_ID);
-
-    
-
     const text = message.text.trim();
+    
+    console.log(`💬 Người dùng gửi: "${text}" | Chat ID: ${chatId}`);
 
-    // NẾU LÀ LỆNH /START -> LẤY TIN NHẮN TỪ ENV VÀ GỬI ĐI
+    // XỬ LÝ LỆNH /START
     if (text.toLowerCase() === '/start') {
-        // Lấy tin nhắn từ biến môi trường, nếu trống thì dùng tin nhắn mặc định
-        let welcomeMsg = process.env.START_MESSAGE || "🤖 Hệ thống đang hoạt động. Vui lòng cấu hình START_MESSAGE trong Env Vercel.";
+        console.log("🤖 Đang xử lý lệnh /start...");
         
-        // Xử lý các ký tự xuống dòng \n nếu có trong chuỗi Env
+        let welcomeMsg = process.env.START_MESSAGE || "🤖 Vercel đã nhận lệnh thành công!\n\nID Chat của bạn là: " + chatId;
         welcomeMsg = welcomeMsg.replace(/\\n/g, '\n');
 
-        const token = process.env.TELEGRAM_BOT_TOKEN;
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text: welcomeMsg, parse_mode: "Markdown" })
-        });
+        const token = "8936114366:AAHamuFpGEi6advvskU4pfsSqsK2Qnre1g8";
+        
+        try {
+            console.log(`📤 Đang gọi API Telegram để phản hồi tới Chat ID: ${chatId}...`);
+            const telegramRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, text: welcomeMsg })
+            });
+            
+            const telegramData = await telegramRes.json();
+            console.log("Kết quả phản hồi từ API Telegram:", JSON.stringify(telegramData));
+        } catch (fetchErr) {
+            console.error("❌ Lỗi nghiêm trọng khi gửi tin nhắn ngược lại Telegram:", fetchErr);
+        }
         
         return res.status(200).send('OK');
     }
 
-    // NẾU KHÔNG PHẢI /START -> CHUYỂN TIẾP SANG FILE WEBHOOK CHÍNH
+    // CHUYỂN TIẾP SANG WEBHOOK NẾU KHÔNG PHẢI /START
     try {
         const protocol = req.headers['x-forwarded-proto'] || 'https';
         const host = req.headers['host'];
+        const webhookUrl = `${protocol}://${host}/api/webhook`;
         
-        await fetch(`${protocol}://${host}/api/webhook`, {
+        console.log(`🔀 Đang chuyển tiếp lệnh sang: ${webhookUrl}`);
+        
+        await fetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(req.body)
         });
     } catch (err) {
-        console.error("Lỗi chuyển tiếp lệnh:", err);
+        console.error("❌ Lỗi khi chuyển tiếp sang webhook.js:", err);
     }
 
     return res.status(200).send('OK');
