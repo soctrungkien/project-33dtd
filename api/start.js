@@ -29,14 +29,14 @@ export default async function handler(req, res) {
         let welcomeMsg = process.env.START_MESSAGE || "🤖 Vercel đã nhận lệnh thành công!\n\nID Chat của bạn là: " + chatId;
         welcomeMsg = welcomeMsg.replace(/\\n/g, '\n');
 
-        const token = "8936114366:AAHamuFpGEi6advvskU4pfsSqsK2Qnre1g8";
+        const token = process.env.TELEGRAM_BOT_TOKEN;
         
         try {
             console.log(`📤 Đang gọi API Telegram để phản hồi tới Chat ID: ${chatId}...`);
             const telegramRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: chatId, text: welcomeMsg })
+                body: JSON.stringify({ chat_id: chatId, text: welcomeMsg, parse_mode: "Markdown" })
             });
             
             const telegramData = await telegramRes.json();
