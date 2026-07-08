@@ -2,6 +2,7 @@
   "name": "project-33dtd",
   "version": "1.0.0",
   "dependencies": {
-    "@vercel/kv": "^1.0.1"
+    "@vercel/kv": "^1.0.1",
+    "ioredis": "^5.4.1"
   }
 }
