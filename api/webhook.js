@@ -133,10 +133,22 @@ export default async function handler(req, res) {
 
         if (luaCode) {
             if (targetAcc.toLowerCase() === 'all') {
-                await kv.set('global_script', { code: luaCode, timestamp: Date.now() });
+                await kv.set(
+                    "global_script",
+                    JSON.stringify({
+                        code: luaCode,
+                        timestamp: Date.now()
+                    })
+                );
                 await sendTelegramMessage(chatId, `🚀 Đang gửi lệnh tới TẤT CẢ tài khoản...`);
             } else {
-                await kv.set(`script:${targetAcc.toLowerCase()}`, { code: luaCode, timestamp: Date.now() });
+                await kv.set(
+                    `script:${targetAcc.toLowerCase()}`,
+                    JSON.stringify({
+                        code: luaCode,
+                        timestamp: Date.now()
+                    })
+                );
                 await sendTelegramMessage(chatId, `🎯 Đang gửi lệnh tới tài khoản: [${targetAcc}]`);
             }
             return res.status(200).send('OK');
