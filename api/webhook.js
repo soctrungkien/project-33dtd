@@ -64,12 +64,18 @@ export default async function handler(req, res) {
                 await sendTelegramMessage(chatId, "⚠️ Thiếu đoạn code Lua cần chạy.");
                 return res.status(200).send('OK');
             }
-            await kv.set(`script:${target}`, { code: luaCode, timestamp: Date.now() });
+            await kv.set('script', {
+                code: luaCode,
+                timestamp: Date.now()
+            });
             await sendTelegramMessage(chatId, `🎯 Gửi code trực tiếp đến acc: [${target}]`);
         } else {
             // Nếu không phải tên acc, coi như chạy cho TẤT CẢ (All)
             luaCode = args.slice(1).join(' ');
-            await kv.set('global_script', { code: luaCode, timestamp: Date.now() });
+            await kv.set('global_script', {
+                code: luaCode,
+                timestamp: Date.now()
+            });
             await sendTelegramMessage(chatId, `🚀 Gửi code trực tiếp đến TẤT CẢ tài khoản...`);
         }
         return res.status(200).send('OK');
