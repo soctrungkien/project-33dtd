@@ -265,7 +265,7 @@ export default async function handler(req, res) {
         console.log(`[Command] Thực thi lệnh /getlog`);
         
         // Bạn hãy thay URL này bằng URL endpoint getlog.js thật của bạn
-        const GETLOG_ENDPOINT = "${protocol}://${host}/api/getlog"; 
+        const GETLOG_ENDPOINT = "https://project-33dtd.vercel.app/api/getlog"; 
 
         // Đoạn script Lua tự động thu thập dữ liệu từ LogService của Roblox và gửi đi
         const generateLuaLogScript = (playerName) => {
