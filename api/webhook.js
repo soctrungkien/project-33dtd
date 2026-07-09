@@ -3,15 +3,24 @@ import Redis from "ioredis";
 const kv = new Redis(process.env.REDIS_URL);
 
 export default async function handler(req, res) {
-    if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+    if (req.method !== 'POST') {
+        console.warn(`[Warning] Nhận request với method không hợp lệ: ${req.method}`);
+        return res.status(405).send('Method Not Allowed');
+    }
 
     const { message } = req.body;
-    if (!message || !message.text) return res.status(200).send('OK');
+    if (!message || !message.text) {
+        console.log(`[Info] Nhận webhook trống hoặc không chứa text (có thể là event update khác của Telegram).`);
+        return res.status(200).send('OK');
+    }
 
     const chatId = message.chat.id;
     const allowedChatId = Number(process.env.TELEGRAM_CHAT_ID);
 
+    console.log(`[Incoming] Tin nhắn từ ChatID: ${chatId} | Nội dung: "${message.text}"`);
+
     if (chatId !== allowedChatId) {
+        console.error(`[Auth Failed] ChatID ${chatId} không khớp với TELEGRAM_CHAT_ID (${allowedChatId}). Từ chối xử lý.`);
         return res.status(200).send('No Auth');
     }
 
@@ -23,28 +32,40 @@ export default async function handler(req, res) {
     // LỆNH: XEM DANH SÁCH TÊN NGƯỜI CHƠI ĐANG KẾT NỐI
     // ==========================================
     if (command === '/players') {
-        const keys = await kv.keys('player:*') || [];
-        let msg = "🎮 *DANH SÁCH ACC ROBLOX ĐANG KẾT NỐI:*\n\n";
-        let hasPlayers = false;
-        const now = Date.now();
-
-        for (const key of keys) {
-            const lastPing = await kv.get(key);
-            const playerName = key.replace('player:', '');
-            const secondsAgo = Math.floor((now - Number(lastPing)) / 1000);
+        console.log(`[Command] Thực thi lệnh /players`);
+        try {
+            const keys = await kv.keys('player:*') || [];
+            console.log(`[Redis] Tìm thấy ${keys.length} keys player trong database.`);
             
-            // Quá 15 giây không lấy script coi như acc bị ngắt kết nối (Disconnected)
-            if (secondsAgo < 15) {
-                msg += `🟢 *${playerName}* (Đang treo - cách đây ${secondsAgo}s)\n`;
-            } else {
-                msg += `🔴 *${playerName}* (Mất kết nối - cách đây ${secondsAgo}s)\n`;
-            }
-            hasPlayers = true;
-        }
+            let msg = "🎮 *Danh sách acc:*\n\n";
+            let hasPlayers = false;
+            const now = Date.now();
 
-        if (!hasPlayers) msg += "⚠️ Hệ thống chưa ghi nhận tài khoản nào đang chạy.";
-        await sendTelegramMessage(chatId, msg);
-        return res.status(200).send('OK');
+            for (const key of keys) {
+                const lastPing = await kv.get(key);
+                const playerName = key.replace('player:', '');
+                const secondsAgo = Math.floor((now - Number(lastPing)) / 1000);
+                
+                // Quá 15 giây không lấy script coi như acc bị ngắt kết nối (Disconnected)
+                if (secondsAgo < 60) {
+                    msg += `🟢 *${playerName}* (Trực tuyến - ${secondsAgo}s)\n`;
+                } else {
+                    msg += `🔴 *${playerName}* (Mất kết nối - ${secondsAgo}s)\n`;
+                }
+                hasPlayers = true;
+            }
+
+            if (!hasPlayers) {
+                msg += "⚠️ Hệ thống chưa ghi nhận tài khoản nào đang chạy.";
+                console.log(`[Status] Không có player nào trong hệ thống.`);
+            }
+            
+            await sendTelegramMessage(chatId, msg);
+            return res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[Error] Lỗi khi xử lý lệnh /players:`, error);
+            return res.status(500).send('Internal Server Error');
+        }
     }
 
     // ==========================================
@@ -52,40 +73,53 @@ export default async function handler(req, res) {
     // Cú pháp: /runall <đoạn_code_lua>
     // ==========================================
     if (command === '/runall') {
+        console.log(`[Command] Thực thi lệnh /runall`);
         const luaCode = args.slice(1).join(' ');
         if (!luaCode) {
+            console.log(`[Validation] Lệnh /runall thất bại do thiếu code Lua.`);
             await sendTelegramMessage(chatId, "⚠️ Thiếu đoạn code Lua cần chạy cho tất cả.");
             return res.status(200).send('OK');
         }
 
-        await kv.set(
-            "global_script",
-            JSON.stringify({
-                code: luaCode,
-                timestamp: Date.now()
-            })
-        );
-        await sendTelegramMessage(chatId, `🚀 Gửi code trực tiếp đến TẤT CẢ tài khoản...`);
-        return res.status(200).send('OK');
+        try {
+            const payload = JSON.stringify({ code: luaCode, timestamp: Date.now() });
+            await kv.set("global_script", payload);
+            console.log(`[Redis] Đã set global_script thành công.`);
+            
+            await sendTelegramMessage(chatId, `🚀 Gửi code trực tiếp đến TẤT CẢ tài khoản...`);
+            return res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[Error] Lỗi khi lưu global_script trong lệnh /runall:`, error);
+            return res.status(500).send('Internal Server Error');
+        }
     }
 
     // ==========================================
     // LỆNH MỚI: CHẠY LUA CHO 1 ACC CỤ THỂ (/run)
     // Cú pháp: /run <tên_acc> <đoạn_code_lua>
     // ==========================================
-    if (command === '/run' && args.length >= 3) {
+    if (command === '/run') {
+        console.log(`[Command] Thực thi lệnh /run`);
+        if (args.length < 3) {
+            console.log(`[Validation] Lệnh /run sai cú pháp hoặc thiếu tham số.`);
+            await sendTelegramMessage(chatId, "⚠️ Cú pháp đúng: /run <tên_acc> <đoạn_code_lua>");
+            return res.status(200).send('OK');
+        }
+
         const target = args[1].toLowerCase();
         const luaCode = args.slice(2).join(' ');
 
-        await kv.set(
-            `script:${target}`,
-            JSON.stringify({
-                code: luaCode,
-                timestamp: Date.now()
-            })
-        );
-        await sendTelegramMessage(chatId, `🎯 Gửi code trực tiếp đến acc: [${target}]`);
-        return res.status(200).send('OK');
+        try {
+            const payload = JSON.stringify({ code: luaCode, timestamp: Date.now() });
+            await kv.set(`script:${target}`, payload);
+            console.log(`[Redis] Đã set script riêng cho acc [${target}] thành công.`);
+
+            await sendTelegramMessage(chatId, `🎯 Gửi code trực tiếp đến acc: [${target}]`);
+            return res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[Error] Lỗi khi lưu script cho acc [${target}] trong lệnh /run:`, error);
+            return res.status(500).send('Internal Server Error');
+        }
     }
 
     // ==========================================
@@ -93,92 +127,157 @@ export default async function handler(req, res) {
     // ==========================================
     
     // Thêm lệnh tùy chỉnh: /addcmd <tên_lệnh> <đoạn_code_lua>
-    if (command === '/addcmd' && args.length >= 3) {
+    if (command === '/addcmd') {
+        console.log(`[Command] Thực thi lệnh /addcmd`);
+        if (args.length < 3) {
+            console.log(`[Validation] Lệnh /addcmd thiếu tham số.`);
+            await sendTelegramMessage(chatId, "⚠️ Cú pháp đúng: /addcmd <tên_lệnh> <đoạn_code_lua>");
+            return res.status(200).send('OK');
+        }
+
         const cmdName = args[1].toLowerCase();
         const cmdCode = args.slice(2).join(' ');
         
-        await kv.hset("custom_commands", cmdName, cmdCode);
-        await sendTelegramMessage(chatId, `✅ Đã thêm lệnh tùy chỉnh: [${cmdName}]`);
-        return res.status(200).send('OK');
+        try {
+            await kv.hset("custom_commands", cmdName, cmdCode);
+            console.log(`[Redis] Đã thêm/cập nhật custom command: [${cmdName}]`);
+            
+            await sendTelegramMessage(chatId, `✅ Đã thêm lệnh tùy chỉnh: [${cmdName}]`);
+            return res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[Error] Lỗi khi thêm custom command [${cmdName}]:`, error);
+            return res.status(500).send('Internal Server Error');
+        }
     }
 
     // Xem danh sách lệnh: /listcmd
     if (command === '/listcmd') {
-        const cmds = await kv.hgetall('custom_commands') || {};
-        let msg = "📜 *Danh sách lệnh tùy chỉnh:*\n";
-        let hasCmd = false;
-        for (const [name, code] of Object.entries(cmds)) {
-            msg += `• *${name}*: \`${code}\`\n`;
-            hasCmd = true;
+        console.log(`[Command] Thực thi lệnh /listcmd`);
+        try {
+            const cmds = await kv.hgetall('custom_commands') || {};
+            console.log(`[Redis] Lấy thành công hash custom_commands. Có ${Object.keys(cmds).length} lệnh.`);
+            
+            let msg = "📜 *Danh sách lệnh tùy chỉnh:*\n";
+            let hasCmd = false;
+            for (const [name, code] of Object.entries(cmds)) {
+                msg += `• *${name}*: \`${code}\`\n`;
+                hasCmd = true;
+            }
+            if (!hasCmd) msg += "Chưa có lệnh nào được lưu.";
+            
+            await sendTelegramMessage(chatId, msg);
+            return res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[Error] Lỗi khi lấy danh sách custom commands:`, error);
+            return res.status(500).send('Internal Server Error');
         }
-        if (!hasCmd) msg += "Chưa có lệnh nào được lưu.";
-        await sendTelegramMessage(chatId, msg);
-        return res.status(200).send('OK');
     }
 
     // Xóa lệnh tùy chỉnh: /delcmd <tên_lệnh>
-    if (command === '/delcmd' && args.length >= 2) {
-        await kv.hdel('custom_commands', args[1].toLowerCase());
-        await sendTelegramMessage(chatId, `🗑️ Đã xóa lệnh: [${args[1]}]`);
-        return res.status(200).send('OK');
+    if (command === '/delcmd') {
+        console.log(`[Command] Thực thi lệnh /delcmd`);
+        if (args.length < 2) {
+            console.log(`[Validation] Lệnh /delcmd thiếu tên lệnh cần xóa.`);
+            await sendTelegramMessage(chatId, "⚠️ Cú pháp đúng: /delcmd <tên_lệnh>");
+            return res.status(200).send('OK');
+        }
+
+        const targetCmd = args[1].toLowerCase();
+        try {
+            const deletedCount = await kv.hdel('custom_commands', targetCmd);
+            console.log(`[Redis] Xóa custom command [${targetCmd}]. Trạng thái xóa: ${deletedCount > 0 ? "Thành công" : "Không tìm thấy lệnh để xóa"}`);
+            
+            await sendTelegramMessage(chatId, `🗑️ Đã xóa lệnh: [${targetCmd}]`);
+            return res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[Error] Lỗi khi xóa custom command [${targetCmd}]:`, error);
+            return res.status(500).send('Internal Server Error');
+        }
     }
 
     // ==========================================
     // LỆNH ĐIỀU KHIỂN MULTI-ACC QUA /r
     // ==========================================
-    if (command === '/r' && args.length >= 2) {
-        const customCmds = await kv.hgetall('custom_commands') || {};
-
-        // Trường hợp 1: /r <tên_lệnh> -> Gửi tới TẤT CẢ (All)
-        if (args.length === 2) {
-            const action = args[1].toLowerCase();
-            const luaCode = customCmds[action];
-
-            if (luaCode) {
-                await kv.set(
-                    "global_script",
-                    JSON.stringify({
-                        code: luaCode,
-                        timestamp: Date.now()
-                    })
-                );
-                await sendTelegramMessage(chatId, `🚀 Đang gửi lệnh [${action}] tới TẤT CẢ tài khoản...`);
-            } else {
-                await sendTelegramMessage(chatId, `⚠️ Không tìm thấy lệnh tùy chỉnh: [${action}]`);
-            }
+    if (command === '/r') {
+        console.log(`[Command] Thực thi lệnh /r`);
+        if (args.length < 2) {
+            console.log(`[Validation] Lệnh /r thiếu tham số lệnh hành động.`);
+            await sendTelegramMessage(chatId, "⚠️ Cú pháp đúng: \n• /r <tên_lệnh> (Tất cả acc)\n• /r <tên_acc> <tên_lệnh> (1 acc cụ thể)");
             return res.status(200).send('OK');
         }
 
-        // Trường hợp 2: /r <tên_acc> <tên_lệnh> -> Gửi tới 1 tài khoản cụ thể
-        if (args.length >= 3) {
-            const targetAcc = args[1].toLowerCase();
-            const action = args[2].toLowerCase();
-            const luaCode = customCmds[action];
+        try {
+            const customCmds = await kv.hgetall('custom_commands') || {};
 
-            if (luaCode) {
-                await kv.set(
-                    `script:${targetAcc}`,
-                    JSON.stringify({
-                        code: luaCode,
-                        timestamp: Date.now()
-                    })
-                );
-                await sendTelegramMessage(chatId, `🎯 Đang gửi lệnh [${action}] tới tài khoản: [${targetAcc}]`);
-            } else {
-                await sendTelegramMessage(chatId, `⚠️ Không tìm thấy lệnh tùy chỉnh: [${action}]`);
+            // Trường hợp 1: /r <tên_lệnh> -> Gửi tới TẤT CẢ (All)
+            if (args.length === 2) {
+                const action = args[1].toLowerCase();
+                const luaCode = customCmds[action];
+                console.log(`[Logic] Nhận diện /r gửi tới tất cả acc. Lệnh cần tìm: [${action}]`);
+
+                if (luaCode) {
+                    await kv.set(
+                        "global_script",
+                        JSON.stringify({ code: luaCode, timestamp: Date.now() })
+                    );
+                    console.log(`[Redis] Đã gửi lệnh [${action}] qua global_script thành công.`);
+                    await sendTelegramMessage(chatId, `🚀 Đang gửi lệnh [${action}] tới TẤT CẢ tài khoản...`);
+                } else {
+                    console.log(`[Warning] Không tìm thấy code của lệnh [${action}] trong custom_commands.`);
+                    await sendTelegramMessage(chatId, `⚠️ Không tìm thấy lệnh tùy chỉnh: [${action}]`);
+                }
+                return res.status(200).send('OK');
             }
-            return res.status(200).send('OK');
+
+            // Trường hợp 2: /r <tên_acc> <tên_lệnh> -> Gửi tới 1 tài khoản cụ thể
+            if (args.length >= 3) {
+                const targetAcc = args[1].toLowerCase();
+                const action = args[2].toLowerCase();
+                const luaCode = customCmds[action];
+                console.log(`[Logic] Nhận diện /r gửi tới acc riêng biệt [${targetAcc}]. Lệnh cần tìm: [${action}]`);
+
+                if (luaCode) {
+                    await kv.set(
+                        `script:${targetAcc}`,
+                        JSON.stringify({ code: luaCode, timestamp: Date.now() })
+                    );
+                    console.log(`[Redis] Đã gửi lệnh [${action}] đến acc [${targetAcc}] qua key script:${targetAcc} thành công.`);
+                    await sendTelegramMessage(chatId, `🎯 Đang gửi lệnh [${action}] tới tài khoản: [${targetAcc}]`);
+                } else {
+                    console.log(`[Warning] Không tìm thấy code của lệnh [${action}] trong custom_commands để gửi cho [${targetAcc}].`);
+                    await sendTelegramMessage(chatId, `⚠️ Không tìm thấy lệnh tùy chỉnh: [${action}]`);
+                }
+                return res.status(200).send('OK');
+            }
+        } catch (error) {
+            console.error(`[Error] Lỗi khi xử lý lệnh /r:`, error);
+            return res.status(500).send('Internal Server Error');
         }
     }
 
+    console.log(`[Info] Tin nhắn không khớp với bất kỳ command nào đã cấu hình.`);
     return res.status(200).send('OK');
 }
 
 async function sendTelegramMessage(chatId, text) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: "Markdown" })
-    });
+    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    console.log(`[Telegram API] Đang gửi tin nhắn phản hồi tới ChatID ${chatId}...`);
+    
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: "Markdown" })
+        });
+        
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error(`[Telegram API Error] Gửi tin nhắn thất bại. Trạng thái: ${response.status}. Chi tiết: ${errText}`);
+        } else {
+            console.log(`[Telegram API Success] Đã gửi tin nhắn thành công.`);
+        }
+    } catch (fetchError) {
+        console.error(`[Telegram API Fetch Error] Lỗi kết nối mạng khi gọi Telegram API:`, fetchError);
+    }
 }
