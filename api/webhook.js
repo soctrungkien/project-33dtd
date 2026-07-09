@@ -255,6 +255,92 @@ export default async function handler(req, res) {
         }
     }
 
+// ==========================================
+    // LỆNH MỚI: LẤY LOG F9 TỪ GAME (/getlog)
+    // Cú pháp: 
+    // • /getlog (Lấy của tất cả acc)
+    // • /getlog <tên_acc> (Lấy của 1 acc cụ thể)
+    // ==========================================
+    if (command === '/getlog') {
+        console.log(`[Command] Thực thi lệnh /getlog`);
+        
+        // Bạn hãy thay URL này bằng URL endpoint getlog.js thật của bạn
+        const GETLOG_ENDPOINT = "${protocol}://${host}/api/getlog"; 
+
+        // Đoạn script Lua tự động thu thập dữ liệu từ LogService của Roblox và gửi đi
+        const generateLuaLogScript = (playerName) => {
+            return `
+                local LogService = game:GetService("LogService")
+                local HttpService = game:GetService("HttpService")
+                local Players = game:GetService("Players")
+                
+                local localPlayer = Players.LocalPlayer and Players.LocalPlayer.Name or "Unknown"
+                local logsTable = {}
+                
+                -- Thu thập toàn bộ log hiện tại trong F9 Console
+                for _, log in ipairs(LogService:GetLogHistory()) do
+                    table.insert(logsTable, string.format("[%s] %s", log.messageType.Name, log.message))
+                end
+                
+                local fullLogs = table.concat(logsTable, "\\n")
+                if #fullLogs == 0 then fullLogs = "Không có log nào trong bộ nhớ." end
+                
+                -- Cắt ngắn log nếu quá dài để tránh lỗi payload lớn (Giới hạn khoảng 3000 ký tự)
+                if #fullLogs > 3000 then
+                    fullLogs = string.sub(fullLogs, #fullLogs - 3000)
+                end
+                
+                -- POST dữ liệu lên getlog.js
+                pcall(function()
+                    HttpService:PostAsync(
+                        "${GETLOG_ENDPOINT}",
+                        HttpService:JSONEncode({
+                            player = localPlayer,
+                            logs = fullLogs
+                        }),
+                        Enum.HttpContentType.ApplicationJson
+                    )
+                end)
+            `.trim();
+        };
+
+        try {
+            // TRƯỜNG HỢP 1: /getlog -> Lấy log của TẤT CẢ các acc đang kết nối
+            if (args.length === 1) {
+                console.log(`[Logic] Yêu cầu lấy log F9 từ TẤT CẢ tài khoản.`);
+                const luaCode = generateLuaLogScript("All");
+                
+                await kv.set(
+                    "global_script",
+                    JSON.stringify({ code: luaCode, timestamp: Date.now() })
+                );
+                
+                console.log(`[Redis] Đã nạp script lấy log vào global_script.`);
+                await sendTelegramMessage(chatId, `🛰️ Đang yêu cầu lấy log F9 từ *TẤT CẢ* tài khoản... Vui lòng đợi log phản hồi.`);
+                return res.status(200).send('OK');
+            }
+
+            // TRƯỜNG HỢP 2: /getlog <tên_acc> -> Chỉ lấy log của 1 tài khoản cụ thể
+            if (args.length >= 2) {
+                const targetAcc = args[1].toLowerCase();
+                console.log(`[Logic] Yêu cầu lấy log F9 từ tài khoản cụ thể: [${targetAcc}]`);
+                const luaCode = generateLuaLogScript(targetAcc);
+
+                await kv.set(
+                    `script:${targetAcc}`,
+                    JSON.stringify({ code: luaCode, timestamp: Date.now() })
+                );
+
+                console.log(`[Redis] Đã nạp script lấy log vào key script:${targetAcc}.`);
+                await sendTelegramMessage(chatId, `🎯 Đang yêu cầu lấy log F9 từ tài khoản: [${targetAcc}]...`);
+                return res.status(200).send('OK');
+            }
+        } catch (error) {
+            console.error(`[Error] Lỗi khi thực thi lệnh /getlog:`, error);
+            return res.status(500).send('Internal Server Error');
+        }
+    }
+
     console.log(`[Info] Tin nhắn không khớp với bất kỳ command nào đã cấu hình.`);
     return res.status(200).send('OK');
 }
