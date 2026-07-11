@@ -11,6 +11,12 @@ export default async function handler(req, res) {
         return res.status(400).send("Bad Request");
     }
 
+    const clientToken = req.headers["authorization"];
+    if (clientToken !== `Bearer ${process.env.ROBLOX_SECRET_TOKEN}`) {
+        console.warn(`[${requestId}] Từ chối: Token không chính xác hoặc thiếu`);
+        return res.status(401).send("return");
+    }
+
     console.log(`[GetLog API] Đang nhận log từ tài khoản: [${player}]`);
 
     const chatId = process.env.TELEGRAM_CHAT_ID;
