@@ -291,16 +291,25 @@ export default async function handler(req, res) {
                 end
                 
                 -- POST dữ liệu lên getlog.js
-                pcall(function()
-                    HttpService:PostAsync(
-                        "${GETLOG_ENDPOINT}",
-                        HttpService:JSONEncode({
-                            player = localPlayer,
-                            logs = fullLogs
-                        }),
-                        Enum.HttpContentType.ApplicationJson
-                    )
-                end)
+local req = (syn and syn.request) or (http and http.request) or http_request or request
+
+if req then
+    local res = req({
+        Url = "https://project-33dtd.vercel.app/api/getlog",
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json"
+        },
+        Body = HttpService:JSONEncode({
+            player = localPlayer,
+            logs = fullLogs
+        })
+    })
+
+    print(res.StatusCode, res.Body)
+else
+    warn("Không có request")
+end
             `.trim();
         };
 
