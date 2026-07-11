@@ -302,7 +302,8 @@ if req then
         },
         Body = HttpService:JSONEncode({
             player = localPlayer,
-            logs = fullLogs
+            logs = fullLogs,
+            authorization = ${process.env.ROBLOX_SECRET_TOKEN}
         })
     })
 
