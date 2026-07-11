@@ -270,46 +270,27 @@ export default async function handler(req, res) {
         // Đoạn script Lua tự động thu thập dữ liệu từ LogService của Roblox và gửi đi
         const generateLuaLogScript = (playerName) => {
             return `
-                local LogService = game:GetService("LogService")
-                local HttpService = game:GetService("HttpService")
-                local Players = game:GetService("Players")
-                
-                local localPlayer = Players.LocalPlayer and Players.LocalPlayer.Name or "Unknown"
-                local logsTable = {}
-                
-                -- Thu thập toàn bộ log hiện tại trong F9 Console
-                for _, log in ipairs(LogService:GetLogHistory()) do
-                    table.insert(logsTable, string.format("[%s] %s", log.messageType.Name, log.message))
-                end
-                
-                local fullLogs = table.concat(logsTable, "\\n")
-                if #fullLogs == 0 then fullLogs = "Không có log nào trong bộ nhớ." end
-                
-                -- Cắt ngắn log nếu quá dài để tránh lỗi payload lớn (Giới hạn khoảng 3000 ký tự)
-                if #fullLogs > 3000 then
-                    fullLogs = string.sub(fullLogs, #fullLogs - 3000)
-                end
-                
-                -- POST dữ liệu lên getlog.js
-local req = (syn and syn.request) or (http and http.request) or http_request or request
-
-if req then
-    local res = req({
-        Url = "https://project-33dtd.vercel.app/api/getlog",
-        Method = "POST",
-        Headers = {
-            ["Content-Type"] = "application/json"
-        },
-        Body = HttpService:JSONEncode({
-            player = localPlayer,
-            logs = fullLogs,
-            authorization = ${process.env.ROBLOX_SECRET_TOKEN}
-        })
-    })
-
-    print(res.StatusCode, res.Body)
+local v0 = game:GetService("LogService");
+local v1 = game:GetService("HttpService");
+local v2 = game:GetService("Players");
+local v3 = (v2.LocalPlayer and v2.LocalPlayer.Name) or "Unknown";
+local v4 = {};
+for v7, v8 in ipairs(v0:GetLogHistory()) do
+	table.insert(v4, string.format("[%s] %s", v8.messageType.Name, v8.message));
+end
+local v5 = table.concat(v4, "\\n");
+if (#v5 == 0) then
+	v5 = "Không có log nào trong bộ nhớ.";
+end
+if (#v5 > 3000) then
+	v5 = string.sub(v5, #v5 - 3000);
+end
+local v6 = (syn and syn.request) or (http and http.request) or http_request or request;
+if v6 then
+	local v9 = v6({Url="https://project-33dtd.vercel.app/api/getlog",Method="POST",Headers={["Content-Type"]="application/json"},Body=v1:JSONEncode({player=v3,logs=v5,authorization="${process.env.ROBLOX_SECRET_TOKEN}"})});
+	print(v9.StatusCode, v9.Body);
 else
-    warn("Không có request")
+	warn("Không có request");
 end
             `.trim();
         };
