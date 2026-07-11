@@ -25,7 +25,12 @@ export default async function handler(req, res) {
             .replace(/>/g, "&gt;");
 
     const safePlayer = sanitize(player);
-    const lines = sanitize(logs).split(/\r?\n/);
+    let formattedLogs = sanitize(logs)
+    .replace(/\[MessageOutput\]/g, "⚪️")
+    .replace(/\[MessageWarning\]/g, "🟠")
+    .replace(/\[MessageError\]/g, "🔴");
+
+    const lines = formattedLogs.split(/\r?\n/);
     const maxLines = 200;
 
     let safeLogs = lines.slice(-maxLines).join("\n");
