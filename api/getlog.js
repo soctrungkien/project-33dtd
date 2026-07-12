@@ -6,14 +6,14 @@ export default async function handler(req, res) {
 
     const { player, logs } = req.body;
 
-    if (!player || logs == null) {
+    if (!player || logs || authorization == null) {
         console.log("[GetLog API] Nhận request trống hoặc thiếu dữ liệu từ Roblox.");
         return res.status(400).send("Bad Request");
     }
 
     const clientToken = req.headers["authorization"];
     if (clientToken !== `Bearer ${process.env.ROBLOX_SECRET_TOKEN}`) {
-        console.warn(`[${requestId}] Từ chối: Token không chính xác hoặc thiếu`);
+        console.warn(`[GetLog API] Từ chối: Token không chính xác hoặc thiếu`);
         return res.status(401).send("return");
     }
 
