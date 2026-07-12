@@ -269,6 +269,7 @@ export default async function handler(req, res) {
 
         // Đoạn script Lua tự động thu thập dữ liệu từ LogService của Roblox và gửi đi
         const generateLuaLogScript = (playerName) => {
+            const token = process.env.ROBLOX_SECRET_TOKEN;
             return `
 local v0 = game:GetService("LogService");
 local v1 = game:GetService("HttpService");
@@ -287,7 +288,7 @@ if (#v5 > 3000) then
 end
 local v6 = (syn and syn.request) or (http and http.request) or http_request or request;
 if v6 then
-	local v9 = v6({Url="https://project-33dtd.vercel.app/api/getlog",Method="POST",Headers={["Content-Type"]="application/json"},Body=v1:JSONEncode({player=v3,logs=v5,authorization="${process.env.ROBLOX_SECRET_TOKEN}"})});
+	local v9 = v6({Url="https://project-33dtd.vercel.app/api/getlog",Method="POST",Headers={["Content-Type"]="application/json",["Authorization"]="Bearer ${token}"},Body=v1:JSONEncode({player=v3,logs=v5})});
 	print(v9.StatusCode, v9.Body);
 else
 	warn("Không có request");
