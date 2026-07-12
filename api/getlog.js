@@ -6,7 +6,7 @@ export default async function handler(req, res) {
 
     const { player, logs } = req.body;
 
-    if (!player || logs || authorization == null) {
+    if (!player || logs == null) {
         console.log("[GetLog API] Nhận request trống hoặc thiếu dữ liệu từ Roblox.");
         return res.status(400).send("Bad Request");
     }
