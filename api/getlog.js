@@ -1,3 +1,7 @@
+import Redis from "ioredis";
+
+const kv = new Redis(process.env.REDIS_URL);
+
 export default async function handler(req, res) {
     if (req.method !== "POST") {
         console.warn(`[GetLog API] Method không hợp lệ: ${req.method}`);
@@ -11,17 +15,44 @@ export default async function handler(req, res) {
         return res.status(400).send("Bad Request");
     }
 
-    const clientToken = req.headers["authorization"];
-    if (clientToken !== `Bearer ${process.env.ROBLOX_SECRET_TOKEN}`) {
-        console.warn(`[GetLog API] Từ chối: Token không chính xác hoặc thiếu`);
-        return res.status(401).send("return");
+    // ==========================================
+    // 1. XÁC THỰC TOKEN
+    // ==========================================
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.split(" ")[1] : null;
+
+    if (!token) {
+        console.warn(`[GetLog API] Từ chối: Thiếu Authorization Token`);
+        return res.status(401).send("Unauthorized");
     }
 
-    console.log(`[GetLog API] Đang nhận log từ tài khoản: [${player}]`);
+    // Kiểm tra Temp Token (hết hạn sau 10p từ Redis)
+    const isTempTokenValid = await kv.get(`temp_token:${token}`);
+    if (!isTempTokenValid) {
+        console.warn(`[GetLog API] Từ chối: Token không hợp lệ hoặc đã hết hạn`);
+        return res.status(403).send("Forbidden");
+    }
 
+    // ==========================================
+    // 2. CHẶN NGƯỜI CHƠI KHÔNG CÓ TRONG DANH SÁCH (REDIS)
+    // ==========================================
+    // Kiểm tra Redis xem key player:<tên_acc> có tồn tại không
+    const playerKey = `player:${player.toLowerCase()}`;
+    const isPlayerInList = await kv.exists(playerKey);
+
+    if (!isPlayerInList) {
+        console.warn(`[GetLog API] Từ chối: Player [${player}] không có trong danh sách Redis (${playerKey}).`);
+        return res.status(403).send("Player Not In List");
+    }
+
+    console.log(`[GetLog API] Đang nhận log từ tài khoản hợp lệ: [${player}]`);
+
+    // ==========================================
+    // 3. XỬ LÝ VÀ GỬI LOG VỀ TELEGRAM
+    // ==========================================
     const chatId = process.env.TELEGRAM_CHAT_ID;
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
 
     const sanitize = (text) =>
         String(text)
@@ -32,9 +63,9 @@ export default async function handler(req, res) {
 
     const safePlayer = sanitize(player);
     let formattedLogs = sanitize(logs)
-    .replace(/\[MessageOutput\]/g, "⚪️")
-    .replace(/\[MessageWarning\]/g, "🟠")
-    .replace(/\[MessageError\]/g, "🔴");
+        .replace(/\[MessageOutput\]/g, "⚪️")
+        .replace(/\[MessageWarning\]/g, "🟠")
+        .replace(/\[MessageError\]/g, "🔴");
 
     const lines = formattedLogs.split(/\r?\n/);
     const maxLines = 200;
@@ -48,6 +79,7 @@ export default async function handler(req, res) {
     if (lines.length > maxLines) {
         safeLogs = `... (${lines.length - maxLines} dòng đã bị cắt)\n\n${safeLogs}`;
     }
+
     const telegramMsg = `
 📜 <b>Console log từ tài khoản:</b> <code>${safePlayer}</code>
 
