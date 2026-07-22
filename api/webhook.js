@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import crypto from 'crypto';
 
 const kv = new Redis(process.env.REDIS_URL);
 
@@ -261,15 +262,16 @@ export default async function handler(req, res) {
     // • /getlog (Lấy của tất cả acc)
     // • /getlog <tên_acc> (Lấy của 1 acc cụ thể)
     // ==========================================
+// ==========================================
+    // LỆNH MỚI: LẤY LOG F9 TỪ GAME (/getlog)
+    // ==========================================
     if (command === '/getlog') {
         console.log(`[Command] Thực thi lệnh /getlog`);
         
-        // Bạn hãy thay URL này bằng URL endpoint getlog.js thật của bạn
         const GETLOG_ENDPOINT = "https://project-33dtd.vercel.app/api/getlog"; 
 
-        // Đoạn script Lua tự động thu thập dữ liệu từ LogService của Roblox và gửi đi
-        const generateLuaLogScript = (playerName) => {
-            const token = process.env.ROBLOX_SECRET_TOKEN;
+        // Hàm tạo script Lua kèm token động
+        const generateLuaLogScript = (tempToken) => {
             return `
 local v0 = game:GetService("LogService");
 local v1 = game:GetService("HttpService");
@@ -288,7 +290,7 @@ if (#v5 > 3000) then
 end
 local v6 = (syn and syn.request) or (http and http.request) or http_request or request;
 if v6 then
-	local v9 = v6({Url="https://project-33dtd.vercel.app/api/getlog",Method="POST",Headers={["Content-Type"]="application/json",["Authorization"]="Bearer ${token}"},Body=v1:JSONEncode({player=v3,logs=v5})});
+	local v9 = v6({Url="${GETLOG_ENDPOINT}",Method="POST",Headers={["Content-Type"]="application/json",["Authorization"]="Bearer ${tempToken}"},Body=v1:JSONEncode({player=v3,logs=v5})});
 	print(v9.StatusCode, v9.Body);
 else
 	warn("Không có request");
@@ -297,41 +299,44 @@ end
         };
 
         try {
-            // TRƯỜNG HỢP 1: /getlog -> Lấy log của TẤT CẢ các acc đang kết nối
+            // 1. Tạo token ngẫu nhiên và lưu vào Redis với TTL 10 phút (600 giây)
+            const tempToken = crypto.randomBytes(16).toString('hex');
+            await kv.set(`temp_token:${tempToken}`, "valid", "EX", 600);
+            console.log(`[Redis] Đã tạo temp token hết hạn sau 10p: ${tempToken}`);
+
+            const luaCode = generateLuaLogScript(tempToken);
+
+            // TRƯỜNG HỢP 1: /getlog -> Lấy log của TẤT CẢ acc
             if (args.length === 1) {
                 console.log(`[Logic] Yêu cầu lấy log F9 từ TẤT CẢ tài khoản.`);
-                const luaCode = generateLuaLogScript("All");
                 
                 await kv.set(
                     "global_script",
                     JSON.stringify({ code: luaCode, timestamp: Date.now() })
                 );
                 
-                console.log(`[Redis] Đã nạp script lấy log vào global_script.`);
-                await sendTelegramMessage(chatId, `🛰️ Đang yêu cầu lấy log F9 từ *TẤT CẢ* tài khoản... Vui lòng đợi log phản hồi.`);
+                await sendTelegramMessage(chatId, `🛰️ Đang yêu cầu lấy log F9 từ *TẤT CẢ* tài khoản (Token có hiệu lực 10 phút)...`);
                 return res.status(200).send('OK');
             }
 
-            // TRƯỜNG HỢP 2: /getlog <tên_acc> -> Chỉ lấy log của 1 tài khoản cụ thể
+            // TRƯỜNG HỢP 2: /getlog <tên_acc> -> Lấy log của 1 acc cụ thể
             if (args.length >= 2) {
                 const targetAcc = args[1].toLowerCase();
-                console.log(`[Logic] Yêu cầu lấy log F9 từ tài khoản cụ thể: [${targetAcc}]`);
-                const luaCode = generateLuaLogScript(targetAcc);
+                console.log(`[Logic] Yêu cầu lấy log F9 từ tài khoản: [${targetAcc}]`);
 
                 await kv.set(
                     `script:${targetAcc}`,
                     JSON.stringify({ code: luaCode, timestamp: Date.now() })
                 );
 
-                console.log(`[Redis] Đã nạp script lấy log vào key script:${targetAcc}.`);
-                await sendTelegramMessage(chatId, `🎯 Đang yêu cầu lấy log F9 từ tài khoản: [${targetAcc}]...`);
+                await sendTelegramMessage(chatId, `🎯 Đang yêu cầu lấy log F9 từ tài khoản: [${targetAcc}] (Token có hiệu lực 10 phút)...`);
                 return res.status(200).send('OK');
             }
         } catch (error) {
             console.error(`[Error] Lỗi khi thực thi lệnh /getlog:`, error);
             return res.status(500).send('Internal Server Error');
         }
-    }
+	}
     // ==========================================
     // LỆNH MỚI: XÓA 1 PLAYER RA KHỎI DANH SÁCH (/delplayer)
     // Cú pháp: /delplayer <tên_acc>
