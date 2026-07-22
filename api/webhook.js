@@ -332,7 +332,60 @@ end
             return res.status(500).send('Internal Server Error');
         }
     }
+    // ==========================================
+    // LỆNH MỚI: XÓA 1 PLAYER RA KHỎI DANH SÁCH (/delplayer)
+    // Cú pháp: /delplayer <tên_acc>
+    // ==========================================
+    if (command === '/delplayer') {
+        console.log(`[Command] Thực thi lệnh /delplayer`);
+        if (args.length < 2) {
+            console.log(`[Validation] Lệnh /delplayer thiếu tên account.`);
+            await sendTelegramMessage(chatId, "⚠️ Cú pháp đúng: /delplayer <tên_acc>");
+            return res.status(200).send('OK');
+        }
 
+        const targetPlayer = args[1];
+        const key = `player:${targetPlayer}`;
+
+        try {
+            const deleted = await kv.del(key);
+            if (deleted > 0) {
+                console.log(`[Redis] Đã xóa key player: [${key}]`);
+                await sendTelegramMessage(chatId, `🗑️ Đã xóa player *${targetPlayer}* ra khỏi danh sách.`);
+            } else {
+                console.log(`[Redis] Không tìm thấy key [${key}] trong Redis.`);
+                await sendTelegramMessage(chatId, `⚠️ Không tìm thấy player *${targetPlayer}* trong danh sách.`);
+            }
+            return res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[Error] Lỗi khi xóa player [${targetPlayer}]:`, error);
+            return res.status(500).send('Internal Server Error');
+        }
+	}
+    // ==========================================
+    // LỆNH MỚI: XÓA TẤT CẢ PLAYER RA KHỎI DANH SÁCH (/delallplayer)
+    // Cú pháp: /delallplayer
+    // ==========================================
+    if (command === '/delallplayer') {
+        console.log(`[Command] Thực thi lệnh /delallplayer`);
+        try {
+            const keys = await kv.keys('player:*') || [];
+            if (keys.length > 0) {
+                // Sử dụng unpack array (...) để xóa hàng loạt key trong Redis
+                await kv.del(...keys);
+                console.log(`[Redis] Đã xóa thành công ${keys.length} keys player.`);
+                await sendTelegramMessage(chatId, `🗑️ Đã xóa toàn bộ *${keys.length}* player ra khỏi danh sách.`);
+            } else {
+                console.log(`[Redis] Không tìm thấy key player nào để xóa.`);
+                await sendTelegramMessage(chatId, "⚠️ Danh sách player hiện tại đang trống.");
+            }
+            return res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[Error] Lỗi khi thực thi /delallplayer:`, error);
+            return res.status(500).send('Internal Server Error');
+        }
+	}
+	
     console.log(`[Info] Tin nhắn không khớp với bất kỳ command nào đã cấu hình.`);
     return res.status(200).send('OK');
 }
