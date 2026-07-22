@@ -6,7 +6,7 @@ kv.on("connect", () => console.log("[Redis] Kết nối thành công!"));
 kv.on("error", (err) => console.error("[Redis] Lỗi kết nối:", err));
 
 export default async function handler(req, res) {
-    const requestId = Math.random().toString(36).substring(7); // Tạo id ngẫu nhiên để phân biệt các request
+    const requestId = Math.random().toString(36).substring(7);
     console.log(`\n[${requestId}] --- Nhận Request Mới ---`);
     console.log(`[${requestId}] Method: ${req.method} | IP: ${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`);
 
@@ -34,12 +34,26 @@ export default async function handler(req, res) {
 
     const lowerUsername = username.toLowerCase();
     const userKey = `script:${lowerUsername}`;
+    const playerKey = `player:${lowerUsername}`;
 
     try {
+        // ==========================================
+        // KHỐI MỚI: Kiểm tra người chơi chưa có trong danh sách
+        // ==========================================
+        const existingPlayer = await kv.get(playerKey);
+        
+        if (!existingPlayer) {
+            console.log(`[${requestId}] Phát hiện người chơi MỚI kết nối: [${username}]`);
+            // Gửi thông báo đến Telegram (chạy async không chặn luồng chính)
+            notifyNewPlayerToTelegram(username, req.headers["x-forwarded-for"] || req.socket.remoteAddress).catch(err => {
+                console.error(`[${requestId}] Lỗi khi gửi thông báo new player đến Telegram:`, err);
+            });
+        }
+
         // 4. Ping người chơi (Cập nhật thời gian hoạt động)
         const currentTime = Date.now().toString();
-        await kv.set(`player:${lowerUsername}`, currentTime);
-        console.log(`[${requestId}] Ping thành công cho player:${lowerUsername} tại ${currentTime}`);
+        await kv.set(playerKey, currentTime);
+        console.log(`[${requestId}] Ping thành công cho ${playerKey} tại ${currentTime}`);
 
         // 5. Kiểm tra Lệnh riêng (Private Script)
         console.log(`[${requestId}] Đang kiểm tra private script với key: ${userKey}`);
@@ -47,7 +61,7 @@ export default async function handler(req, res) {
 
         if (privateData) {
             console.log(`[${requestId}] Phát hiện private script. Tiến hành xóa key và gửi code...`);
-            await kv.del(userKey); // Xóa script sau khi đã lấy để tránh thực thi lại
+            await kv.del(userKey); // Xóa script sau khi lấy để tránh lặp lại
 
             const privateScript = JSON.parse(privateData);
             res.setHeader("Content-Type", "text/plain");
@@ -83,9 +97,45 @@ export default async function handler(req, res) {
         return res.status(200).send("return");
 
     } catch (error) {
-        // Log lỗi chi tiết nếu hệ thống gặp sự cố trong try
         console.error(`[${requestId}] LỖI HỆ THỐNG:`, error.message);
         console.error(error.stack);
         return res.status(500).send("Internal Server Error");
     }
+}
+
+// Hàm bổ trợ gửi thông báo tới Telegram
+async function notifyNewPlayerToTelegram(username, ipAddress) {
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+    if (!chatId || !botToken) {
+        console.warn("[Telegram Noti] Thiếu TELEGRAM_CHAT_ID hoặc TELEGRAM_BOT_TOKEN");
+        return;
+    }
+
+    const sanitize = (text) =>
+        String(text)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+
+    const message = `
+✨ <b>Phát hiện tài khoản mới kết nối!</b>
+
+👤 <b>Tên tài khoản:</b> <code>${sanitize(username)}</code>
+🌐 <b>IP:</b> <code>${sanitize(ipAddress || "N/A")}</code>
+⏰ <b>Thời gian:</b> <code>${new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}</code>
+`.trim();
+
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    
+    await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            chat_id: chatId,
+            text: message,
+            parse_mode: "HTML"
+        })
+    });
 }
