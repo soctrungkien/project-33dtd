@@ -25,23 +25,23 @@ function logError(tag, message, error) {
   console.error(`[${new Date().toISOString()}] [ERROR:${tag}] ${message}`, error);
 }
 
-// -------------------------------------------------------------
-// TỰ ĐỘNG LƯU APK MỚI VÀO REDIS KHI ĐĂNG BÀI TRONG KÊNH
-// -------------------------------------------------------------
-bot.on('channel_post', async (ctx) => {
-  const msg = ctx.channelPost;
-  const doc = msg?.document;
+function getSenderTag(ctx) {
+  const user = ctx.from;
+  if (!user) return '';
+  if (user.username) return `@${user.username}`;
+  return `<a href="tg://user?id=${user.id}">${user.first_name || 'Người dùng'}</a>`;
+}
 
-  if (!doc) return;
-
-  const fileName = doc.file_name || '';
+// Hàm đẩy thông tin APK vào Redis
+async function saveApkToRedis(msg, chat, doc, sender) {
+  const fileName = doc?.file_name || '';
   if (!fileName.toLowerCase().endsWith('.apk')) return;
 
   const newApk = {
     message_id: msg.message_id,
     file_name: fileName,
-    chat_id: msg.chat.id,
-    sender: msg.author_signature || ''
+    chat_id: chat.id,
+    sender: sender || ''
   };
 
   try {
@@ -50,6 +50,24 @@ bot.on('channel_post', async (ctx) => {
   } catch (err) {
     logError('REDIS', 'Lỗi khi lưu APK vào Redis', err);
   }
+}
+
+// -------------------------------------------------------------
+// TỰ ĐỘNG LƯU APK MỚI TỪ CẢ KÊNH VÀ NHÓM VÀO REDIS
+// -------------------------------------------------------------
+bot.on('channel_post', async (ctx) => {
+  const msg = ctx.channelPost;
+  if (msg?.document) {
+    await saveApkToRedis(msg, msg.chat, msg.document, msg.author_signature);
+  }
+});
+
+// Lắng nghe file APK gửi trực tiếp vào Nhóm lưu trữ
+bot.use(async (ctx, next) => {
+  if (ctx.message?.document && STORAGE_CHANNEL && String(ctx.chat?.id) === String(STORAGE_CHANNEL)) {
+    await saveApkToRedis(ctx.message, ctx.chat, ctx.message.document, getSenderTag(ctx));
+  }
+  return next();
 });
 
 // Lấy toàn bộ APK đã lưu từ Redis
@@ -158,13 +176,6 @@ async function searchApksInChannel(queryStr) {
   return matches;
 }
 
-function getSenderTag(ctx) {
-  const user = ctx.from;
-  if (!user) return '';
-  if (user.username) return `@${user.username}`;
-  return `<a href="tg://user?id=${user.id}">${user.first_name || 'Người dùng'}</a>`;
-}
-
 async function sendApkViaCopy(ctx, item) {
   try {
     await ctx.telegram.copyMessage(ctx.chat.id, item.chat_id, item.message_id, { caption: '' });
@@ -197,7 +208,6 @@ async function handleSearchResults(ctx, matches) {
     }
   } else {
     const searchId = Date.now().toString();
-    // Lưu tạm kết quả tìm kiếm vào Redis (tự hủy sau 15 phút) để Serverless nhận diện được
     await redis.set(`search:${searchId}`, JSON.stringify(matches), 'EX', 900);
 
     await ctx.reply(`Tìm thấy ${matches.length} kết quả. Bạn muốn hiển thị như thế nào?`, Markup.inlineKeyboard([
@@ -209,6 +219,7 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
+// Bỏ qua tương tác từ Nhóm ngoại trừ chat riêng Private Chat
 bot.use(async (ctx, next) => {
   const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
   if (isGroup) return;
@@ -252,7 +263,6 @@ bot.command('msg', async (ctx) => {
   const prompt = await ctx.reply('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:', {
     reply_markup: { force_reply: true }
   });
-  // Lưu trạng thái tin nhắn vào Redis (tự hủy sau 10 phút)
   await redis.set(`msgState:${ctx.from.id}`, prompt.message_id, 'EX', 600);
 });
 
@@ -352,7 +362,7 @@ bot.action(/^store_(.+)$/, async (ctx) => {
       await ctx.telegram.sendDocument(STORAGE_CHANNEL, fileId);
       await ctx.editMessageText('Đã gửi file vào bộ nhớ lưu trữ thành công!');
     } catch (e) {
-      await ctx.editMessageText('Lỗi: Bot chưa được phong quyền Admin trong Kênh lưu trữ!');
+      await ctx.editMessageText('Lỗi: Bot chưa được phong quyền Admin trong Kênh/Nhóm lưu trữ!');
     }
   }
 });
