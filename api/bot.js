@@ -63,16 +63,40 @@ async function getGramClient() {
 }
 
 // Lấy Message ID mới nhất trong kênh
-async function getLatestMessageId(client, channelPeer) {
+async function getLatestMessageId() {
   try {
-    const res = await client.getMessages(channelPeer, { limit: 1 });
-    if (Array.isArray(res) && res.length > 0) {
-      return res[0].id;
+    const result = await fetch(
+      `https://api.telegram.org/bot${process.env.BOT_TOKEN}/getUpdates`
+    );
+
+    const data = await result.json();
+
+    if (!data.ok || !data.result.length) {
+      return 0;
     }
-  } catch (e) {
-    logError('SWEEP', 'Lỗi lấy tin nhắn mới nhất', e);
+
+    let max = 0;
+
+    for (const update of data.result) {
+      const msg =
+        update.channel_post ||
+        update.message;
+
+      if (
+        msg &&
+        String(msg.chat.id) === String(STORAGE_CHANNEL)
+      ) {
+        if (msg.message_id > max)
+          max = msg.message_id;
+      }
+    }
+
+    return max;
+
+  } catch(e){
+    console.log(e);
+    return 0;
   }
-  return 0;
 }
 
 // Quét ngược từ tin nhắn mới nhất về cũ hơn (Tối ưu song song bằng Promise.all)
