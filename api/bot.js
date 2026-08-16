@@ -1,30 +1,35 @@
 const { Telegraf, Markup } = require('telegraf');
+const Redis = require('ioredis');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const STORAGE_CHANNEL = process.env.STORAGE_CHANNEL_ID;
 const OWNER_ID = process.env.OWNER_ID;
 
-// Khởi tạo bộ nhớ lưu trữ tạm thời trong RAM
+// Tối ưu kết nối Redis trên môi trường Serverless (Vercel)
+if (!global.redisClient) {
+  global.redisClient = new Redis(process.env.REDIS_URL, {
+    connectTimeout: 5000,
+    maxRetriesPerRequest: 1,
+    enableReadyCheck: false,
+  });
+}
+const redis = global.redisClient;
+
 global.msgState = global.msgState || new Map();
 global.searchCache = global.searchCache || new Map();
-global.apkIndex = global.apkIndex || [];
 
-// Bắt toàn bộ lỗi không xác định để tránh crash Unhandled Error
+// Bắt toàn bộ lỗi không xác định
 bot.catch((err, ctx) => {
-  console.error(`[TELEGRAF_ERROR] Lỗi xử lý update ${ctx.update.update_id}:`, err);
+  console.error(`[TELEGRAF_ERROR] Lỗi xử lý update ${ctx.update?.update_id}:`, err);
   ctx.reply('Đã xảy ra lỗi trong quá trình xử lý yêu cầu, vui lòng thử lại sau!').catch(() => {});
 });
-
-function logInfo(tag, message, data = '') {
-  console.log(`[${new Date().toISOString()}] [${tag}] ${message}`, data ? JSON.stringify(data) : '');
-}
 
 function logError(tag, message, error) {
   console.error(`[${new Date().toISOString()}] [ERROR:${tag}] ${message}`, error);
 }
 
 // -------------------------------------------------------------
-// TỰ ĐỘNG INDEX APK MỚI KHI ĐƯỢC ĐĂNG VÀO KÊNH
+// TỰ ĐỘNG LƯU APK MỚI VÀO REDIS KHI ĐĂNG BÀI TRONG KÊNH
 // -------------------------------------------------------------
 bot.on('channel_post', async (ctx) => {
   const msg = ctx.channelPost;
@@ -35,20 +40,32 @@ bot.on('channel_post', async (ctx) => {
   const fileName = doc.file_name || '';
   if (!fileName.toLowerCase().endsWith('.apk')) return;
 
-  // Thêm file APK mới lên đầu danh sách Index
-  global.apkIndex.unshift({
+  const newApk = {
     message_id: msg.message_id,
     file_name: fileName,
     chat_id: msg.chat.id,
     sender: msg.author_signature || ''
-  });
+  };
 
-  console.log('Đã index APK:', fileName);
+  try {
+    // Đẩy APK mới vào đầu danh sách 'apk_list' trong Redis
+    await redis.lpush('apk_list', JSON.stringify(newApk));
+    console.log('Đã lưu APK vào Redis:', fileName);
+  } catch (err) {
+    logError('REDIS', 'Lỗi khi lưu APK vào Redis', err);
+  }
 });
 
-// Lấy danh sách APK từ bộ nhớ Cache
+// Lấy toàn bộ APK đã lưu từ Redis
 async function getRecentApksFromChannel() {
-  return global.apkIndex;
+  try {
+    const rawList = await redis.lrange('apk_list', 0, -1);
+    if (!rawList || rawList.length === 0) return [];
+    return rawList.map(item => (typeof item === 'string' ? JSON.parse(item) : item));
+  } catch (err) {
+    logError('REDIS', 'Lỗi khi đọc dữ liệu từ Redis', err);
+    return [];
+  }
 }
 
 function levenshteinDistance(a, b) {
@@ -187,7 +204,6 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
-// Bỏ qua tin nhắn từ nhóm
 bot.use(async (ctx, next) => {
   const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
   if (isGroup) return;
@@ -217,9 +233,15 @@ bot.command('ping', async (ctx) => {
   await ctx.reply(`🏓 Pong: ${latency}ms`);
 });
 
-// Lệnh /apk phản hồi ngay tức thì số lượng APK đã index
+// Lệnh /apk kiểm tra trực tiếp số lượng APK trong Redis
 bot.command('apk', async (ctx) => {
-  await ctx.reply(`Đã lưu:\n${global.apkIndex.length} APK`);
+  try {
+    const count = await redis.llen('apk_list');
+    await ctx.reply(`Đã lưu:\n${count} APK`);
+  } catch (e) {
+    logError('COMMAND', 'Lỗi đếm APK', e);
+    await ctx.reply('Lỗi kết nối cơ sở dữ liệu Redis!');
+  }
 });
 
 bot.command('msg', async (ctx) => {
