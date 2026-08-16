@@ -94,56 +94,47 @@ async function fetchBatchesWithConcurrency(client, channelPeer, batches, limit =
   return results;
 }
 
-// Live Sweep tăng tiến kết hợp Redis (Không lọc định dạng, không giới hạn cứng)
+// Quét tăng tiến (Incremental Scan)
 async function getAllApksFromChannelOptimized() {
-  // 1. Kiểm tra Cache RAM trước
+  // 1. Dùng RAM Cache để phản hồi cực nhanh nếu đã quét trong 5 phút gần đây
   if (Date.now() - liveSweepCache.lastFetch < CACHE_TTL && liveSweepCache.data.length > 0) {
     return liveSweepCache.data;
   }
 
-  let storedApks = [];
-  let lastMaxId = 0;
-
-  // 2. Lấy dữ liệu cũ từ Redis
-  try {
-    const redisData = await redis.get('apk_list');
-    const redisMaxId = await redis.get('apk_last_max_id');
-    if (redisData) storedApks = JSON.parse(redisData);
-    if (redisMaxId) lastMaxId = parseInt(redisMaxId, 10);
-  } catch (e) {
-    logError('REDIS', 'Lỗi đọc dữ liệu từ Redis', e);
-  }
-
   const client = await getGramClient();
   const channelPeer = getParsedChannelPeer();
-  if (!client || !channelPeer) return storedApks;
+  if (!client || !channelPeer) return [];
 
   try {
+    // 2. Lấy dữ liệu từ Redis
+    let storedApks = JSON.parse(await redis.get('apk_list') || '[]');
+    let lastScannedId = parseInt(await redis.get('apk_last_max_id') || '0');
+
     const currentMaxId = await getMaxMessageId(client, channelPeer);
 
-    // Nếu không có tin nhắn mới -> Dùng lại dữ liệu Redis
-    if (lastMaxId > 0 && currentMaxId <= lastMaxId) {
+    // 3. Nếu không có gì mới, trả về cache cũ ngay
+    if (lastScannedId >= currentMaxId) {
       liveSweepCache = { data: storedApks, lastFetch: Date.now() };
       return storedApks;
     }
 
-    // Xác định khoảng ID cần quét tiếp
-    const startId = lastMaxId > 0 ? lastMaxId + 1 : 1;
-    const endId = currentMaxId;
-    
-    // Lần đầu chạy nếu chưa có cache: Quét tối đa 2500 ID gần nhất để tránh timeout
-    const actualStartId = lastMaxId > 0 ? startId : Math.max(1, endId - 2500);
+    logInfo('SWEEP', `Đang quét từ ID ${lastScannedId + 1} đến ${currentMaxId}...`);
 
+    // 4. Nếu là lần đầu chạy (lastScannedId = 0), quét 2000 ID gần nhất
+    const startId = lastScannedId === 0 ? Math.max(1, currentMaxId - 2000) : lastScannedId + 1;
+    
+    // 5. Tạo các batch để quét (giống như trước)
     const chunkSize = 100;
     const batches = [];
-    for (let current = endId; current >= actualStartId; current -= chunkSize) {
+    for (let current = currentMaxId; current >= startId; current -= chunkSize) {
       const ids = [];
-      for (let i = 0; i < chunkSize && (current - i) >= actualStartId; i++) {
+      for (let i = 0; i < chunkSize && (current - i) >= startId; i++) {
         ids.push(current - i);
       }
       if (ids.length > 0) batches.push(ids);
     }
 
+    // 6. Thực hiện quét theo batch
     const results = await fetchBatchesWithConcurrency(client, channelPeer, batches, 4);
 
     const newApks = [];
@@ -154,7 +145,7 @@ async function getAllApksFromChannelOptimized() {
           const attr = msg.media.document.attributes?.find(a => a.fileName);
           const fileName = attr ? attr.fileName : '';
 
-          // KHÔNG LỌC DỊNH DẠNG - Chỉ cần có đuôi .apk là lấy hết
+          // Chỉ lấy file .apk
           if (fileName.toLowerCase().endsWith('.apk')) {
             newApks.push({
               message_id: msg.id,
@@ -167,33 +158,28 @@ async function getAllApksFromChannelOptimized() {
       }
     }
 
-    // Gộp dữ liệu mới vào dữ liệu cũ trong Redis (Loại bỏ trùng message_id)
+    // 7. Gộp danh sách mới vào danh sách cũ
+    // Dùng Map để tránh trùng ID nếu có vấn đề mạng
     const apkMap = new Map();
-    [...newApks, ...storedApks].forEach(item => {
-      if (!apkMap.has(item.message_id)) {
-        apkMap.set(item.message_id, item);
-      }
-    });
+    storedApks.forEach(item => apkMap.set(item.message_id, item));
+    newApks.forEach(item => apkMap.set(item.message_id, item));
 
     const mergedApks = Array.from(apkMap.values());
-    // Sắp xếp ID lớn hơn (mới nhất) lên đầu
     mergedApks.sort((a, b) => b.message_id - a.message_id);
 
-    // Cập nhật lại Redis
-    try {
-      await redis.set('apk_list', JSON.stringify(mergedApks));
-      await redis.set('apk_last_max_id', currentMaxId.toString());
-    } catch (e) {
-      logError('REDIS', 'Lỗi ghi dữ liệu vào Redis', e);
-    }
+    // 8. Lưu lại vào Redis
+    await redis.set('apk_list', JSON.stringify(mergedApks));
+    await redis.set('apk_last_max_id', currentMaxId.toString());
 
     liveSweepCache = { data: mergedApks, lastFetch: Date.now() };
-    logInfo('SWEEP', `Đã đồng bộ Redis thành công. Tổng APK: ${mergedApks.length}`);
+    logInfo('SWEEP', `Quét xong. Đã thêm ${newApks.length} file mới. Tổng: ${mergedApks.length}`);
+    
     return mergedApks;
 
   } catch (err) {
-    logError('SWEEP', 'Lỗi Live Sweep', err);
-    return storedApks;
+    logError('SWEEP', 'Lỗi quét tăng tiến', err);
+    // Nếu lỗi, trả về cache cũ để bot không bị chết
+    return JSON.parse(await redis.get('apk_list') || '[]');
   }
 }
 
