@@ -128,6 +128,7 @@ async function getAllApksFromChannel() {
   }
 
   logInfo('SWEEP', `Hoàn tất quét kênh. Tìm thấy ${allApks.length} file APK`);
+  // Mới nhất xếp lên đầu
   return allApks.sort((a, b) => b.message_id - a.message_id);
 }
 
@@ -258,7 +259,7 @@ async function sendApkViaCopy(ctx, item) {
   }
 }
 
-// Xử lý hiển thị kết quả (Hỏi chọn 1 hay Toàn bộ nếu từ 3 kết quả trở lên)
+// Xử lý hiển thị kết quả cho các LỆNH /any, /many, /regex
 async function handleSearchResults(ctx, matches) {
   if (matches.length === 0) {
     return ctx.reply('Không tìm thấy APK phù hợp trong kênh!');
@@ -303,7 +304,7 @@ bot.command('help', async (ctx) => {
 `Danh sách lệnh hỗ trợ:
 /ping - Kiểm tra tốc độ
 /apk - Đếm số lượng APK có sẵn trong kênh
-/any <từ khoá> - Tìm kiếm APK
+/any <từ khoá> - Tìm kiếm nhiều APK
 /many <từ khoá> - Tìm kiếm nhiều APK
 /regex <pattern> - Tìm kiếm bằng Regex
 /msg - Gửi tin nhắn tới Owner`;
@@ -466,7 +467,7 @@ bot.action(/^store_(.+)$/, async (ctx) => {
   }
 });
 
-// Xử lý Tin nhắn văn bản thông thường
+// Xử lý Tin nhắn văn bản thông thường (Tìm thường -> CHỈ RA 1 CÁI MỚI NHẤT)
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text.trim();
@@ -493,14 +494,19 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Tự động tìm kiếm file theo tin nhắn gõ vào
+  // Tự động tìm kiếm file theo tin nhắn gõ vào (CHỈ GỬI 1 CÁI MỚI NHẤT)
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
   const queryStr = text.replace(/\.apk$/i, '').trim();
   const matches = await searchApksInChannel(queryStr);
 
-  await handleSearchResults(ctx, matches);
+  if (matches.length > 0) {
+    // Chỉ gửi 1 bản duy nhất (là bản có message_id lớn nhất / mới nhất)
+    await sendApkViaCopy(ctx, matches[0]);
+  } else {
+    await ctx.reply('Không tìm thấy APK phù hợp trong kênh!');
+  }
 });
 
 // Vercel Serverless Export Handler
