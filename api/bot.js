@@ -16,7 +16,6 @@ const redis = new Redis(process.env.REDIS_URL, {
 });
 
 // Khởi tạo Cache RAM
-global.msgState = global.msgState || new Map();
 global.searchCache = global.searchCache || new Map();
 global.fileStoreCache = global.fileStoreCache || new Map();
 
@@ -157,7 +156,6 @@ async function getAllApksFromChannelOptimized() {
     newApks.forEach(item => apkMap.set(item.message_id, item));
 
     const mergedApks = Array.from(apkMap.values());
-    // Sắp xếp MỚI NHẤT -> CŨ NHẤT (message_id lớn đến nhỏ)
     mergedApks.sort((a, b) => Number(b.message_id) - Number(a.message_id));
 
     await redis.set('apk_list', JSON.stringify(mergedApks));
@@ -176,29 +174,40 @@ async function getAllApksFromChannelOptimized() {
   }
 }
 
-// Parse tên ứng dụng linh hoạt
+// Parse tên ứng dụng chuẩn xác và lọc bỏ ký tự dư thừa
 function parseStandardApkName(fileName) {
   if (!fileName) return null;
-  const clean = fileName.replace(/\.apk$/i, '');
+  const clean = fileName.replace(/\.apk$/i, '').trim();
 
-  /**
-   * Giải thích Regex: /^(.*?)_([^\(]+)(?:\((.*)\))?$/
-   * ^(.*?)_      : Lấy tên ứng dụng (không tham lam) cho đến dấu gạch dưới đầu tiên.
-   * ([^\(]+)     : Lấy phiên bản (mọi ký tự cho đến khi gặp dấu mở ngoặc).
-   * (?:\((.*)\))?: Nhóm tùy chọn cho phần Mods nằm trong ngoặc đơn.
-   */
-  const match = clean.match(/^(.*?)_([^\(]+)(?:\((.*)\))?$/);
+  let mods = '';
+  let nameAndVer = clean;
 
-  if (match) {
-    return {
-      appName: match[1].trim(),
-      version: match[2].trim(),
-      mods: match[3] ? match[3].trim() : 'Không rõ', // Nếu không có ngoặc thì ghi là Không rõ
-      isValid: true
-    };
+  // Lấy nội dung trong dấu ngoặc đơn ở cuối chuỗi làm Mods
+  const modsMatch = clean.match(/\((.*?)\)\s*$/);
+  if (modsMatch) {
+    mods = modsMatch[1].trim();
+    nameAndVer = clean.replace(/\s*\((.*?)\)\s*$/, '').trim();
   }
 
-  // Fallback nếu tên file không đúng định dạng Tên_PhiênBản
+  // Làm sạch các ký tự _ hoặc - dư thừa ở cuối
+  nameAndVer = nameAndVer.replace(/[_\-]+$/, '').trim();
+
+  // Tách tên ứng dụng và phiên bản qua dấu _ cuối cùng
+  const lastUnderscore = nameAndVer.lastIndexOf('_');
+  if (lastUnderscore !== -1) {
+    const appName = nameAndVer.substring(0, lastUnderscore).trim();
+    const version = nameAndVer.substring(lastUnderscore + 1).trim();
+
+    if (appName && version) {
+      return {
+        appName,
+        version,
+        mods: mods || 'Bản gốc',
+        isValid: true
+      };
+    }
+  }
+
   return {
     appName: clean,
     version: 'N/A',
@@ -207,7 +216,7 @@ function parseStandardApkName(fileName) {
   };
 }
 
-// Tìm kiếm thô trực tiếp theo tên file (Dành cho /any)
+// Tìm kiếm thô trực tiếp theo tên file (Dành cho /any và /regex)
 async function searchApksRaw(queryStr) {
   const allApks = await getAllApksFromChannelOptimized();
   if (allApks.length === 0) return [];
@@ -222,7 +231,7 @@ async function searchApksRaw(queryStr) {
   return results.sort((a, b) => Number(b.message_id) - Number(a.message_id));
 }
 
-// Tìm kiếm chuẩn hóa (Dành cho /many và Tin nhắn tìm kiếm thường)
+// Tìm kiếm chuẩn hóa (Chỉ lấy các file đúng định dạng chuẩn cho /many và tìm kiếm thường)
 async function searchApksStandard(queryStr) {
   const allApks = await getAllApksFromChannelOptimized();
   if (allApks.length === 0) return [];
@@ -231,9 +240,11 @@ async function searchApksStandard(queryStr) {
 
   const results = allApks.filter(item => {
     const data = parseStandardApkName(item.file_name);
-    const appName = (data?.appName || item.file_name).toLowerCase();
-    const fileName = (item.file_name || '').toLowerCase();
-    return appName.includes(cleanQuery) || fileName.includes(cleanQuery);
+    // Bắt buộc file phải đúng định dạng chuẩn (isValid = true) mới trả về
+    if (!data || !data.isValid) return false;
+
+    const appName = data.appName.toLowerCase();
+    return appName.includes(cleanQuery);
   });
 
   return results.sort((a, b) => Number(b.message_id) - Number(a.message_id));
@@ -331,7 +342,6 @@ bot.command(['delcache', 'clearcache'], async (ctx) => {
     liveSweepCache = { data: [], lastFetch: 0 };
     global.searchCache.clear();
     global.fileStoreCache.clear();
-    global.msgState.clear();
 
     await ctx.reply('🧹 Đã xóa sạch toàn bộ Cache trong Redis và RAM thành công!');
     logInfo('OWNER', `Owner (ID: ${ctx.from.id}) đã thực hiện xóa cache.`);
@@ -363,13 +373,12 @@ bot.command('apk', async (ctx) => {
 });
 
 bot.command('msg', async (ctx) => {
-  const prompt = await ctx.reply('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:', {
+  await ctx.reply('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:', {
     reply_markup: { force_reply: true }
   });
-  global.msgState.set(ctx.from.id, prompt.message_id);
 });
 
-// /any: Tìm trực tiếp tên file (không qua bộ lọc parse)
+// /any: Tìm trực tiếp tất cả tên file
 bot.command('any', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập từ khoá! (VD: /any zarchiver)');
@@ -381,7 +390,7 @@ bot.command('any', async (ctx) => {
   await handleSearchResults(ctx, matches);
 });
 
-// /many: Tìm theo thông tin chuẩn hóa
+// /many: Chỉ tìm các ứng dụng chuẩn hóa
 bot.command('many', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập từ khoá! (VD: /many zarchiver)');
@@ -393,7 +402,7 @@ bot.command('many', async (ctx) => {
   await handleSearchResults(ctx, matches);
 });
 
-// /regex: Tìm trực tiếp trên tên file thô (không lọc qua parse)
+// /regex: Tìm trực tiếp tên file thô
 bot.command('regex', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập mẫu Regex! (VD: /regex zarchiver.*)');
@@ -432,6 +441,7 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   global.searchCache.delete(searchId);
 });
 
+// Nhận file .apk gửi trực tiếp
 bot.on('document', async (ctx) => {
   const doc = ctx.message.document;
   if (!doc.file_name?.toLowerCase().endsWith('.apk')) return;
@@ -452,11 +462,19 @@ Mods: ${parsedData.mods}`
   }
 
   await ctx.reply('Bạn có muốn gửi file này vào dữ liệu lưu trữ không?', Markup.inlineKeyboard([
-    [Markup.button.callback('Có', `store_${storeKey}`)]
+    [
+      Markup.button.callback('🟢', `store_${storeKey}`),
+      Markup.button.callback('🔴', `cancel_${storeKey}`)
+    ]
   ]));
 });
 
+// Nút Có (Lưu kho - Chỉ dành cho Owner)
 bot.action(/^store_(.+)$/, async (ctx) => {
+  if (!OWNER_ID || String(ctx.from.id) !== String(OWNER_ID)) {
+    return ctx.answerCbQuery('⛔ Chỉ Owner mới có quyền lưu trữ file!', { show_alert: true });
+  }
+
   const storeKey = ctx.match[1];
   const fileId = global.fileStoreCache.get(storeKey);
 
@@ -467,7 +485,7 @@ bot.action(/^store_(.+)$/, async (ctx) => {
   if (STORAGE_CHANNEL) {
     try {
       await ctx.telegram.sendDocument(STORAGE_CHANNEL, fileId);
-      await ctx.editMessageText('Đã gửi file vào dữ liệu lưu trữ thành công!');
+      await ctx.editMessageText('✅ Đã gửi file vào dữ liệu lưu trữ thành công!');
       global.fileStoreCache.delete(storeKey);
     } catch (e) {
       await ctx.editMessageText('Lỗi: Bot chưa được phong quyền Admin trong Kênh lưu trữ!');
@@ -475,13 +493,24 @@ bot.action(/^store_(.+)$/, async (ctx) => {
   }
 });
 
-// Tin nhắn thường: Tìm theo tiêu chuẩn
+// Nút Hủy
+bot.action(/^cancel_(.+)$/, async (ctx) => {
+  const storeKey = ctx.match[1];
+  global.fileStoreCache.delete(storeKey);
+  await ctx.answerCbQuery('Đã hủy!');
+  try {
+    await ctx.editMessageText('❌ Đã hủy thao tác lưu trữ.');
+  } catch (e) {
+    // Bỏ qua nếu lỗi sửa tin nhắn
+  }
+});
+
+// Tin nhắn văn bản thông thường
 bot.on('text', async (ctx) => {
   const text = ctx.message.text.trim();
   const repliedMessage = ctx.message.reply_to_message;
 
-  // Kiểm tra xem người dùng có đang trả lời tin nhắn của bot không
-  // và nội dung tin nhắn đó có phải là tin nhắn yêu cầu nhập nội dung không
+  // Kiểm tra nếu đang trả lời tin nhắn yêu cầu gửi cho owner
   if (repliedMessage && repliedMessage.from?.id === ctx.botInfo.id && 
       repliedMessage.text?.includes('Hãy trả lời tin nhắn này')) {
     
@@ -494,15 +523,15 @@ bot.on('text', async (ctx) => {
     }
     
     try {
-      await ctx.deleteMessage(ctx.message.message_id); // Xóa tin nhắn "hello"
+      await ctx.deleteMessage(ctx.message.message_id);
       await ctx.telegram.editMessageText(ctx.chat.id, repliedMessage.message_id, null, 'Cảm ơn, tin nhắn đã được gửi!');
     } catch (e) {
       await ctx.reply('Cảm ơn, tin nhắn đã được gửi!');
     }
-    return; // Dừng lại ở đây, không chạy xuống phần tìm kiếm APK
+    return;
   }
 
-  // --- Logic tìm kiếm APK (chỉ chạy nếu không phải là reply tin nhắn /msg) ---
+  // Luồng tìm kiếm APK tiêu chuẩn
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
