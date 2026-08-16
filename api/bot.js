@@ -21,7 +21,7 @@ global.fileStoreCache = global.fileStoreCache || new Map();
 
 let clientInstance = null;
 let liveSweepCache = { data: [], lastFetch: 0 };
-const CACHE_TTL = 3 * 60 * 1000; // Cache RAM 3 phút
+const CACHE_TTL = 1 * 60 * 1000; // Cache RAM 1 phút
 
 function logInfo(tag, message, data = '') {
   console.log(`[${new Date().toISOString()}] [${tag}] ${message}`, data ? JSON.stringify(data) : '');
@@ -311,7 +311,7 @@ bot.command('help', async (ctx) => {
   let helpText = 
 `Danh sách lệnh hỗ trợ:
 /ping - Kiểm tra tốc độ
-/apk - Đếm số lượng APK có sẵn trong kênh
+/apk - Đếm số lượng APK có sẵn
 /any <từ khoá> - Tìm kiếm tên file trực tiếp
 /many <từ khoá> - Tìm kiếm APK (Chuẩn thông tin)
 /regex <pattern> - Tìm kiếm bằng Regex trực tiếp
