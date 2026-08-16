@@ -86,7 +86,6 @@ async function getMaxMessageId(client, channelPeer) {
 // Live Sweep tối ưu: Quét ngược song song dùng { ids }
 async function getAllApksFromChannelOptimized() {
   if (Date.now() - liveSweepCache.lastFetch < CACHE_TTL && liveSweepCache.data.length > 0) {
-    logInfo('SWEEP', 'Dùng dữ liệu từ Micro-Cache');
     return liveSweepCache.data;
   }
 
@@ -95,14 +94,11 @@ async function getAllApksFromChannelOptimized() {
   if (!client || !channelPeer) return [];
 
   try {
-    logInfo('SWEEP', 'Bắt đầu Live Sweep ngược từ ID mới nhất...');
-
-    // Dò Max ID bằng { ids } thay vì { limit: 1 } để tránh lỗi GetHistory
     const maxId = await getMaxMessageId(client, channelPeer);
-    const scanLimit = 500; // Số lượng ID muốn quét ngược về
+    const scanLimit = 2000; // Quét 2000 tin nhắn gần nhất
     const chunkSize = 100;
-
     const batches = [];
+
     for (let current = maxId; current > Math.max(1, maxId - scanLimit); current -= chunkSize) {
       const ids = [];
       for (let i = 0; i < chunkSize && (current - i) > 0; i++) {
@@ -111,7 +107,6 @@ async function getAllApksFromChannelOptimized() {
       batches.push(ids);
     }
 
-    // Quét song song bằng Promise.all với mảng { ids } (Bot Token hỗ trợ 100%)
     const results = await Promise.all(
       batches.map(ids => client.getMessages(channelPeer, { ids }).catch(() => []))
     );
@@ -124,14 +119,15 @@ async function getAllApksFromChannelOptimized() {
           const attr = msg.media.document.attributes?.find(a => a.fileName);
           const fileName = attr ? attr.fileName : '';
 
-          if (fileName.toLowerCase().endsWith('.apk')) {
-            const parsed = parseStandardApkName(fileName);
+          // Chỉ lấy file đúng định dạng
+          const parsed = parseStandardApkName(fileName);
+          if (parsed && parsed.isValid) {
             allApks.push({
               message_id: msg.id,
               file_name: fileName,
-              appName: parsed?.appName || fileName,
-              version: parsed?.version || 'N/A',
-              mods: parsed?.mods || 'N/A',
+              appName: parsed.appName,
+              version: parsed.version,
+              mods: parsed.mods,
               sender: msg.postAuthor || (msg.fromId?.userId ? `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>` : ''),
               chat_id: STORAGE_CHANNEL
             });
@@ -140,10 +136,11 @@ async function getAllApksFromChannelOptimized() {
       }
     }
 
+    // Sắp xếp: ID cao (mới nhất) lên đầu
     allApks.sort((a, b) => b.message_id - a.message_id);
 
     liveSweepCache = { data: allApks, lastFetch: Date.now() };
-    logInfo('SWEEP', `Hoàn tất Live Sweep song song. Tìm thấy ${allApks.length} file APK`);
+    logInfo('SWEEP', `Đã tìm thấy ${allApks.length} file APK hợp lệ.`);
     return allApks;
 
   } catch (err) {
@@ -151,7 +148,7 @@ async function getAllApksFromChannelOptimized() {
     return liveSweepCache.data || [];
   }
 }
-    
+
 // Tìm kiếm nhanh bằng String Include (Thuần JS)
 async function searchApksInChannel(queryStr) {
   const allApks = await getAllApksFromChannelOptimized();
@@ -171,32 +168,24 @@ function parseStandardApkName(fileName) {
   if (!fileName || !fileName.toLowerCase().endsWith('.apk')) return null;
   const clean = fileName.replace(/\.apk$/i, '');
 
-  // Dạng 1: Tên_PhiênBản(Mod)
-  const matchFull = clean.match(/^(.+)_(.+)\((.+)\)$/);
+  // Regex giải thích:
+  // ^(.*)      : Nhóm 1 - Tên ứng dụng (Bất kỳ ký tự nào, kể cả dấu _)
+  // _          : Dấu gạch dưới ngăn cách Tên và Phiên bản
+  // (.*)       : Nhóm 2 - Phiên bản
+  // \((.*)\)   : Nhóm 3 - Mod nằm trong ngoặc đơn
+  const matchFull = clean.match(/^(.*)_(.*)\((.*)\)$/);
+
   if (matchFull) {
     return {
       appName: matchFull[1].trim(),
       version: matchFull[2].trim(),
-      mods: matchFull[3].trim()
+      mods: matchFull[3].trim(),
+      isValid: true
     };
   }
 
-  // Dạng 2: Tên_PhiênBản
-  const matchVer = clean.match(/^(.+)_(.+)$/);
-  if (matchVer) {
-    return {
-      appName: matchVer[1].trim(),
-      version: matchVer[2].trim(),
-      mods: 'N/A'
-    };
-  }
-
-  // Dạng 3: Chỉ có tên
-  return {
-    appName: clean.trim(),
-    version: 'N/A',
-    mods: 'N/A'
-  };
+  // Nếu không đúng định dạng, trả về false để loại bỏ
+  return { isValid: false };
 }
 
 // Định dạng Tag người gửi
