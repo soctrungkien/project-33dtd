@@ -477,11 +477,14 @@ bot.action(/^store_(.+)$/, async (ctx) => {
 
 // Tin nhắn thường: Tìm theo tiêu chuẩn
 bot.on('text', async (ctx) => {
-  const userId = ctx.from.id;
   const text = ctx.message.text.trim();
-  const replyToId = ctx.message.reply_to_message?.message_id;
+  const repliedMessage = ctx.message.reply_to_message;
 
-  if (replyToId && global.msgState.get(userId) === replyToId) {
+  // Kiểm tra xem người dùng có đang trả lời tin nhắn của bot không
+  // và nội dung tin nhắn đó có phải là tin nhắn yêu cầu nhập nội dung không
+  if (repliedMessage && repliedMessage.from?.id === ctx.botInfo.id && 
+      repliedMessage.text?.includes('Hãy trả lời tin nhắn này')) {
+    
     if (OWNER_ID) {
       await ctx.telegram.sendMessage(
         OWNER_ID, 
@@ -489,16 +492,17 @@ bot.on('text', async (ctx) => {
         { parse_mode: 'HTML' }
       );
     }
+    
     try {
-      await ctx.deleteMessage(ctx.message.message_id);
-      await ctx.telegram.editMessageText(ctx.chat.id, replyToId, null, 'Cảm ơn');
+      await ctx.deleteMessage(ctx.message.message_id); // Xóa tin nhắn "hello"
+      await ctx.telegram.editMessageText(ctx.chat.id, repliedMessage.message_id, null, 'Cảm ơn, tin nhắn đã được gửi!');
     } catch (e) {
-      await ctx.reply('Cảm ơn');
+      await ctx.reply('Cảm ơn, tin nhắn đã được gửi!');
     }
-    global.msgState.delete(userId);
-    return;
+    return; // Dừng lại ở đây, không chạy xuống phần tìm kiếm APK
   }
 
+  // --- Logic tìm kiếm APK (chỉ chạy nếu không phải là reply tin nhắn /msg) ---
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
