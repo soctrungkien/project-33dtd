@@ -1,6 +1,7 @@
 const { Telegraf, Markup } = require('telegraf');
 const { TelegramClient, Api } = require('telegram');
 const { StringSession } = require('telegram/sessions');
+const Fuse = require('fuse.js');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const STORAGE_CHANNEL = process.env.STORAGE_CHANNEL_ID;
@@ -8,10 +9,14 @@ const OWNER_ID = process.env.OWNER_ID;
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || '';
 
+// Khởi tạo các Cache trong RAM
 global.msgState = global.msgState || new Map();
 global.searchCache = global.searchCache || new Map();
+global.fileStoreCache = global.fileStoreCache || new Map(); // Khắc phục BUTTON_DATA_INVALID
 
 let clientInstance = null;
+let liveSweepCache = { data: [], lastFetch: 0 };
+const CACHE_TTL = 5 * 60 * 1000; // Cache trong 5 phút
 
 // Ghi Log Vercel
 function logInfo(tag, message, data = '') {
@@ -61,14 +66,9 @@ async function getGramClient() {
   }
 }
 
-const Fuse = require('fuse.js');
-
-// Micro-cache lưu kết quả Live Sweep trong RAM
-let liveSweepCache = { data: [], lastFetch: 0 };
-const CACHE_TTL = 5 * 60 * 1000; // Cache trong 5 phút
-
+// Live Sweep tối ưu: Quét ngược song song từ ID mới nhất
 async function getAllApksFromChannelOptimized() {
-  // Nếu cache còn hạn, dùng lại ngay lập tức (mất 0ms)
+  // Nếu Micro-Cache còn hạn, trả về luôn (0ms)
   if (Date.now() - liveSweepCache.lastFetch < CACHE_TTL && liveSweepCache.data.length > 0) {
     logInfo('SWEEP', 'Dùng dữ liệu từ Micro-Cache');
     return liveSweepCache.data;
@@ -80,16 +80,14 @@ async function getAllApksFromChannelOptimized() {
 
   try {
     logInfo('SWEEP', 'Bắt đầu Live Sweep ngược từ ID mới nhất...');
-    
-    // 1. Lấy tin nhắn mới nhất để biết ID cực đại (Max ID)
+
     const latestMsgs = await client.getMessages(channelPeer, { limit: 1 });
     if (!latestMsgs || latestMsgs.length === 0) return [];
-    
+
     const maxId = latestMsgs[0].id;
-    const scanLimit = 500; // Chỉ quét 500 ID mới nhất để đảm bảo dưới 3s
+    const scanLimit = 500; // Giới hạn 500 ID mới nhất để đảm bảo dưới 3s
     const chunkSize = 100;
-    
-    // 2. Tạo danh sách các đợt quét (Batches)
+
     const batches = [];
     for (let current = maxId; current > Math.max(1, maxId - scanLimit); current -= chunkSize) {
       const ids = [];
@@ -99,12 +97,11 @@ async function getAllApksFromChannelOptimized() {
       batches.push(ids);
     }
 
-    // 3. Chạy song song tất cả đợt quét bằng Promise.all
+    // Quét song song bằng Promise.all
     const results = await Promise.all(
       batches.map(ids => client.getMessages(channelPeer, { ids }).catch(() => []))
     );
 
-    // 4. Bóc tách file APK
     const allApks = [];
     for (const msgs of results) {
       if (!Array.isArray(msgs)) continue;
@@ -129,7 +126,9 @@ async function getAllApksFromChannelOptimized() {
       }
     }
 
-    // Cập nhật Micro-Cache
+    // Sắp xếp ID mới nhất lên đầu
+    allApks.sort((a, b) => b.message_id - a.message_id);
+
     liveSweepCache = { data: allApks, lastFetch: Date.now() };
     logInfo('SWEEP', `Hoàn tất Live Sweep song song. Tìm thấy ${allApks.length} file APK`);
     return allApks;
@@ -140,7 +139,7 @@ async function getAllApksFromChannelOptimized() {
   }
 }
 
-// Tìm kiếm cực nhanh bằng Fuse.js sau khi Live Sweep xong
+// Tìm kiếm nhanh bằng Fuse.js
 async function searchApksInChannel(queryStr) {
   const allApks = await getAllApksFromChannelOptimized();
   if (allApks.length === 0) return [];
@@ -149,31 +148,11 @@ async function searchApksInChannel(queryStr) {
 
   const fuse = new Fuse(allApks, {
     keys: ['appName', 'file_name'],
-    threshold: 0.4, // Độ nhạy fuzzy search
+    threshold: 0.4,
     ignoreLocation: true
   });
 
   return fuse.search(cleanQuery).map(result => result.item);
-        }
-          
-
-// Khoảng cách Levenshtein (Fuzzy Search)
-function levenshteinDistance(a, b) {
-  const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
-  for (let i = 0; i <= a.length; i++) matrix[0][i] = i;
-  for (let j = 0; j <= b.length; j++) matrix[j][0] = j;
-
-  for (let j = 1; j <= b.length; j++) {
-    for (let i = 1; i <= a.length; i++) {
-      const indicator = a[i - 1] === b[j - 1] ? 0 : 1;
-      matrix[j][i] = Math.min(
-        matrix[j][i - 1] + 1,
-        matrix[j - 1][i] + 1,
-        matrix[j - 1][i - 1] + indicator
-      );
-    }
-  }
-  return matrix[b.length][a.length];
 }
 
 // Parse thông tin Tên, Phiên bản, Mods từ tên file
@@ -239,19 +218,17 @@ async function sendApkViaCopy(ctx, item) {
   }
 }
 
-// Xử lý hiển thị kết quả cho các LỆNH /any, /many, /regex
+// Xử lý hiển thị kết quả tìm kiếm
 async function handleSearchResults(ctx, matches) {
   if (matches.length === 0) {
     return ctx.reply('Không tìm thấy APK!');
   }
 
   if (matches.length < 3) {
-    // 1 hoặc 2 kết quả -> Tự động gửi thẳng
     for (const item of matches) {
       await sendApkViaCopy(ctx, item);
     }
   } else {
-    // Từ 3 kết quả trở lên -> Hỏi chọn "Chỉ 1" hoặc "Toàn bộ"
     const searchId = Date.now().toString();
     global.searchCache.set(searchId, matches);
 
@@ -299,13 +276,13 @@ bot.command('ping', async (ctx) => {
   await ctx.reply(`🏓 Pong: ${latency}ms`);
 });
 
-// Lệnh /apk (Đếm số lượng APK trong kênh)
+// Lệnh /apk
 bot.command('apk', async (ctx) => {
   logInfo('BOT', `Lệnh /apk từ ${ctx.from.id}`);
   const statusMsg = await ctx.reply('Đang quét và đếm số lượng APK...');
   await ctx.sendChatAction('typing');
 
-  const allApks = await getAllApksFromChannel();
+  const allApks = await getAllApksFromChannelOptimized();
 
   await ctx.telegram.editMessageText(
     ctx.chat.id, 
@@ -324,7 +301,7 @@ bot.command('msg', async (ctx) => {
   global.msgState.set(ctx.from.id, prompt.message_id);
 });
 
-// Lệnh /any <từ khoá>
+// Lệnh /any
 bot.command('any', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   logInfo('BOT', `Lệnh /any từ ${ctx.from.id} với query: "${args}"`);
@@ -334,7 +311,6 @@ bot.command('any', async (ctx) => {
   }
 
   const queryStr = args.replace(/\.apk$/i, '').trim();
-
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
@@ -342,7 +318,7 @@ bot.command('any', async (ctx) => {
   await handleSearchResults(ctx, matches);
 });
 
-// Lệnh /many <từ khoá>
+// Lệnh /many
 bot.command('many', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   logInfo('BOT', `Lệnh /many từ ${ctx.from.id} với query: "${args}"`);
@@ -352,7 +328,6 @@ bot.command('many', async (ctx) => {
   }
 
   const queryStr = args.replace(/\.apk$/i, '').trim();
-
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
@@ -360,7 +335,7 @@ bot.command('many', async (ctx) => {
   await handleSearchResults(ctx, matches);
 });
 
-// Lệnh /regex <pattern>
+// Lệnh /regex
 bot.command('regex', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   logInfo('BOT', `Lệnh /regex từ ${ctx.from.id} với query: "${args}"`);
@@ -370,11 +345,10 @@ bot.command('regex', async (ctx) => {
   }
 
   const patternStr = args.replace(/\.apk$/i, '').trim();
-
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
-  const allApks = await getAllApksFromChannel();
+  const allApks = await getAllApksFromChannelOptimized();
   let matched = [];
 
   try {
@@ -392,7 +366,7 @@ bot.command('regex', async (ctx) => {
   await handleSearchResults(ctx, matched);
 });
 
-// Callback nút bấm Inline ("Chỉ 1" hoặc "Toàn bộ")
+// Callback nút bấm Inline
 bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   const mode = ctx.match[1];
   const searchId = ctx.match[2];
@@ -416,6 +390,11 @@ bot.on('document', async (ctx) => {
   if (!doc.file_name?.toLowerCase().endsWith('.apk')) return;
 
   logInfo('BOT', `Nhận file APK từ Chat riêng: ${doc.file_name}`);
+
+  // SỬA LỖI BUTTON_DATA_INVALID: Tạo key ngắn thay vì truyền file_id trực tiếp
+  const storeKey = Math.random().toString(36).substring(2, 8);
+  global.fileStoreCache.set(storeKey, doc.file_id);
+
   const parsedData = parseStandardApkName(doc.file_name);
 
   if (parsedData) {
@@ -427,19 +406,26 @@ Mods: ${parsedData.mods}`
   }
 
   await ctx.reply('Bạn có muốn gửi file này vào dữ liệu lưu trữ không?', Markup.inlineKeyboard([
-    [Markup.button.callback('Có', `store_${doc.file_id}`)]
+    [Markup.button.callback('Có', `store_${storeKey}`)]
   ]));
 });
 
 // Nút lưu file vào kênh lưu trữ
 bot.action(/^store_(.+)$/, async (ctx) => {
-  const fileId = ctx.match[1];
-  await ctx.answerCbQuery('Đã gửi!');
+  const storeKey = ctx.match[1];
+  const fileId = global.fileStoreCache.get(storeKey);
+
+  if (!fileId) {
+    return ctx.answerCbQuery('Yêu cầu đã hết hạn, vui lòng gửi lại file!');
+  }
+
+  await ctx.answerCbQuery('Đang gửi...');
 
   if (STORAGE_CHANNEL) {
     try {
       await ctx.telegram.sendDocument(STORAGE_CHANNEL, fileId);
       await ctx.editMessageText('Đã gửi file vào dữ liệu lưu trữ thành công!');
+      global.fileStoreCache.delete(storeKey);
     } catch (e) {
       logError('BOT', 'Lỗi gửi file vào STORAGE_CHANNEL', e);
       await ctx.editMessageText('Lỗi: Bot chưa được phong quyền Admin trong Kênh lưu trữ!');
@@ -447,7 +433,7 @@ bot.action(/^store_(.+)$/, async (ctx) => {
   }
 });
 
-// Xử lý Tin nhắn văn bản thông thường (Tìm thường -> CHỈ RA 1 CÁI MỚI NHẤT)
+// Xử lý Tin nhắn văn bản thông thường
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text.trim();
@@ -474,7 +460,7 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Tự động tìm kiếm file theo tin nhắn gõ vào (CHỈ GỬI 1 CÁI MỚI NHẤT)
+  // Tự động tìm kiếm file (CHỈ GỬI 1 CÁI MỚI NHẤT)
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
@@ -482,7 +468,6 @@ bot.on('text', async (ctx) => {
   const matches = await searchApksInChannel(queryStr);
 
   if (matches.length > 0) {
-    // Chỉ gửi 1 bản duy nhất (là bản có message_id lớn nhất / mới nhất)
     await sendApkViaCopy(ctx, matches[0]);
   } else {
     await ctx.reply('Không tìm thấy APK!');
