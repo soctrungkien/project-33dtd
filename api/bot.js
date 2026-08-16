@@ -61,76 +61,101 @@ async function getGramClient() {
   }
 }
 
-// Quét toàn bộ kênh lấy danh sách file APK
-async function getAllApksFromChannel() {
-  const client = await getGramClient();
-  const channelPeer = getParsedChannelPeer();
+const Fuse = require('fuse.js');
 
-  if (!client || !channelPeer) {
-    logError('SWEEP', 'Client hoặc STORAGE_CHANNEL_ID không hợp lệ');
-    return [];
+// Micro-cache lưu kết quả Live Sweep trong RAM
+let liveSweepCache = { data: [], lastFetch: 0 };
+const CACHE_TTL = 5 * 60 * 1000; // Cache trong 5 phút
+
+async function getAllApksFromChannelOptimized() {
+  // Nếu cache còn hạn, dùng lại ngay lập tức (mất 0ms)
+  if (Date.now() - liveSweepCache.lastFetch < CACHE_TTL && liveSweepCache.data.length > 0) {
+    logInfo('SWEEP', 'Dùng dữ liệu từ Micro-Cache');
+    return liveSweepCache.data;
   }
 
-  const allApks = [];
-  const chunkSize = 100;
-  let currentStartId = 1;
-  let emptyBatchCount = 0;
-  const maxSafetyLimit = 2000;
+  const client = await getGramClient();
+  const channelPeer = getParsedChannelPeer();
+  if (!client || !channelPeer) return [];
 
-  logInfo('SWEEP', 'Bắt đầu quét kênh qua danh sách ID...');
+  try {
+    logInfo('SWEEP', 'Bắt đầu Live Sweep ngược từ ID mới nhất...');
+    
+    // 1. Lấy tin nhắn mới nhất để biết ID cực đại (Max ID)
+    const latestMsgs = await client.getMessages(channelPeer, { limit: 1 });
+    if (!latestMsgs || latestMsgs.length === 0) return [];
+    
+    const maxId = latestMsgs[0].id;
+    const scanLimit = 500; // Chỉ quét 500 ID mới nhất để đảm bảo dưới 3s
+    const chunkSize = 100;
+    
+    // 2. Tạo danh sách các đợt quét (Batches)
+    const batches = [];
+    for (let current = maxId; current > Math.max(1, maxId - scanLimit); current -= chunkSize) {
+      const ids = [];
+      for (let i = 0; i < chunkSize && (current - i) > 0; i++) {
+        ids.push(current - i);
+      }
+      batches.push(ids);
+    }
 
-  while (emptyBatchCount < 3 && currentStartId < maxSafetyLimit) {
-    const ids = Array.from({ length: chunkSize }, (_, i) => currentStartId + i);
+    // 3. Chạy song song tất cả đợt quét bằng Promise.all
+    const results = await Promise.all(
+      batches.map(ids => client.getMessages(channelPeer, { ids }).catch(() => []))
+    );
 
-    try {
-      const msgs = await client.getMessages(channelPeer, { ids });
-      let foundMessagesInBatch = 0;
+    // 4. Bóc tách file APK
+    const allApks = [];
+    for (const msgs of results) {
+      if (!Array.isArray(msgs)) continue;
+      for (const msg of msgs) {
+        if (msg && msg.media && msg.media.document) {
+          const attr = msg.media.document.attributes?.find(a => a.fileName);
+          const fileName = attr ? attr.fileName : '';
 
-      if (Array.isArray(msgs)) {
-        for (const msg of msgs) {
-          if (msg) {
-            foundMessagesInBatch++;
-            if (msg.media && msg.media.document) {
-              const attr = msg.media.document.attributes?.find(a => a.fileName);
-              const fileName = attr ? attr.fileName : '';
-
-              if (fileName.toLowerCase().endsWith('.apk')) {
-                let senderTag = '';
-                if (msg.postAuthor) {
-                  senderTag = msg.postAuthor;
-                } else if (msg.fromId && msg.fromId.userId) {
-                  senderTag = `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>`;
-                }
-
-                allApks.push({
-                  message_id: msg.id,
-                  file_name: fileName,
-                  sender: senderTag,
-                  chat_id: STORAGE_CHANNEL
-                });
-              }
-            }
+          if (fileName.toLowerCase().endsWith('.apk')) {
+            const parsed = parseStandardApkName(fileName);
+            allApks.push({
+              message_id: msg.id,
+              file_name: fileName,
+              appName: parsed?.appName || fileName,
+              version: parsed?.version || 'N/A',
+              mods: parsed?.mods || 'N/A',
+              sender: msg.postAuthor || (msg.fromId?.userId ? `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>` : ''),
+              chat_id: STORAGE_CHANNEL
+            });
           }
         }
       }
-
-      if (foundMessagesInBatch === 0) {
-        emptyBatchCount++;
-      } else {
-        emptyBatchCount = 0;
-      }
-
-      currentStartId += chunkSize;
-    } catch (err) {
-      logError('SWEEP', `Lỗi đọc đợt ID từ ${currentStartId}`, err);
-      break;
     }
-  }
 
-  logInfo('SWEEP', `Hoàn tất quét kênh. Tìm thấy ${allApks.length} file APK`);
-  // Mới nhất xếp lên đầu
-  return allApks.sort((a, b) => b.message_id - a.message_id);
+    // Cập nhật Micro-Cache
+    liveSweepCache = { data: allApks, lastFetch: Date.now() };
+    logInfo('SWEEP', `Hoàn tất Live Sweep song song. Tìm thấy ${allApks.length} file APK`);
+    return allApks;
+
+  } catch (err) {
+    logError('SWEEP', 'Lỗi Live Sweep', err);
+    return liveSweepCache.data || [];
+  }
 }
+
+// Tìm kiếm cực nhanh bằng Fuse.js sau khi Live Sweep xong
+async function searchApksInChannel(queryStr) {
+  const allApks = await getAllApksFromChannelOptimized();
+  if (allApks.length === 0) return [];
+
+  const cleanQuery = queryStr.toLowerCase().replace(/\.apk$/i, '').trim();
+
+  const fuse = new Fuse(allApks, {
+    keys: ['appName', 'file_name'],
+    threshold: 0.4, // Độ nhạy fuzzy search
+    ignoreLocation: true
+  });
+
+  return fuse.search(cleanQuery).map(result => result.item);
+        }
+          
 
 // Khoảng cách Levenshtein (Fuzzy Search)
 function levenshteinDistance(a, b) {
@@ -182,51 +207,6 @@ function parseStandardApkName(fileName) {
     version: 'N/A',
     mods: 'N/A'
   };
-}
-
-// Lọc APK chỉ dựa vào TÊN ỨNG DỤNG (Bỏ qua phiên bản và mod)
-async function searchApksInChannel(queryStr) {
-  const allApks = await getAllApksFromChannel();
-  if (allApks.length === 0) return [];
-
-  const cleanQuery = queryStr.toLowerCase().replace(/\.apk$/i, '').trim();
-  logInfo('SEARCH', `Lọc APK theo tên ứng dụng: "${cleanQuery}" trong tổng ${allApks.length} file`);
-
-  // 1. Tìm chính xác hoặc chứa trong TÊN ỨNG DỤNG
-  let matches = allApks.filter(item => {
-    const data = parseStandardApkName(item.file_name);
-    const appName = data ? data.appName.toLowerCase() : item.file_name.toLowerCase();
-    return appName.includes(cleanQuery);
-  });
-
-  // 2. Nếu không thấy -> Fuzzy Search trên TÊN ỨNG DỤNG
-  if (matches.length === 0) {
-    logInfo('SEARCH', 'Không thấy khớp chính xác, chuyển sang Fuzzy Search...');
-    const scored = allApks.map(item => {
-      const data = parseStandardApkName(item.file_name);
-      const cleanAppName = data ? data.appName.toLowerCase() : item.file_name.toLowerCase();
-
-      const dist = levenshteinDistance(cleanQuery, cleanAppName);
-      const words = cleanAppName.split(/[\s_\-\(\)\.]+/);
-      let minWordDist = dist;
-      for (const w of words) {
-        if (w) {
-          const d = levenshteinDistance(cleanQuery, w);
-          if (d < minWordDist) minWordDist = d;
-        }
-      }
-      return { item, score: Math.min(dist, minWordDist) };
-    });
-
-    const maxAllowed = Math.max(2, Math.floor(cleanQuery.length / 3));
-    matches = scored
-      .filter(s => s.score <= maxAllowed)
-      .sort((a, b) => a.score - b.score)
-      .map(s => s.item);
-  }
-
-  logInfo('SEARCH', `Số kết quả lọc được: ${matches.length}`);
-  return matches;
 }
 
 // Định dạng Tag người gửi
