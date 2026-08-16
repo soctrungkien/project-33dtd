@@ -15,9 +15,6 @@ if (!global.redisClient) {
 }
 const redis = global.redisClient;
 
-global.msgState = global.msgState || new Map();
-global.searchCache = global.searchCache || new Map();
-
 // Bắt toàn bộ lỗi không xác định
 bot.catch((err, ctx) => {
   console.error(`[TELEGRAF_ERROR] Lỗi xử lý update ${ctx.update?.update_id}:`, err);
@@ -48,9 +45,8 @@ bot.on('channel_post', async (ctx) => {
   };
 
   try {
-    // Đẩy APK mới vào đầu danh sách 'apk_list' trong Redis
     await redis.lpush('apk_list', JSON.stringify(newApk));
-    console.log('Đã lưu APK vào Redis:', fileName);
+    console.log('Đã lưu APK mới vào Redis:', fileName);
   } catch (err) {
     logError('REDIS', 'Lỗi khi lưu APK vào Redis', err);
   }
@@ -61,7 +57,15 @@ async function getRecentApksFromChannel() {
   try {
     const rawList = await redis.lrange('apk_list', 0, -1);
     if (!rawList || rawList.length === 0) return [];
-    return rawList.map(item => (typeof item === 'string' ? JSON.parse(item) : item));
+    return rawList
+      .map(item => {
+        try {
+          return typeof item === 'string' ? JSON.parse(item) : item;
+        } catch (e) {
+          return null;
+        }
+      })
+      .filter(Boolean);
   } catch (err) {
     logError('REDIS', 'Lỗi khi đọc dữ liệu từ Redis', err);
     return [];
@@ -193,7 +197,8 @@ async function handleSearchResults(ctx, matches) {
     }
   } else {
     const searchId = Date.now().toString();
-    global.searchCache.set(searchId, matches);
+    // Lưu tạm kết quả tìm kiếm vào Redis (tự hủy sau 15 phút) để Serverless nhận diện được
+    await redis.set(`search:${searchId}`, JSON.stringify(matches), 'EX', 900);
 
     await ctx.reply(`Tìm thấy ${matches.length} kết quả. Bạn muốn hiển thị như thế nào?`, Markup.inlineKeyboard([
       [
@@ -233,7 +238,6 @@ bot.command('ping', async (ctx) => {
   await ctx.reply(`🏓 Pong: ${latency}ms`);
 });
 
-// Lệnh /apk kiểm tra trực tiếp số lượng APK trong Redis
 bot.command('apk', async (ctx) => {
   try {
     const count = await redis.llen('apk_list');
@@ -248,7 +252,8 @@ bot.command('msg', async (ctx) => {
   const prompt = await ctx.reply('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:', {
     reply_markup: { force_reply: true }
   });
-  global.msgState.set(ctx.from.id, prompt.message_id);
+  // Lưu trạng thái tin nhắn vào Redis (tự hủy sau 10 phút)
+  await redis.set(`msgState:${ctx.from.id}`, prompt.message_id, 'EX', 600);
 });
 
 bot.command('any', async (ctx) => {
@@ -303,18 +308,20 @@ bot.command('regex', async (ctx) => {
 bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   const mode = ctx.match[1];
   const searchId = ctx.match[2];
-  const results = global.searchCache.get(searchId);
 
   await ctx.answerCbQuery();
-  if (!results) return ctx.reply('Kết quả đã hết hạn!');
 
+  const rawResults = await redis.get(`search:${searchId}`);
+  if (!rawResults) return ctx.reply('Kết quả đã hết hạn!');
+
+  const results = JSON.parse(rawResults);
   await ctx.sendChatAction('upload_document');
   const itemsToSend = mode === '1' ? [results[0]] : results;
 
   for (const item of itemsToSend) {
     await sendApkViaCopy(ctx, item);
   }
-  global.searchCache.delete(searchId);
+  await redis.del(`search:${searchId}`);
 });
 
 bot.on('document', async (ctx) => {
@@ -355,7 +362,9 @@ bot.on('text', async (ctx) => {
   const text = ctx.message.text.trim();
   const replyToId = ctx.message.reply_to_message?.message_id;
 
-  if (replyToId && global.msgState.get(userId) === replyToId) {
+  const savedMsgId = await redis.get(`msgState:${userId}`);
+
+  if (replyToId && savedMsgId && Number(savedMsgId) === replyToId) {
     if (OWNER_ID) {
       await ctx.telegram.sendMessage(
         OWNER_ID, 
@@ -369,7 +378,7 @@ bot.on('text', async (ctx) => {
     } catch (e) {
       await ctx.reply('Cảm ơn');
     }
-    global.msgState.delete(userId);
+    await redis.del(`msgState:${userId}`);
     return;
   }
 
