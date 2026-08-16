@@ -65,9 +65,26 @@ async function getGramClient() {
   }
 }
 
-// Live Sweep tối ưu: Quét ngược song song từ ID mới nhất
+// Dò ID lớn nhất trong kênh mà không bị dính BOT_METHOD_INVALID
+async function getMaxMessageId(client, channelPeer) {
+  // Gửi mảng ID mẫu để kiểm tra (chỉ tốn 1 request)
+  const probeIds = [10, 50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000];
+  try {
+    const msgs = await client.getMessages(channelPeer, { ids: probeIds });
+    const validMsgs = (Array.isArray(msgs) ? msgs : []).filter(m => m && m.id);
+    
+    if (validMsgs.length === 0) return 500; // Mặc định nếu kênh mới tạo
+    
+    // Lấy ID lớn nhất tìm được + 100 để đảm bảo không bỏ sót
+    const highestFound = Math.max(...validMsgs.map(m => m.id));
+    return highestFound + 100;
+  } catch (e) {
+    return 2000; // Trả về fallback ID nếu có lỗi
+  }
+}
+
+// Live Sweep tối ưu: Quét ngược song song dùng { ids }
 async function getAllApksFromChannelOptimized() {
-  // Nếu Micro-Cache còn hạn, trả về luôn (0ms)
   if (Date.now() - liveSweepCache.lastFetch < CACHE_TTL && liveSweepCache.data.length > 0) {
     logInfo('SWEEP', 'Dùng dữ liệu từ Micro-Cache');
     return liveSweepCache.data;
@@ -80,11 +97,9 @@ async function getAllApksFromChannelOptimized() {
   try {
     logInfo('SWEEP', 'Bắt đầu Live Sweep ngược từ ID mới nhất...');
 
-    const latestMsgs = await client.getMessages(channelPeer, { limit: 1 });
-    if (!latestMsgs || latestMsgs.length === 0) return [];
-
-    const maxId = latestMsgs[0].id;
-    const scanLimit = 500; // Giới hạn 500 ID mới nhất để đảm bảo dưới 3s
+    // Dò Max ID bằng { ids } thay vì { limit: 1 } để tránh lỗi GetHistory
+    const maxId = await getMaxMessageId(client, channelPeer);
+    const scanLimit = 500; // Số lượng ID muốn quét ngược về
     const chunkSize = 100;
 
     const batches = [];
@@ -96,7 +111,7 @@ async function getAllApksFromChannelOptimized() {
       batches.push(ids);
     }
 
-    // Quét song song bằng Promise.all
+    // Quét song song bằng Promise.all với mảng { ids } (Bot Token hỗ trợ 100%)
     const results = await Promise.all(
       batches.map(ids => client.getMessages(channelPeer, { ids }).catch(() => []))
     );
@@ -125,7 +140,6 @@ async function getAllApksFromChannelOptimized() {
       }
     }
 
-    // Sắp xếp ID mới nhất lên đầu
     allApks.sort((a, b) => b.message_id - a.message_id);
 
     liveSweepCache = { data: allApks, lastFetch: Date.now() };
@@ -137,7 +151,7 @@ async function getAllApksFromChannelOptimized() {
     return liveSweepCache.data || [];
   }
 }
-
+    
 // Tìm kiếm nhanh bằng String Include (Thuần JS)
 async function searchApksInChannel(queryStr) {
   const allApks = await getAllApksFromChannelOptimized();
