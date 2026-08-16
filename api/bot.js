@@ -13,7 +13,7 @@ global.searchCache = global.searchCache || new Map();
 
 let clientInstance = null;
 
-// Hàm hỗ trợ ghi Log Vercel chi tiết
+// Ghi Log Vercel chi tiết
 function logInfo(tag, message, data = '') {
   console.log(`[${new Date().toISOString()}] [${tag}] ${message}`, data ? JSON.stringify(data) : '');
 }
@@ -22,7 +22,7 @@ function logError(tag, message, error) {
   console.error(`[${new Date().toISOString()}] [ERROR:${tag}] ${message}`, error);
 }
 
-// Xử lý ID Kênh phù hợp với GramJS (Cần chuyển sang BigInt nếu là số)
+// Xử lý ID Kênh cho GramJS
 function getParsedChannelPeer() {
   if (!STORAGE_CHANNEL) return null;
   try {
@@ -36,32 +36,107 @@ function getParsedChannelPeer() {
   }
 }
 
-// Khởi tạo GramJS Client
+// Khởi tạo GramJS bằng BOT_TOKEN
 async function getGramClient() {
   if (clientInstance && clientInstance.connected) {
     return clientInstance;
   }
   if (!API_ID || !API_HASH || !process.env.BOT_TOKEN) {
-    logError('GRAMJS', 'Thiếu cấu hình API_ID, API_HASH hoặc BOT_TOKEN');
+    logError('GRAMJS', 'Thiếu API_ID, API_HASH hoặc BOT_TOKEN');
     return null;
   }
 
   try {
-    logInfo('GRAMJS', 'Đang khởi tạo Telegram Client...');
+    logInfo('GRAMJS', 'Đang kết nối GramJS Bot Client...');
     clientInstance = new TelegramClient(new StringSession(''), API_ID, API_HASH, {
       connectionRetries: 3,
       timeout: 10000,
     });
     await clientInstance.start({ botAuthToken: process.env.BOT_TOKEN });
-    logInfo('GRAMJS', 'Khởi tạo GramJS thành công!');
+    logInfo('GRAMJS', 'GramJS Bot Client kết nối thành công!');
     return clientInstance;
   } catch (err) {
-    logError('GRAMJS', 'Không thể kết nối GramJS', err);
+    logError('GRAMJS', 'Lỗi kết nối GramJS', err);
     return null;
   }
 }
 
-// Tính khoảng cách Levenshtein (Fuzzy search)
+// Quét toàn bộ kênh bằng mảng Message ID (ids)
+async function getAllApksFromChannel() {
+  const client = await getGramClient();
+  const channelPeer = getParsedChannelPeer();
+
+  if (!client || !channelPeer) {
+    logError('SWEEP', 'Client hoặc STORAGE_CHANNEL_ID không hợp lệ');
+    return [];
+  }
+
+  const allApks = [];
+  const chunkSize = 100; // Telegram hỗ trợ tối đa 100 IDs mỗi request
+  let currentStartId = 1;
+  let emptyBatchCount = 0;
+  const maxSafetyLimit = 50000; // Giới hạn an toàn tránh loop quá sâu
+
+  logInfo('SWEEP', 'Bắt đầu quét kênh qua danh sách ID...');
+
+  while (emptyBatchCount < 3 && currentStartId < maxSafetyLimit) {
+    // Tạo mảng 100 IDs
+    const ids = Array.from({ length: chunkSize }, (_, i) => currentStartId + i);
+
+    try {
+      // Đọc batch 100 tin nhắn bằng `ids` (Được phép đối với Bot Account)
+      const msgs = await client.getMessages(channelPeer, { ids });
+
+      let foundMessagesInBatch = 0;
+
+      if (Array.isArray(msgs)) {
+        for (const msg of msgs) {
+          if (msg) {
+            foundMessagesInBatch++;
+            if (msg.media && msg.media.document) {
+              const attr = msg.media.document.attributes?.find(a => a.fileName);
+              const fileName = attr ? attr.fileName : '';
+
+              if (fileName.toLowerCase().endsWith('.apk')) {
+                let senderTag = '';
+                if (msg.postAuthor) {
+                  senderTag = msg.postAuthor;
+                } else if (msg.fromId && msg.fromId.userId) {
+                  senderTag = `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>`;
+                }
+
+                allApks.push({
+                  message_id: msg.id,
+                  file_name: fileName,
+                  sender: senderTag,
+                  chat_id: STORAGE_CHANNEL
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // Nếu cả đợt 100 ID đều không chứa tin nhắn nào -> tăng đếm rỗng
+      if (foundMessagesInBatch === 0) {
+        emptyBatchCount++;
+      } else {
+        emptyBatchCount = 0; // Reset nếu phát hiện tin nhắn tồn tại
+      }
+
+      currentStartId += chunkSize;
+    } catch (err) {
+      logError('SWEEP', `Lỗi đọc đợt ID từ ${currentStartId}`, err);
+      break;
+    }
+  }
+
+  logInfo('SWEEP', `Hoàn tất quét kênh. Tìm thấy ${allApks.length} file APK`);
+  // Sắp xếp APK giảm dần theo message_id (Mới nhất lên trước)
+  return allApks.sort((a, b) => b.message_id - a.message_id);
+}
+
+// Khoảng cách Levenshtein (Fuzzy Search)
 function levenshteinDistance(a, b) {
   const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
   for (let i = 0; i <= a.length; i++) matrix[0][i] = i;
@@ -80,107 +155,43 @@ function levenshteinDistance(a, b) {
   return matrix[b.length][a.length];
 }
 
-// Tìm kiếm APK trong Kênh qua GramJS
+// Lọc APK từ kết quả quét kênh
 async function searchApksInChannel(queryStr) {
-  const client = await getGramClient();
-  const channelPeer = getParsedChannelPeer();
-
-  if (!client || !channelPeer) {
-    logError('SEARCH', 'Client GramJS hoặc STORAGE_CHANNEL_ID không hợp lệ');
-    return [];
-  }
+  const allApks = await getAllApksFromChannel();
+  if (allApks.length === 0) return [];
 
   const cleanQuery = queryStr.toLowerCase().replace(/\.apk$/i, '').trim();
-  logInfo('SEARCH', `Bắt đầu quét file trong Kênh với từ khoá: "${cleanQuery}"`);
+  logInfo('SEARCH', `Lọc APK với từ khóa: "${cleanQuery}" trong tổng ${allApks.length} file`);
 
-  try {
-    // Quét trực tiếp bằng từ khóa
-    const res = await client.getMessages(channelPeer, {
-      search: cleanQuery,
-      filter: new Api.InputMessagesFilterDocument(),
-      limit: 50,
+  // 1. Tìm chính xác hoặc chứa từ khóa
+  let matches = allApks.filter(item => item.file_name.toLowerCase().includes(cleanQuery));
+
+  // 2. Nếu không thấy -> Bật Fuzzy Search
+  if (matches.length === 0) {
+    logInfo('SEARCH', 'Không thấy khớp chính xác, chuyển sang Fuzzy Search...');
+    const scored = allApks.map(item => {
+      const cleanName = item.file_name.toLowerCase().replace(/\.apk$/i, '');
+      const dist = levenshteinDistance(cleanQuery, cleanName);
+      const words = cleanName.split(/[\s_\-\(\)\.]+/);
+      let minWordDist = dist;
+      for (const w of words) {
+        if (w) {
+          const d = levenshteinDistance(cleanQuery, w);
+          if (d < minWordDist) minWordDist = d;
+        }
+      }
+      return { item, score: Math.min(dist, minWordDist) };
     });
 
-    logInfo('SEARCH', `Tìm thấy ${res.length} tin nhắn phù hợp qua tìm kiếm trực tiếp`);
-
-    let matches = [];
-    for (const msg of res) {
-      if (msg.media && msg.media.document) {
-        const attr = msg.media.document.attributes.find(a => a.fileName);
-        const fileName = attr ? attr.fileName : '';
-        if (fileName.toLowerCase().endsWith('.apk')) {
-          let senderTag = '';
-          if (msg.postAuthor) {
-            senderTag = msg.postAuthor;
-          } else if (msg.fromId && msg.fromId.userId) {
-            senderTag = `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>`;
-          }
-
-          matches.push({
-            message_id: msg.id,
-            file_name: fileName,
-            sender: senderTag,
-            chat_id: STORAGE_CHANNEL
-          });
-        }
-      }
-    }
-
-    // Nếu không khớp từ khóa -> Tự động bật Fuzzy Match trên 100 file mới nhất
-    if (matches.length === 0) {
-      logInfo('SEARCH', 'Không thấy kết quả chính xác, chuyển sang quét mờ (Fuzzy Search)...');
-      const recentRes = await client.getMessages(channelPeer, {
-        filter: new Api.InputMessagesFilterDocument(),
-        limit: 100,
-      });
-
-      const allFiles = [];
-      for (const msg of recentRes) {
-        if (msg.media && msg.media.document) {
-          const attr = msg.media.document.attributes.find(a => a.fileName);
-          const fileName = attr ? attr.fileName : '';
-          if (fileName.toLowerCase().endsWith('.apk')) {
-            let senderTag = '';
-            if (msg.postAuthor) senderTag = msg.postAuthor;
-            else if (msg.fromId && msg.fromId.userId) senderTag = `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>`;
-
-            allFiles.push({
-              message_id: msg.id,
-              file_name: fileName,
-              sender: senderTag,
-              chat_id: STORAGE_CHANNEL
-            });
-          }
-        }
-      }
-
-      const scored = allFiles.map(item => {
-        const cleanName = item.file_name.toLowerCase().replace(/\.apk$/i, '');
-        const dist = levenshteinDistance(cleanQuery, cleanName);
-        const words = cleanName.split(/[\s_\-\(\)\.]+/);
-        let minWordDist = dist;
-        for (const w of words) {
-          if (w) {
-            const d = levenshteinDistance(cleanQuery, w);
-            if (d < minWordDist) minWordDist = d;
-          }
-        }
-        return { item, score: Math.min(dist, minWordDist) };
-      });
-
-      const maxAllowed = Math.max(2, Math.floor(cleanQuery.length / 3));
-      matches = scored
-        .filter(s => s.score <= maxAllowed)
-        .sort((a, b) => a.score - b.score)
-        .map(s => s.item);
-    }
-
-    logInfo('SEARCH', `Tổng kết quả tìm kiếm cuối cùng: ${matches.length}`);
-    return matches;
-  } catch (err) {
-    logError('SEARCH', 'Lỗi khi gọi GramJS getMessages', err);
-    return [];
+    const maxAllowed = Math.max(2, Math.floor(cleanQuery.length / 3));
+    matches = scored
+      .filter(s => s.score <= maxAllowed)
+      .sort((a, b) => a.score - b.score)
+      .map(s => s.item);
   }
+
+  logInfo('SEARCH', `Số kết quả lọc được: ${matches.length}`);
+  return matches;
 }
 
 // Parse tên ứng dụng chuẩn
@@ -196,7 +207,7 @@ function parseStandardApkName(fileName) {
   };
 }
 
-// Lấy Tag người gửi
+// Định dạng Tag người gửi
 function getSenderTag(ctx) {
   const user = ctx.from;
   if (!user) return '';
@@ -204,10 +215,9 @@ function getSenderTag(ctx) {
   return `<a href="tg://user?id=${user.id}">${user.first_name || 'Người dùng'}</a>`;
 }
 
-// Chuyển tiếp file APK
+// Copy gửi file APK cho user
 async function sendApkViaCopy(ctx, item) {
   try {
-    logInfo('SEND', `Đang copy message ${item.message_id} từ ${item.chat_id}`);
     await ctx.telegram.copyMessage(ctx.chat.id, item.chat_id, item.message_id, { caption: '' });
   } catch (e) {
     logError('SEND', 'Lỗi copyMessage', e);
@@ -241,7 +251,7 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
-// Bỏ qua lệnh trong Nhóm
+// Bỏ qua tương tác trong nhóm
 bot.use(async (ctx, next) => {
   const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
   if (isGroup) return;
@@ -260,7 +270,7 @@ bot.command('help', async (ctx) => {
   const helpText = 
 `Danh sách lệnh hỗ trợ:
 /ping - Kiểm tra tốc độ
-/apk - Đếm số lượng APK có sẵn
+/apk - Đếm số lượng APK có sẵn trong kênh
 /any <từ khoá>.apk - Tìm kiếm APK
 /regex <pattern>.apk - Tìm kiếm bằng Regex
 /msg - Gửi tin nhắn tới Owner`;
@@ -269,41 +279,25 @@ bot.command('help', async (ctx) => {
 
 // Lệnh /ping
 bot.command('ping', async (ctx) => {
-  logInfo('BOT', `Lệnh /ping từ ${ctx.from.id}`);
   const start = Date.now();
   await ctx.sendChatAction('typing');
   const latency = Date.now() - start;
   await ctx.reply(`⚡ Tốc độ phản hồi: ${latency}ms`);
 });
 
-// Lệnh /apk
+// Lệnh /apk (Đếm tổng số APK thực tế có trong kênh)
 bot.command('apk', async (ctx) => {
   logInfo('BOT', `Lệnh /apk từ ${ctx.from.id}`);
-  const statusMsg = await ctx.reply('Đang đếm số lượng...');
+  const statusMsg = await ctx.reply('Đang quét và đếm số lượng APK trong kênh...');
   await ctx.sendChatAction('typing');
 
-  const client = await getGramClient();
-  const channelPeer = getParsedChannelPeer();
-
-  let total = 0;
-  if (client && channelPeer) {
-    try {
-      const res = await client.getMessages(channelPeer, {
-        filter: new Api.InputMessagesFilterDocument(),
-        limit: 1,
-      });
-      total = res.total || 0;
-      logInfo('BOT', `Đã đếm tổng số APK trong Kênh: ${total}`);
-    } catch (e) {
-      logError('BOT', 'Lỗi đếm số lượng APK', e);
-    }
-  }
+  const allApks = await getAllApksFromChannel();
 
   await ctx.telegram.editMessageText(
     ctx.chat.id, 
     statusMsg.message_id, 
     null, 
-    `Tổng số APK có trong kênh: ${total}`
+    `Tổng số APK có trong kênh: ${allApks.length}`
   );
 });
 
@@ -359,15 +353,13 @@ bot.command('regex', async (ctx) => {
   await handleSearchResults(ctx, filtered);
 });
 
-// Inline Callback Button
+// Callback nút bấm Inline
 bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   const mode = ctx.match[1];
   const searchId = ctx.match[2];
-  logInfo('BOT', `Callback show_${mode} cho searchId: ${searchId}`);
-
   const results = global.searchCache.get(searchId);
-  await ctx.answerCbQuery();
 
+  await ctx.answerCbQuery();
   if (!results) return ctx.reply('Kết quả đã hết hạn!');
 
   await ctx.sendChatAction('upload_document');
@@ -379,7 +371,7 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   global.searchCache.delete(searchId);
 });
 
-// Nhận APK trực tiếp trong Chat riêng
+// Nhận file APK trực tiếp trong Chat riêng
 bot.on('document', async (ctx) => {
   const doc = ctx.message.document;
   if (!doc.file_name?.endsWith('.apk')) return;
@@ -400,10 +392,9 @@ Mods: ${parsedData.mods}`
   ]));
 });
 
-// Nút lưu file vào nhóm lưu trữ
+// Nút lưu file vào kênh lưu trữ
 bot.action(/^store_(.+)$/, async (ctx) => {
   const fileId = ctx.match[1];
-  logInfo('BOT', `Lưu file ${fileId} vào STORAGE_CHANNEL`);
   await ctx.answerCbQuery('Đã gửi!');
 
   if (STORAGE_CHANNEL) {
@@ -412,12 +403,12 @@ bot.action(/^store_(.+)$/, async (ctx) => {
       await ctx.editMessageText('Đã gửi file vào nhóm lưu trữ thành công!');
     } catch (e) {
       logError('BOT', 'Lỗi gửi file vào STORAGE_CHANNEL', e);
-      await ctx.editMessageText('Lỗi: Bot chưa được làm Admin Kênh/Nhóm lưu trữ!');
+      await ctx.editMessageText('Lỗi: Bot chưa được phong quyền Admin trong Kênh lưu trữ!');
     }
   }
 });
 
-// Xử lý Văn bản thường (Gửi tin nhắn cho Owner hoặc Tự động tìm APK)
+// Xử lý Tin nhắn văn bản
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text.trim();
@@ -425,7 +416,7 @@ bot.on('text', async (ctx) => {
 
   logInfo('BOT', `Nhận tin nhắn văn bản từ ${userId}: "${text}"`);
 
-  // 1. Xử lý Reply cho /msg
+  // Reply cho /msg
   if (replyToId && global.msgState.get(userId) === replyToId) {
     if (OWNER_ID) {
       await ctx.telegram.sendMessage(
@@ -444,7 +435,7 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // 2. Tự động tìm APK nếu người dùng nhập tên file hoặc nhập đúng định dạng
+  // Tự động tìm kiếm file
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
@@ -468,7 +459,6 @@ Phiên bản: ${data.version}
 Mods: ${data.mods}`
     );
   } else {
-    // Luôn thông báo khi không tìm thấy file
     await ctx.reply('Không tìm thấy APK phù hợp trong kênh!');
   }
 });
@@ -477,14 +467,13 @@ Mods: ${data.mods}`
 module.exports = async (req, res) => {
   try {
     if (req.method === 'POST') {
-      logInfo('WEBHOOK', 'Nhận request Webhook từ Telegram');
       await bot.handleUpdate(req.body);
       res.status(200).send('OK');
     } else {
       res.status(200).send('Bot đang hoạt động...');
     }
   } catch (err) {
-    logError('WEBHOOK', 'Lỗi xử lý Handler Webhook', err);
+    logError('WEBHOOK', 'Lỗi xử lý Webhook', err);
     res.status(500).send('Internal Server Error');
   }
 };
