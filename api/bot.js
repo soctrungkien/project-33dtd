@@ -93,9 +93,9 @@ async function fetchBatchesWithConcurrency(client, channelPeer, batches, limit =
   return results;
 }
 
-// Quét tăng tiến (Incremental Scan)
-async function getAllApksFromChannelOptimized() {
-  if (Date.now() - liveSweepCache.lastFetch < CACHE_TTL && liveSweepCache.data.length > 0) {
+// Quét tăng tiến (Tự động cập nhật nếu forceCheck = true)
+async function getAllApksFromChannelOptimized(forceCheck = false) {
+  if (!forceCheck && Date.now() - liveSweepCache.lastFetch < CACHE_TTL && liveSweepCache.data.length > 0) {
     return liveSweepCache.data;
   }
 
@@ -115,7 +115,7 @@ async function getAllApksFromChannelOptimized() {
       return storedApks;
     }
 
-    logInfo('SWEEP', `Đang quét từ ID ${lastScannedId + 1} đến ${currentMaxId}...`);
+    logInfo('SWEEP', `Đang cập nhật APK mới từ ID ${lastScannedId + 1} đến ${currentMaxId}...`);
 
     const startId = lastScannedId === 0 ? Math.max(1, currentMaxId - 2000) : lastScannedId + 1;
     
@@ -174,51 +174,46 @@ async function getAllApksFromChannelOptimized() {
   }
 }
 
-// Parse tên ứng dụng chuẩn xác và lọc bỏ ký tự dư thừa
+// Bắt buộc phải có ĐỦ CẢ 3: Tên ứng dụng, Phiên bản, và Mods trong ngoặc
 function parseStandardApkName(fileName) {
   if (!fileName) return null;
   const clean = fileName.replace(/\.apk$/i, '').trim();
 
-  let mods = '';
-  let nameAndVer = clean;
-
-  // Lấy nội dung trong dấu ngoặc đơn ở cuối chuỗi làm Mods
+  // 1. Kiểm tra phần Mods nằm trong ngoặc tròn ở cuối
   const modsMatch = clean.match(/\((.*?)\)\s*$/);
-  if (modsMatch) {
-    mods = modsMatch[1].trim();
-    nameAndVer = clean.replace(/\s*\((.*?)\)\s*$/, '').trim();
+  if (!modsMatch || !modsMatch[1].trim()) {
+    return { appName: clean, version: 'N/A', mods: 'N/A', isValid: false };
   }
 
-  // Làm sạch các ký tự _ hoặc - dư thừa ở cuối
+  const mods = modsMatch[1].trim();
+  let nameAndVer = clean.replace(/\s*\((.*?)\)\s*$/, '').trim();
   nameAndVer = nameAndVer.replace(/[_\-]+$/, '').trim();
 
-  // Tách tên ứng dụng và phiên bản qua dấu _ cuối cùng
+  // 2. Tìm dấu gạch dưới để tách Tên ứng dụng và Phiên bản
   const lastUnderscore = nameAndVer.lastIndexOf('_');
-  if (lastUnderscore !== -1) {
-    const appName = nameAndVer.substring(0, lastUnderscore).trim();
-    const version = nameAndVer.substring(lastUnderscore + 1).trim();
-
-    if (appName && version) {
-      return {
-        appName,
-        version,
-        mods: mods || 'Bản gốc',
-        isValid: true
-      };
-    }
+  if (lastUnderscore === -1) {
+    return { appName: clean, version: 'N/A', mods: 'N/A', isValid: false };
   }
 
-  return {
-    appName: clean,
-    version: 'N/A',
-    mods: 'N/A',
-    isValid: false
-  };
+  const appName = nameAndVer.substring(0, lastUnderscore).trim();
+  const version = nameAndVer.substring(lastUnderscore + 1).trim();
+
+  // 3. Đảm bảo cả 3 thành phần đều không được rỗng
+  if (appName && version && mods) {
+    return {
+      appName,
+      version,
+      mods,
+      isValid: true
+    };
+  }
+
+  return { appName: clean, version: 'N/A', mods: 'N/A', isValid: false };
 }
 
-// Tìm kiếm thô trực tiếp theo tên file (Dành cho /any và /regex)
+// Tìm kiếm thô trực tiếp (Có tự động check update)
 async function searchApksRaw(queryStr) {
-  const allApks = await getAllApksFromChannelOptimized();
+  const allApks = await getAllApksFromChannelOptimized(true);
   if (allApks.length === 0) return [];
 
   const cleanQuery = queryStr.toLowerCase().replace(/\.apk$/i, '').trim();
@@ -231,16 +226,16 @@ async function searchApksRaw(queryStr) {
   return results.sort((a, b) => Number(b.message_id) - Number(a.message_id));
 }
 
-// Tìm kiếm chuẩn hóa (Chỉ lấy các file đúng định dạng chuẩn cho /many và tìm kiếm thường)
+// Tìm kiếm chuẩn hóa (Bỏ qua nếu thiếu 1 trong 3 thông tin & tự động check update)
 async function searchApksStandard(queryStr) {
-  const allApks = await getAllApksFromChannelOptimized();
+  const allApks = await getAllApksFromChannelOptimized(true);
   if (allApks.length === 0) return [];
 
   const cleanQuery = queryStr.toLowerCase().replace(/\.apk$/i, '').trim();
 
   const results = allApks.filter(item => {
     const data = parseStandardApkName(item.file_name);
-    // Bắt buộc file phải đúng định dạng chuẩn (isValid = true) mới trả về
+    // Bắt buộc phải đủ cả 3 thông tin (isValid = true) mới giữ lại
     if (!data || !data.isValid) return false;
 
     const appName = data.appName.toLowerCase();
@@ -329,8 +324,7 @@ bot.command('help', async (ctx) => {
   await ctx.reply(helpText);
 });
 
-// Lệnh xóa cache dành riêng cho Owner
-bot.command(['delcache', 'clearcache'], async (ctx) => {
+bot.command(['delcache'], async (ctx) => {
   if (!OWNER_ID || String(ctx.from.id) !== String(OWNER_ID)) {
     return ctx.reply('Lệnh này chỉ dành cho Owner!');
   }
@@ -358,11 +352,12 @@ bot.command('ping', async (ctx) => {
   await ctx.reply(`🏓 Pong: ${latency}ms`);
 });
 
+// Tự động kiểm tra và quét thêm APK mới khi bấm /apk
 bot.command('apk', async (ctx) => {
-  const statusMsg = await ctx.reply('Đang kiểm tra dữ liệu APK...');
+  const statusMsg = await ctx.reply('Đang kiểm tra và cập nhật APK mới...');
   await ctx.sendChatAction('typing');
 
-  const allApks = await getAllApksFromChannelOptimized();
+  const allApks = await getAllApksFromChannelOptimized(true);
 
   await ctx.telegram.editMessageText(
     ctx.chat.id, 
@@ -378,7 +373,6 @@ bot.command('msg', async (ctx) => {
   });
 });
 
-// /any: Tìm trực tiếp tất cả tên file
 bot.command('any', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập từ khoá! (VD: /any zarchiver)');
@@ -390,7 +384,6 @@ bot.command('any', async (ctx) => {
   await handleSearchResults(ctx, matches);
 });
 
-// /many: Chỉ tìm các ứng dụng chuẩn hóa
 bot.command('many', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập từ khoá! (VD: /many zarchiver)');
@@ -402,7 +395,6 @@ bot.command('many', async (ctx) => {
   await handleSearchResults(ctx, matches);
 });
 
-// /regex: Tìm trực tiếp tên file thô
 bot.command('regex', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập mẫu Regex! (VD: /regex zarchiver.*)');
@@ -410,7 +402,7 @@ bot.command('regex', async (ctx) => {
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
-  const allApks = await getAllApksFromChannelOptimized();
+  const allApks = await getAllApksFromChannelOptimized(true);
   let matched = [];
 
   try {
@@ -441,7 +433,6 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   global.searchCache.delete(searchId);
 });
 
-// Nhận file .apk gửi trực tiếp
 bot.on('document', async (ctx) => {
   const doc = ctx.message.document;
   if (!doc.file_name?.toLowerCase().endsWith('.apk')) return;
@@ -469,7 +460,6 @@ Mods: ${parsedData.mods}`
   ]));
 });
 
-// Nút Có (Lưu kho - Chỉ dành cho Owner)
 bot.action(/^store_(.+)$/, async (ctx) => {
   if (!OWNER_ID || String(ctx.from.id) !== String(OWNER_ID)) {
     return ctx.answerCbQuery('⛔ Chỉ Owner mới có quyền lưu trữ file!', { show_alert: true });
@@ -493,7 +483,6 @@ bot.action(/^store_(.+)$/, async (ctx) => {
   }
 });
 
-// Nút Hủy
 bot.action(/^cancel_(.+)$/, async (ctx) => {
   const storeKey = ctx.match[1];
   global.fileStoreCache.delete(storeKey);
@@ -501,16 +490,13 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
   try {
     await ctx.editMessageText('❌ Đã hủy thao tác lưu trữ.');
   } catch (e) {
-    // Bỏ qua nếu lỗi sửa tin nhắn
   }
 });
 
-// Tin nhắn văn bản thông thường
 bot.on('text', async (ctx) => {
   const text = ctx.message.text.trim();
   const repliedMessage = ctx.message.reply_to_message;
 
-  // Kiểm tra nếu đang trả lời tin nhắn yêu cầu gửi cho owner
   if (repliedMessage && repliedMessage.from?.id === ctx.botInfo.id && 
       repliedMessage.text?.includes('Hãy trả lời tin nhắn này')) {
     
@@ -531,7 +517,6 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Luồng tìm kiếm APK tiêu chuẩn
   await ctx.reply('Đang tìm apk...');
   await ctx.sendChatAction('upload_document');
 
