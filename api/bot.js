@@ -1,7 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 const { TelegramClient, Api } = require('telegram');
 const { StringSession } = require('telegram/sessions');
-const Fuse = require('fuse.js');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const STORAGE_CHANNEL = process.env.STORAGE_CHANNEL_ID;
@@ -139,20 +138,18 @@ async function getAllApksFromChannelOptimized() {
   }
 }
 
-// Tìm kiếm nhanh bằng Fuse.js
+// Tìm kiếm nhanh bằng String Include (Thuần JS)
 async function searchApksInChannel(queryStr) {
   const allApks = await getAllApksFromChannelOptimized();
   if (allApks.length === 0) return [];
 
   const cleanQuery = queryStr.toLowerCase().replace(/\.apk$/i, '').trim();
 
-  const fuse = new Fuse(allApks, {
-    keys: ['appName', 'file_name'],
-    threshold: 0.4,
-    ignoreLocation: true
+  return allApks.filter(item => {
+    const appName = (item.appName || '').toLowerCase();
+    const fileName = (item.file_name || '').toLowerCase();
+    return appName.includes(cleanQuery) || fileName.includes(cleanQuery);
   });
-
-  return fuse.search(cleanQuery).map(result => result.item);
 }
 
 // Parse thông tin Tên, Phiên bản, Mods từ tên file
