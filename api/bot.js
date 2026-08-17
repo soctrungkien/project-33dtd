@@ -1,5 +1,5 @@
 const { Telegraf, Markup } = require("telegraf");
-const { TelegramClient } = require("telegram");
+const { TelegramClient, Api } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const Redis = require("ioredis");
 
@@ -9,32 +9,38 @@ const OWNER_ID = process.env.OWNER_ID;
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
 
+const MAX_RAM_CACHE = 50000; // Mở rộng lưu 50,000 APK index nhẹ trên RAM
+const INITIAL_SCAN_LIMIT = 50000; // Sửa lỗi lần đầu quét: lấy sâu tối đa 50k tin nhắn thay vì 2000
+const MAX_SEARCH_CACHE = 1000; 
+
 // Khởi tạo Redis Client
 const redis = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: 3,
   enableReadyCheck: false,
 });
 
-// Khởi tạo Cache RAM
+redis.on("error", (err) => {
+  logError("REDIS", "Lỗi kết nối Redis", err);
+});
+
+// 7. Bắt lỗi toàn cục cho Telegraf tránh crash process hoặc treo Webhook 500
+bot.catch((err, ctx) => {
+  logError("TELEGRAF", `Lỗi xử lý Update ID ${ctx.update?.update_id}`, err);
+});
+
 global.searchCache = global.searchCache || new Map();
 global.fileStoreCache = global.fileStoreCache || new Map();
 
 let clientInstance = null;
 let liveSweepCache = { data: [], lastFetch: 0 };
-const CACHE_TTL = 3 * 60 * 1000; // Cache RAM 3 phút
+const CACHE_TTL = 3 * 60 * 1000; 
 
 function logInfo(tag, message, data = "") {
-  console.log(
-    `[${new Date().toISOString()}] [${tag}] ${message}`,
-    data ? JSON.stringify(data) : "",
-  );
+  console.log(`[${new Date().toISOString()}] [${tag}] ${message}`, data ? JSON.stringify(data) : "");
 }
 
 function logError(tag, message, error) {
-  console.error(
-    `[${new Date().toISOString()}] [ERROR:${tag}] ${message}`,
-    error,
-  );
+  console.error(`[${new Date().toISOString()}] [ERROR:${tag}] ${message}`, error);
 }
 
 function getParsedChannelPeer() {
@@ -64,10 +70,7 @@ async function getGramClient() {
       new StringSession(""),
       API_ID,
       API_HASH,
-      {
-        connectionRetries: 3,
-        timeout: 10000,
-      },
+      { connectionRetries: 3, timeout: 10000 }
     );
     await clientInstance.start({ botAuthToken: process.env.BOT_TOKEN });
     return clientInstance;
@@ -77,45 +80,51 @@ async function getGramClient() {
   }
 }
 
-// Dò ID lớn nhất trong kênh
-async function getMaxMessageId(client, channelPeer) {
-  const probeIds = [
-    10, 50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000,
-  ];
+// 1. Dò ID lớn nhất chính xác qua Api.messages.Search hoặc reverse getMessages
+async function getMaxMessageId(client, entity) {
   try {
-    const msgs = await client.getMessages(channelPeer, { ids: probeIds });
-    const validMsgs = (Array.isArray(msgs) ? msgs : []).filter(
-      (m) => m && m.id,
+    const searchRes = await client.invoke(
+      new Api.messages.Search({
+        peer: entity,
+        q: "",
+        filter: new Api.InputMessagesFilterEmpty(),
+        minDate: 0,
+        maxDate: 0,
+        offsetId: 0,
+        addOffset: 0,
+        limit: 1,
+        maxId: 0,
+        minId: 0,
+        hash: BigInt(0),
+      })
     );
-    if (validMsgs.length === 0) return 500;
-    const highestFound = Math.max(...validMsgs.map((m) => m.id));
-    return highestFound + 100;
+    if (searchRes.messages && searchRes.messages.length > 0) {
+      return searchRes.messages[0].id;
+    }
   } catch (e) {
-    return 2000;
+    // Fallback nếu Search API bị hạn chế quyền trên channel
+    try {
+      const msgs = await client.getMessages(entity, { limit: 1, reverse: false });
+      return msgs?.[0]?.id || 0;
+    } catch (err) {
+      logError("GRAMJS", "Không thể lấy max message ID", err);
+    }
   }
+  return 0;
 }
 
-// Quét theo nhóm có kiểm soát băng thông
-async function fetchBatchesWithConcurrency(
-  client,
-  channelPeer,
-  batches,
-  limit = 4,
-) {
+async function fetchBatchesWithConcurrency(client, channelPeer, batches, limit = 4) {
   const results = [];
   for (let i = 0; i < batches.length; i += limit) {
     const chunk = batches.slice(i, i + limit);
     const chunkResults = await Promise.all(
-      chunk.map((ids) =>
-        client.getMessages(channelPeer, { ids }).catch(() => []),
-      ),
+      chunk.map((ids) => client.getMessages(channelPeer, { ids }).catch(() => []))
     );
     results.push(...chunkResults);
   }
   return results;
 }
 
-// Quét tăng tiến (Tự động cập nhật nếu forceCheck = true)
 async function getAllApksFromChannelOptimized(forceCheck = false) {
   if (
     !forceCheck &&
@@ -130,26 +139,30 @@ async function getAllApksFromChannelOptimized(forceCheck = false) {
   if (!client || !channelPeer) return [];
 
   try {
-    let storedApks = JSON.parse((await redis.get("apk_list")) || "[]");
-    let lastScannedId = parseInt((await redis.get("apk_last_max_id")) || "0");
-
-    const currentMaxId = await getMaxMessageId(client, channelPeer);
-
-    if (lastScannedId >= currentMaxId) {
-      storedApks.sort((a, b) => Number(b.message_id) - Number(a.message_id));
-      liveSweepCache = { data: storedApks, lastFetch: Date.now() };
-      return storedApks;
+    const entity = await client.getEntity(channelPeer);
+    let storedApks = [];
+    try {
+      storedApks = JSON.parse((await redis.get("apk_list")) || "[]");
+    } catch {
+      storedApks = [];
     }
 
-    logInfo(
-      "SWEEP",
-      `Đang cập nhật APK mới từ ID ${lastScannedId + 1} đến ${currentMaxId}...`,
-    );
+    let lastScannedId = parseInt((await redis.get("apk_last_max_id")) || "0");
+    const currentMaxId = await getMaxMessageId(client, entity);
 
-    const startId =
-      lastScannedId === 0
-        ? Math.max(1, currentMaxId - 2000)
-        : lastScannedId + 1;
+    if (lastScannedId >= currentMaxId && storedApks.length > 0) {
+      storedApks.sort((a, b) => Number(b.message_id) - Number(a.message_id));
+      const ramCache = storedApks.slice(0, MAX_RAM_CACHE);
+      liveSweepCache = { data: ramCache, lastFetch: Date.now() };
+      return ramCache;
+    }
+
+    // 2. Tăng giới hạn lần quét đầu tiên tránh mất dữ liệu APK cũ
+    const startId = lastScannedId === 0 
+      ? Math.max(1, currentMaxId - INITIAL_SCAN_LIMIT) 
+      : lastScannedId + 1;
+
+    logInfo("SWEEP", `Đang quét từ ID ${startId} đến ${currentMaxId}...`);
 
     const chunkSize = 100;
     const batches = [];
@@ -161,12 +174,7 @@ async function getAllApksFromChannelOptimized(forceCheck = false) {
       if (ids.length > 0) batches.push(ids);
     }
 
-    const results = await fetchBatchesWithConcurrency(
-      client,
-      channelPeer,
-      batches,
-      4,
-    );
+    const results = await fetchBatchesWithConcurrency(client, entity, batches, 4);
 
     const newApks = [];
     for (const msgs of results) {
@@ -180,11 +188,7 @@ async function getAllApksFromChannelOptimized(forceCheck = false) {
             newApks.push({
               message_id: msg.id,
               file_name: fileName,
-              sender:
-                msg.postAuthor ||
-                (msg.fromId?.userId
-                  ? `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>`
-                  : ""),
+              sender: msg.postAuthor || (msg.fromId?.userId ? `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>` : ""),
               chat_id: STORAGE_CHANNEL,
             });
           }
@@ -202,37 +206,35 @@ async function getAllApksFromChannelOptimized(forceCheck = false) {
     await redis.set("apk_list", JSON.stringify(mergedApks));
     await redis.set("apk_last_max_id", currentMaxId.toString());
 
-    liveSweepCache = { data: mergedApks, lastFetch: Date.now() };
-    logInfo(
-      "SWEEP",
-      `Quét xong. Đã thêm ${newApks.length} file mới. Tổng: ${mergedApks.length}`,
-    );
+    const ramCache = mergedApks.slice(0, MAX_RAM_CACHE);
+    liveSweepCache = { data: ramCache, lastFetch: Date.now() };
 
-    return mergedApks;
+    return ramCache;
   } catch (err) {
-    logError("SWEEP", "Lỗi quét tăng tiến", err);
-    const fallback = JSON.parse((await redis.get("apk_list")) || "[]");
+    logError("SWEEP", "Lỗi quét dữ liệu", err);
+    let fallback = [];
+    try {
+      fallback = JSON.parse((await redis.get("apk_list")) || "[]");
+    } catch {
+      fallback = [];
+    }
     fallback.sort((a, b) => Number(b.message_id) - Number(a.message_id));
-    return fallback;
+    return fallback.slice(0, MAX_RAM_CACHE);
   }
 }
 
-// Bắt buộc phải có ĐỦ CẢ 3: Tên ứng dụng, Phiên bản, và Mods trong ngoặc
 function parseStandardApkName(fileName) {
   if (!fileName) return null;
   const clean = fileName.replace(/\.apk$/i, "").trim();
 
-  // 1. Kiểm tra phần Mods nằm trong ngoặc tròn ở cuối
   const modsMatch = clean.match(/\((.*?)\)\s*$/);
   if (!modsMatch || !modsMatch[1].trim()) {
     return { appName: clean, version: "N/A", mods: "N/A", isValid: false };
   }
 
   const mods = modsMatch[1].trim();
-  let nameAndVer = clean.replace(/\s*\((.*?)\)\s*$/, "").trim();
-  nameAndVer = nameAndVer.replace(/[_\-]+$/, "").trim();
+  let nameAndVer = clean.replace(/\s*\((.*?)\)\s*$/, "").trim().replace(/[_\-]+$/, "").trim();
 
-  // 2. Tìm dấu gạch dưới để tách Tên ứng dụng và Phiên bản
   const lastUnderscore = nameAndVer.lastIndexOf("_");
   if (lastUnderscore === -1) {
     return { appName: clean, version: "N/A", mods: "N/A", isValid: false };
@@ -241,57 +243,34 @@ function parseStandardApkName(fileName) {
   const appName = nameAndVer.substring(0, lastUnderscore).trim();
   const version = nameAndVer.substring(lastUnderscore + 1).trim();
 
-  // 3. Đảm bảo cả 3 thành phần đều không được rỗng
   if (appName && version && mods) {
-    return {
-      appName,
-      version,
-      mods,
-      isValid: true,
-    };
+    return { appName, version, mods, isValid: true };
   }
 
   return { appName: clean, version: "N/A", mods: "N/A", isValid: false };
 }
 
-// Tìm kiếm thô trực tiếp (Có tự động check update)
 async function searchApksRaw(queryStr) {
-  const allApks = await getAllApksFromChannelOptimized(true);
+  const allApks = await getAllApksFromChannelOptimized(false);
   if (allApks.length === 0) return [];
 
-  const cleanQuery = queryStr
-    .toLowerCase()
-    .replace(/\.apk$/i, "")
-    .trim();
-
-  const results = allApks.filter((item) => {
-    const fileName = (item.file_name || "").toLowerCase();
-    return fileName.includes(cleanQuery);
-  });
-
-  return results.sort((a, b) => Number(b.message_id) - Number(a.message_id));
+  const cleanQuery = queryStr.toLowerCase().replace(/\.apk$/i, "").trim();
+  return allApks
+    .filter((item) => (item.file_name || "").toLowerCase().includes(cleanQuery))
+    .sort((a, b) => Number(b.message_id) - Number(a.message_id));
 }
 
-// Tìm kiếm chuẩn hóa (Bỏ qua nếu thiếu 1 trong 3 thông tin & tự động check update)
 async function searchApksStandard(queryStr) {
-  const allApks = await getAllApksFromChannelOptimized(true);
+  const allApks = await getAllApksFromChannelOptimized(false);
   if (allApks.length === 0) return [];
 
-  const cleanQuery = queryStr
-    .toLowerCase()
-    .replace(/\.apk$/i, "")
-    .trim();
-
-  const results = allApks.filter((item) => {
-    const data = parseStandardApkName(item.file_name);
-    // Bắt buộc phải đủ cả 3 thông tin (isValid = true) mới giữ lại
-    if (!data || !data.isValid) return false;
-
-    const appName = data.appName.toLowerCase();
-    return appName.includes(cleanQuery);
-  });
-
-  return results.sort((a, b) => Number(b.message_id) - Number(a.message_id));
+  const cleanQuery = queryStr.toLowerCase().replace(/\.apk$/i, "").trim();
+  return allApks
+    .filter((item) => {
+      const data = parseStandardApkName(item.file_name);
+      return data && data.isValid && data.appName.toLowerCase().includes(cleanQuery);
+    })
+    .sort((a, b) => Number(b.message_id) - Number(a.message_id));
 }
 
 function getSenderTag(ctx) {
@@ -303,23 +282,18 @@ function getSenderTag(ctx) {
 
 async function sendApkViaCopy(ctx, item) {
   try {
-    await ctx.telegram.copyMessage(ctx.chat.id, item.chat_id, item.message_id, {
-      caption: "",
-    });
+    await ctx.telegram.copyMessage(ctx.chat.id, item.chat_id, item.message_id, { caption: "" });
   } catch (e) {
     logError("SEND", "Lỗi copyMessage", e);
+    return ctx.reply("❌ Không thể lấy file APK!");
   }
 
   const data = parseStandardApkName(item.file_name);
-  let text = "";
-  if (data && data.isValid) {
-    text += `Tên ứng dụng: ${data.appName}\nPhiên bản: ${data.version}\nMods: ${data.mods}\n`;
-  } else {
-    text += `Tên file: ${item.file_name}\n`;
-  }
-  if (item.sender) {
-    text += `Apk đc gửi bởi: ${item.sender}`;
-  }
+  let text = data && data.isValid 
+    ? `Tên ứng dụng: ${data.appName}\nPhiên bản: ${data.version}\nMods: ${data.mods}\n`
+    : `Tên file: ${item.file_name}\n`;
+
+  if (item.sender) text += `Apk đc gửi bởi: ${item.sender}`;
 
   if (text.trim()) {
     await ctx.reply(text.trim(), { parse_mode: "HTML" });
@@ -337,7 +311,19 @@ async function handleSearchResults(ctx, matches) {
     }
   } else {
     const searchId = Date.now().toString();
-    global.searchCache.set(searchId, matches);
+
+    if (global.searchCache.size >= MAX_SEARCH_CACHE) {
+      const firstKey = global.searchCache.keys().next().value;
+      global.searchCache.delete(firstKey);
+    }
+
+    // 5. Chỉ lưu danh sách message_id nhẹ vào RAM thay vì toàn bộ Object
+    const idList = matches.map((m) => m.message_id);
+    global.searchCache.set(searchId, idList);
+
+    setTimeout(() => {
+      global.searchCache.delete(searchId);
+    }, 5 * 60 * 1000);
 
     await ctx.reply(
       `Tìm thấy ${matches.length} kết quả. Bạn muốn hiển thị như thế nào?`,
@@ -346,14 +332,10 @@ async function handleSearchResults(ctx, matches) {
           Markup.button.callback("Một 😅", `show_1_${searchId}`),
           Markup.button.callback("Toàn bộ 😈", `show_all_${searchId}`),
         ],
-      ]),
+      ])
     );
   }
 }
-
-bot.use(async (ctx, next) => {
-  return next();
-});
 
 bot.command("start", async (ctx) => {
   await ctx.reply("Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng.");
@@ -375,9 +357,25 @@ bot.command("help", async (ctx) => {
   await ctx.reply(helpText);
 });
 
-bot.command(["delcache"], async (ctx) => {
+bot.command("delcache", async (ctx) => {
   if (!OWNER_ID || String(ctx.from.id) !== String(OWNER_ID)) {
     return ctx.reply("Lệnh này chỉ dành cho Owner!");
+  }
+
+  await ctx.reply(
+    "⚠️ Bạn chắc chắn muốn xoá toàn bộ cache?",
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback("XOÁ!", "confirm_delcache"),
+        Markup.button.callback("thui, bỏ đi", "cancel_delcache"),
+      ],
+    ])
+  );
+});
+
+bot.action("confirm_delcache", async (ctx) => {
+  if (!OWNER_ID || String(ctx.from.id) !== String(OWNER_ID)) {
+    return ctx.answerCbQuery("⛔ Không có quyền!", { show_alert: true });
   }
 
   try {
@@ -388,52 +386,47 @@ bot.command(["delcache"], async (ctx) => {
     global.searchCache.clear();
     global.fileStoreCache.clear();
 
-    await ctx.reply(
-      "🧹 Đã xóa sạch toàn bộ Cache trong Redis và RAM thành công!",
-    );
-    logInfo("OWNER", `Owner (ID: ${ctx.from.id}) đã thực hiện xóa cache.`);
-  } catch (err) {
-    logError("OWNER", "Lỗi khi xóa cache", err);
-    await ctx.reply("Xóa cache thất bại!");
+    if (clientInstance) {
+      try {
+        await clientInstance.disconnect();
+      } catch (e) {}
+      clientInstance = null;
+    }
+
+    await ctx.answerCbQuery("Đã xoá cache!");
+    await ctx.editMessageText("🧹 Đã xoá toàn bộ dữ liệu tạm RAM & Redis thành công.");
+  } catch (e) {
+    logError("CACHE", "Lỗi xoá cache", e);
+    await ctx.answerCbQuery("Lỗi xoá cache!", { show_alert: true });
   }
+});
+
+bot.action("cancel_delcache", async (ctx) => {
+  if (!OWNER_ID || String(ctx.from.id) !== String(OWNER_ID)) {
+    return ctx.answerCbQuery("⛔ Không có quyền!", { show_alert: true });
+  }
+  await ctx.answerCbQuery("Đã huỷ!");
+  await ctx.editMessageText("❌ Đã huỷ xoá cache.");
 });
 
 bot.command("ping", async (ctx) => {
   const start = Date.now();
   await ctx.sendChatAction("typing");
-  const latency = Date.now() - start;
-  await ctx.reply(`🏓 Pong: ${latency}ms`);
+  await ctx.reply(`🏓 Pong: ${Date.now() - start}ms`);
 });
 
-// Tự động kiểm tra và quét thêm APK mới khi bấm /apk
 bot.command("apk", async (ctx) => {
   const statusMsg = await ctx.reply("Đang kiểm tra...");
   await ctx.sendChatAction("typing");
-
-  const allApks = await getAllApksFromChannelOptimized(true);
-
-  await ctx.telegram.editMessageText(
-    ctx.chat.id,
-    statusMsg.message_id,
-    null,
-    `Tổng số APK: ${allApks.length}`,
-  );
+  const allApks = await getAllApksFromChannelOptimized(false);
+  await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, null, `Tổng số APK: ${allApks.length}`);
 });
 
 bot.command("msg", async (ctx) => {
-  if (ctx.chat.type !== "private") {
-    return ctx.reply("Lệnh này chỉ dùng trong chat riêng!");
-  }
-
-  const msg = await ctx.reply(
-    "Hãy trả lời tin nhắn này với nội dung bạn muốn nói:　",
-    {
-      reply_markup: { force_reply: true },
-    },
-  );
-
-  global.msgState = global.msgState || new Map();
-  global.msgState.set(ctx.from.id, msg.message_id);
+  if (ctx.chat.type !== "private") return ctx.reply("Lệnh này chỉ dùng trong chat riêng!");
+  await ctx.reply("Hãy trả lời tin nhắn này với nội dung bạn muốn nói:　", {
+    reply_markup: { force_reply: true },
+  });
 });
 
 bot.command("any", async (ctx) => {
@@ -442,13 +435,9 @@ bot.command("any", async (ctx) => {
 
   const waitMsg = await ctx.reply("Đang tìm apk...");
   await ctx.sendChatAction("upload_document");
-
   const matches = await searchApksRaw(args);
 
-  try {
-    await ctx.deleteMessage(waitMsg.message_id);
-  } catch {}
-
+  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
   await handleSearchResults(ctx, matches);
 });
 
@@ -458,74 +447,71 @@ bot.command("many", async (ctx) => {
 
   const waitMsg = await ctx.reply("Đang tìm apk...");
   await ctx.sendChatAction("upload_document");
-
   const matches = await searchApksStandard(args);
 
-  try {
-    await ctx.deleteMessage(waitMsg.message_id);
-  } catch {}
-
+  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
   await handleSearchResults(ctx, matches);
 });
 
 bot.command("regex", async (ctx) => {
   const args = ctx.message.text.split(" ").slice(1).join(" ").trim();
-  if (!args)
-    return ctx.reply("Vui lòng nhập mẫu Regex! (VD: /regex zarchiver.*)");
+  if (!args) return ctx.reply("Vui lòng nhập mẫu Regex! (VD: /regex zarchiver.*)");
 
   const waitMsg = await ctx.reply("Đang tìm apk...");
   await ctx.sendChatAction("upload_document");
 
-  const allApks = await getAllApksFromChannelOptimized(true);
   let matched = [];
-
   try {
+    const allApks = await getAllApksFromChannelOptimized(false);
     const reg = new RegExp(args.replace(/\.apk$/i, "").trim(), "i");
-    matched = allApks.filter((item) => reg.test(item.file_name || ""));
-    matched.sort((a, b) => Number(b.message_id) - Number(a.message_id));
+    matched = allApks.filter((item) => reg.test(item.file_name || "")).sort((a, b) => Number(b.message_id) - Number(a.message_id));
   } catch (e) {
+    try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
     return ctx.reply("Cú pháp Regex không hợp lệ!");
   }
 
-  try {
-    await ctx.deleteMessage(waitMsg.message_id);
-  } catch {}
-
+  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
   await handleSearchResults(ctx, matched);
 });
 
 bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   const mode = ctx.match[1];
   const searchId = ctx.match[2];
-  const results = global.searchCache.get(searchId);
+  const matchedIds = global.searchCache.get(searchId);
 
   await ctx.answerCbQuery();
-  if (!results) return ctx.reply("Kết quả đã hết hạn!");
+  if (!matchedIds || matchedIds.length === 0) return ctx.reply("Kết quả đã hết hạn!");
 
   await ctx.sendChatAction("upload_document");
-  const itemsToSend = mode === "1" ? [results[0]] : results;
+  
+  // Tái tạo lại object chi tiết từ RAM cache
+  const allApks = await getAllApksFromChannelOptimized(false);
+  const apkMap = new Map(allApks.map((item) => [item.message_id, item]));
 
-  for (const item of itemsToSend) {
-    await sendApkViaCopy(ctx, item);
+  const targetIds = mode === "1" ? [matchedIds[0]] : matchedIds;
+  for (const id of targetIds) {
+    const item = apkMap.get(id);
+    if (item) {
+      await sendApkViaCopy(ctx, item);
+    }
   }
   global.searchCache.delete(searchId);
 });
 
 bot.on("document", async (ctx) => {
+  if (ctx.chat.type !== "private") return;
+
   const doc = ctx.message.document;
   if (!doc.file_name?.toLowerCase().endsWith(".apk")) return;
 
   const storeKey = Math.random().toString(36).substring(2, 8);
   global.fileStoreCache.set(storeKey, doc.file_id);
 
-  const parsedData = parseStandardApkName(doc.file_name);
+  setTimeout(() => { global.fileStoreCache.delete(storeKey); }, 10 * 60 * 1000);
 
+  const parsedData = parseStandardApkName(doc.file_name);
   if (parsedData && parsedData.isValid) {
-    await ctx.reply(
-      `Tên ứng dụng: ${parsedData.appName}
-Phiên bản: ${parsedData.version}
-Mods: ${parsedData.mods}`,
-    );
+    await ctx.reply(`Tên ứng dụng: ${parsedData.appName}\nPhiên bản: ${parsedData.version}\nMods: ${parsedData.mods}`);
   } else {
     await ctx.reply(`Tên file: ${doc.file_name}`);
   }
@@ -537,20 +523,17 @@ Mods: ${parsedData.mods}`,
         Markup.button.callback("🟢", `store_${storeKey}`),
         Markup.button.callback("🔴", `cancel_${storeKey}`),
       ],
-    ]),
+    ])
   );
 });
 
 bot.action(/^store_(.+)$/, async (ctx) => {
   if (!OWNER_ID || String(ctx.from.id) !== String(OWNER_ID)) {
-    return ctx.answerCbQuery("⛔ Chỉ Owner mới có quyền lưu trữ file!", {
-      show_alert: true,
-    });
+    return ctx.answerCbQuery("⛔ Chỉ Owner mới có quyền lưu trữ file!", { show_alert: true });
   }
 
   const storeKey = ctx.match[1];
   const fileId = global.fileStoreCache.get(storeKey);
-
   if (!fileId) return ctx.answerCbQuery("Yêu cầu đã hết hạn!");
 
   await ctx.answerCbQuery("Đang gửi...");
@@ -558,14 +541,10 @@ bot.action(/^store_(.+)$/, async (ctx) => {
   if (STORAGE_CHANNEL) {
     try {
       await ctx.telegram.sendDocument(STORAGE_CHANNEL, fileId);
-      await ctx.editMessageText(
-        "✅ Đã gửi file vào dữ liệu lưu trữ thành công!",
-      );
+      await ctx.editMessageText("✅ Đã gửi file vào dữ liệu lưu trữ thành công!");
       global.fileStoreCache.delete(storeKey);
     } catch (e) {
-      await ctx.editMessageText(
-        "Lỗi: Bot chưa được phong quyền Admin trong Kênh lưu trữ!",
-      );
+      await ctx.editMessageText("Lỗi: Bot chưa được phong quyền Admin trong Kênh lưu trữ!");
     }
   }
 });
@@ -574,15 +553,15 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
   const storeKey = ctx.match[1];
   global.fileStoreCache.delete(storeKey);
   await ctx.answerCbQuery("Đã hủy!");
-  try {
-    await ctx.editMessageText("❌ Đã hủy thao tác lưu trữ.");
-  } catch (e) {}
+  try { await ctx.editMessageText("❌ Đã hủy thao tác lưu trữ."); } catch (e) {}
 });
 
 bot.on("text", async (ctx) => {
   const text = ctx.message.text.trim();
-  const repliedMessage = ctx.message.reply_to_message;
+  if (text.startsWith("/")) return;
+  if (ctx.chat.type !== "private") return;
 
+  const repliedMessage = ctx.message.reply_to_message;
   if (
     repliedMessage &&
     repliedMessage.from?.id === ctx.botInfo.id &&
@@ -592,15 +571,13 @@ bot.on("text", async (ctx) => {
       await ctx.telegram.sendMessage(
         OWNER_ID,
         `Tin nhắn từ ${getSenderTag(ctx)}:\n${text}`,
-        { parse_mode: "HTML" },
+        { parse_mode: "HTML" }
       );
     }
 
     try {
       await ctx.deleteMessage(ctx.message.message_id);
-
       await ctx.deleteMessage(repliedMessage.message_id);
-
       await ctx.reply("Cảm ơn, tin nhắn đã được gửi!");
     } catch (e) {
       await ctx.reply("Cảm ơn, tin nhắn đã được gửi!");
@@ -613,9 +590,7 @@ bot.on("text", async (ctx) => {
 
   const matches = await searchApksStandard(text);
 
-  try {
-    await ctx.deleteMessage(waitMsg.message_id);
-  } catch {}
+  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
 
   if (matches.length > 0) {
     await sendApkViaCopy(ctx, matches[0]);
