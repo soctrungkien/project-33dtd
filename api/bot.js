@@ -368,7 +368,7 @@ bot.command('apk', async (ctx) => {
 });
 
 bot.command('msg', async (ctx) => {
-  await ctx.reply('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:', {
+  await ctx.reply('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:　', {
     reply_markup: { force_reply: true }
   });
 });
@@ -498,7 +498,7 @@ bot.on('text', async (ctx) => {
   const repliedMessage = ctx.message.reply_to_message;
 
   if (repliedMessage && repliedMessage.from?.id === ctx.botInfo.id && 
-      repliedMessage.text?.includes('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:')) {
+      repliedMessage.text?.includes('　')) {
     
     if (OWNER_ID) {
       await ctx.telegram.sendMessage(
