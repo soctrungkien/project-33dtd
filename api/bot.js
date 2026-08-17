@@ -80,37 +80,22 @@ async function getGramClient() {
   }
 }
 
-// 1. Dò ID lớn nhất chính xác qua Api.messages.Search hoặc reverse getMessages
-async function getMaxMessageId(client, entity) {
+// 1. Dò ID lớn nhất chính xác
+async function getMaxMessageId(client, channelPeer) {
+  const probeIds = [
+    10, 50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000,
+  ];
   try {
-    const searchRes = await client.invoke(
-      new Api.messages.Search({
-        peer: entity,
-        q: "",
-        filter: new Api.InputMessagesFilterEmpty(),
-        minDate: 0,
-        maxDate: 0,
-        offsetId: 0,
-        addOffset: 0,
-        limit: 1,
-        maxId: 0,
-        minId: 0,
-        hash: BigInt(0),
-      })
+    const msgs = await client.getMessages(channelPeer, { ids: probeIds });
+    const validMsgs = (Array.isArray(msgs) ? msgs : []).filter(
+      (m) => m && m.id,
     );
-    if (searchRes.messages && searchRes.messages.length > 0) {
-      return searchRes.messages[0].id;
-    }
+    if (validMsgs.length === 0) return 500;
+    const highestFound = Math.max(...validMsgs.map((m) => m.id));
+    return highestFound + 100;
   } catch (e) {
-    // Fallback nếu Search API bị hạn chế quyền trên channel
-    try {
-      const msgs = await client.getMessages(entity, { limit: 1, reverse: false });
-      return msgs?.[0]?.id || 0;
-    } catch (err) {
-      logError("GRAMJS", "Không thể lấy max message ID", err);
-    }
+    return 2000;
   }
-  return 0;
 }
 
 async function fetchBatchesWithConcurrency(client, channelPeer, batches, limit = 4) {
