@@ -465,11 +465,19 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   const matchedIds = global.searchCache.get(searchId);
 
   await ctx.answerCbQuery();
-  if (!matchedIds || matchedIds.length === 0) return ctx.reply("Kết quả đã hết hạn!");
+
+  // 🗑️ Xoá tin nhắn chứa nút bấm ngay lập tức
+  try {
+    await ctx.deleteMessage();
+  } catch (e) {}
+
+  if (!matchedIds || matchedIds.length === 0) {
+    return ctx.reply("Kết quả đã hết hạn!");
+  }
 
   await ctx.sendChatAction("upload_document");
-  
-  // Tái tạo lại object chi tiết từ RAM cache
+
+  // Lấy dữ liệu và gửi file APK
   const allApks = await getAllApksFromChannelOptimized(false);
   const apkMap = new Map(allApks.map((item) => [item.message_id, item]));
 
@@ -480,6 +488,7 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
       await sendApkViaCopy(ctx, item);
     }
   }
+
   global.searchCache.delete(searchId);
 });
 
