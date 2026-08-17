@@ -354,7 +354,7 @@ bot.command('ping', async (ctx) => {
 
 // Tự động kiểm tra và quét thêm APK mới khi bấm /apk
 bot.command('apk', async (ctx) => {
-  const statusMsg = await ctx.reply('Đang kiểm tra và cập nhật APK mới...');
+  const statusMsg = await ctx.reply('Đang kiểm tra...');
   await ctx.sendChatAction('typing');
 
   const allApks = await getAllApksFromChannelOptimized(true);
@@ -498,7 +498,7 @@ bot.on('text', async (ctx) => {
   const repliedMessage = ctx.message.reply_to_message;
 
   if (repliedMessage && repliedMessage.from?.id === ctx.botInfo.id && 
-      repliedMessage.text?.includes('Hãy trả lời tin nhắn này')) {
+      repliedMessage.text?.includes('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:')) {
     
     if (OWNER_ID) {
       await ctx.telegram.sendMessage(
