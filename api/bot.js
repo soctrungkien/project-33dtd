@@ -21,7 +21,7 @@ global.fileStoreCache = global.fileStoreCache || new Map();
 
 let clientInstance = null;
 let liveSweepCache = { data: [], lastFetch: 0 };
-const CACHE_TTL = 1 * 60 * 1000; // Cache RAM 1 phút
+const CACHE_TTL = 3 * 60 * 1000; // Cache RAM 3 phút
 
 function logInfo(tag, message, data = '') {
   console.log(`[${new Date().toISOString()}] [${tag}] ${message}`, data ? JSON.stringify(data) : '');
@@ -298,8 +298,6 @@ async function handleSearchResults(ctx, matches) {
 }
 
 bot.use(async (ctx, next) => {
-  const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
-  if (isGroup) return;
   return next();
 });
 
@@ -367,42 +365,67 @@ bot.command('apk', async (ctx) => {
   );
 });
 
-bot.command('msg', async (ctx) => {
-  await ctx.reply('Hãy trả lời tin nhắn này với nội dung bạn muốn nói:　', {
-    reply_markup: { force_reply: true }
-  });
+bot.command('msg', async(ctx)=>{
+
+  if(
+    ctx.chat.type !== 'private'
+  ){
+    return ctx.reply(
+      'Lệnh này chỉ dùng trong chat riêng!'
+    );
+  }
+
+  const msg = await ctx.reply(
+    'Hãy trả lời tin nhắn này với nội dung bạn muốn nói:　',
+    {
+      reply_markup: { force_reply: true }
+    }
+  );
+
+  global.msgState = global.msgState || new Map();
+  global.msgState.set(ctx.from.id, msg.message_id);
 });
 
 bot.command('any', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập từ khoá! (VD: /any zarchiver)');
 
-  await ctx.reply('Đang tìm apk...');
-  await ctx.sendChatAction('upload_document');
+const waitMsg = await ctx.reply('Đang tìm apk...');
+await ctx.sendChatAction('upload_document');
 
-  const matches = await searchApksRaw(args);
-  await handleSearchResults(ctx, matches);
+const matches = await searchApksRaw(args);
+
+try {
+  await ctx.deleteMessage(waitMsg.message_id);
+} catch {}
+
+await handleSearchResults(ctx, matches);
 });
 
 bot.command('many', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập từ khoá! (VD: /many zarchiver)');
 
-  await ctx.reply('Đang tìm apk...');
-  await ctx.sendChatAction('upload_document');
+const waitMsg = await ctx.reply('Đang tìm apk...');
+await ctx.sendChatAction('upload_document');
 
-  const matches = await searchApksStandard(args);
-  await handleSearchResults(ctx, matches);
+const matches = await searchApksStandard(args);
+
+try {
+  await ctx.deleteMessage(waitMsg.message_id);
+} catch {}
+
+await handleSearchResults(ctx, matches);
 });
 
 bot.command('regex', async (ctx) => {
   const args = ctx.message.text.split(' ').slice(1).join(' ').trim();
   if (!args) return ctx.reply('Vui lòng nhập mẫu Regex! (VD: /regex zarchiver.*)');
 
-  await ctx.reply('Đang tìm apk...');
-  await ctx.sendChatAction('upload_document');
+const waitMsg = await ctx.reply('Đang tìm apk...');
+await ctx.sendChatAction('upload_document');
 
-  const allApks = await getAllApksFromChannelOptimized(true);
+const allApks = await getAllApksFromChannelOptimized(true);
   let matched = [];
 
   try {
@@ -411,9 +434,13 @@ bot.command('regex', async (ctx) => {
     matched.sort((a, b) => Number(b.message_id) - Number(a.message_id));
   } catch (e) {
     return ctx.reply('Cú pháp Regex không hợp lệ!');
-  }
+}
 
-  await handleSearchResults(ctx, matched);
+try {
+  await ctx.deleteMessage(waitMsg.message_id);
+} catch {}
+
+await handleSearchResults(ctx, matched);;
 });
 
 bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
@@ -507,22 +534,29 @@ bot.on('text', async (ctx) => {
         { parse_mode: 'HTML' }
       );
     }
-    
-    try {
-      await ctx.deleteMessage(ctx.message.message_id);
-      await ctx.telegram.editMessageText(ctx.chat.id, repliedMessage.message_id, null, 'Cảm ơn, tin nhắn đã được gửi!');
-    } catch (e) {
-      await ctx.reply('Cảm ơn, tin nhắn đã được gửi!');
-    }
+
+try {
+  await ctx.deleteMessage(ctx.message.message_id);
+
+  await ctx.deleteMessage(repliedMessage.message_id);
+
+  await ctx.reply('Cảm ơn, tin nhắn đã được gửi!');
+} catch (e) {
+  await ctx.reply('Cảm ơn, tin nhắn đã được gửi!');
+}
     return;
   }
 
-  await ctx.reply('Đang tìm apk...');
-  await ctx.sendChatAction('upload_document');
+const waitMsg = await ctx.reply('Đang tìm apk...');
+await ctx.sendChatAction('upload_document');
 
-  const matches = await searchApksStandard(text);
+const matches = await searchApksStandard(text);
 
-  if (matches.length > 0) {
+try {
+  await ctx.deleteMessage(waitMsg.message_id);
+} catch {}
+
+if (matches.length > 0) {
     await sendApkViaCopy(ctx, matches[0]);
   } else {
     await ctx.reply('Không tìm thấy APK!');
