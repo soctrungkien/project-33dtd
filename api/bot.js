@@ -351,8 +351,8 @@ bot.command("delcache", async (ctx) => {
     "⚠️ Bạn chắc chắn muốn xoá toàn bộ cache?",
     Markup.inlineKeyboard([
       [
-        Markup.button.callback("XOÁ!", "confirm_delcache"),
-        Markup.button.callback("thui, bỏ đi", "cancel_delcache"),
+        Markup.button.callback("XOÁ! 🔥", "confirm_delcache"),
+        Markup.button.callback("thui bỏ đi 😆", "cancel_delcache"),
       ],
     ])
   );
