@@ -67,13 +67,16 @@ async function getKeyboxData() {
       const commitDate = commits[0].commit?.committer?.date;
       if (commitDate) {
         updateDate = formatDate(commitDate);
-        fileDate = new Date(commitDate).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+        
+        // Định dạng ngày dạng D-M-YYYY hoặc YYYY-MM-DD an toàn cho tên file
+        const d = new Date(commitDate);
+        fileDate = `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
       }
     }
   }
 
+  // Tên file mới an toàn: keybox-7-7-2026.xml
   const filename = `keybox-${fileDate}.xml`;
-  return { buffer, updateDate, sha, filename };
 }
 
 // Lệnh /start
