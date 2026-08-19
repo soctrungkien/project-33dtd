@@ -7,26 +7,25 @@ const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
 const KEYBOX_URL = "https://raw.githubusercontent.com/Yurii0307/yurikey/main/key";
 const COMMIT_API = "https://api.github.com/repos/Yurii0307/yurikey/commits?path=key&page=1&per_page=1";
 
-// Cấu hình ID Admin/Owner dạng danh sách cách nhau bởi dấu phẩy (Ví dụ: "123456789,987654321")
-const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(id => id.trim());
-
 function formatDate(isoString) {
   if (!isoString) return "Không xác định";
   return new Date(isoString).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
 
-// Kiểm tra quyền Admin/Owner (Từ cấu hình ID hoặc danh sách Admin của nhóm)
+// Kiểm tra quyền Admin/Owner
 async function isAdmin(ctx) {
-  const userId = String(ctx.from?.id);
-  if (ADMIN_IDS.includes(userId)) return true;
+  // 1. Nhắn riêng trực tiếp với Bot (Private Chat) -> Tự động nhận là Admin
+  if (ctx.chat?.type === 'private') {
+    return true;
+  }
 
-  // Nếu là chat nhóm/kênh, kiểm tra quyền Admin trực tiếp trong Telegram
+  // 2. Nhắn trong Nhóm (group/supergroup) hoặc Kênh (channel) -> Lấy danh sách Admin từ Telegram
   if (['group', 'supergroup', 'channel'].includes(ctx.chat?.type)) {
     try {
       const member = await ctx.getChatMember(ctx.from.id);
       return ['creator', 'administrator'].includes(member.status);
     } catch (err) {
-      console.error("Lỗi kiểm tra quyền Admin:", err);
+      console.error("Lỗi kiểm tra quyền Admin trong nhóm/kênh:", err);
       return false;
     }
   }
@@ -87,8 +86,9 @@ bot.command('start', async (ctx) => {
 // Lệnh /help
 bot.command('help', async (ctx) => {
   await ctx.sendChatAction('typing');
-  const adminHelp = (await isAdmin(ctx)) 
-    ? "\n\n🛠 **Lệnh quản trị (Admin):**\n• `/testauto` - Kiểm tra và kích hoạt auto-update thủ công\n• `/resetauto` - Xóa cache Redis để ép gửi lại thông báo bản mới"
+  const isUserAdmin = await isAdmin(ctx);
+  const adminHelp = isUserAdmin 
+    ? "\n\n🛠 **Lệnh quản trị (Admin/Private):**\n• `/testauto` - Kích hoạt kiểm tra auto-update ngay lập tức\n• `/resetauto` - Xóa cache Redis để ép gửi lại thông báo bản mới"
     : "";
 
   await ctx.reply(
@@ -133,19 +133,19 @@ bot.command('keybox', async (ctx) => {
   }
 });
 
-// Lệnh /testauto (Chỉ Admin/Owner)
+// Lệnh /testauto (Chỉ dành cho Admin nhóm/kênh hoặc Chat riêng)
 bot.command('testauto', async (ctx) => {
   if (!(await isAdmin(ctx))) {
-    return ctx.reply("⚠️ Lệnh này chỉ dành cho Admin/Owner!");
+    return ctx.reply("⚠️ Bạn phải là Admin của nhóm/kênh hoặc nhắn riêng với bot để dùng lệnh này!");
   }
 
   await ctx.reply("🔄 Đang chạy thử nghiệm luồng Auto-Update...");
   try {
     const result = await handleCron();
     if (result.updated) {
-      await ctx.reply(`✅ Đã gửi bản cập nhật mới vào nhóm!\nSHA: \`${result.sha}\``, { parse_mode: 'Markdown' });
+      await ctx.reply(`✅ Đã phát hiện bản mới và gửi vào nhóm!\nSHA: \`${result.sha}\``, { parse_mode: 'Markdown' });
     } else {
-      await ctx.reply(`ℹ️ Không có bản mới (SHA không đổi).\nSHA hiện tại: \`${result.sha}\``, { parse_mode: 'Markdown' });
+      await ctx.reply(`ℹ️ Chưa có bản mới (SHA không đổi).\nSHA hiện tại: \`${result.sha}\``, { parse_mode: 'Markdown' });
     }
   } catch (error) {
     console.error(error);
@@ -153,15 +153,15 @@ bot.command('testauto', async (ctx) => {
   }
 });
 
-// Lệnh /resetauto (Chỉ Admin/Owner)
+// Lệnh /resetauto (Chỉ dành cho Admin nhóm/kênh hoặc Chat riêng)
 bot.command('resetauto', async (ctx) => {
   if (!(await isAdmin(ctx))) {
-    return ctx.reply("⚠️ Lệnh này chỉ dành cho Admin/Owner!");
+    return ctx.reply("⚠️ Bạn phải là Admin của nhóm/kênh hoặc nhắn riêng với bot để dùng lệnh này!");
   }
 
   try {
     await redis.del('CRON_KEYBOX_SHA');
-    await ctx.reply("✅ Đã xóa SHA lưu trữ trong Redis! Lần chạy Cron tiếp theo sẽ tự động gửi lại file vào nhóm.");
+    await ctx.reply("✅ Đã xóa SHA lưu trữ trong Redis! Tiến trình Cron hoặc `/testauto` tiếp theo sẽ tự động gửi lại file vào nhóm.");
   } catch (error) {
     console.error(error);
     await ctx.reply(`❌ Lỗi khi xóa Redis: ${error.message}`);
@@ -174,7 +174,7 @@ async function handleCron() {
 
   if (!sha) throw new Error("Không thể lấy commit SHA");
 
-  // Dùng key riêng CRON_KEYBOX_SHA cho tiến trình tự động
+  // Key Redis lưu trạng thái cập nhật tự động
   const lastSha = await redis.get('CRON_KEYBOX_SHA');
 
   if (sha !== lastSha) {
