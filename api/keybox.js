@@ -10,7 +10,7 @@ const COMMIT_API = "https://api.github.com/repos/Yurii0307/yurikey/commits?path=
 
 function formatDate(isoString) {
   if (!isoString) return "Không xác định";
-  return new Date(isoString).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+  return new Date(isoString).toLocaleString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
 
 // Kiểm tra quyền Admin/Owner
