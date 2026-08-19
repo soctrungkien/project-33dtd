@@ -15,26 +15,68 @@ function formatDate(isoString) {
 async function getKeyboxData() {
   const [fileRes, commitRes] = await Promise.all([
     fetch(KEYBOX_URL),
-    fetch(COMMIT_API, { headers: { 'User-Agent': 'Vercel-Cron-Bot' } })
+    fetch(COMMIT_API, {
+      headers: { 'User-Agent': 'Vercel-Cron-Bot' }
+    })
   ]);
 
-  if (!fileRes.ok) throw new Error("Không thể tải file key");
-  
-  const arrayBuffer = await fileRes.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  if (!fileRes.ok) {
+    throw new Error("Không thể tải file key");
+  }
+
+  // Raw GitHub trả về Base64
+  const base64Text = await fileRes.text();
+
+  // Xóa whitespace / xuống dòng trong Base64
+  const cleanBase64 = base64Text
+    .replace(/\s+/g, '')
+    .trim();
+
+  let buffer;
+
+  try {
+    buffer = Buffer.from(cleanBase64, 'base64');
+
+    // Kiểm tra Base64 có hợp lệ không
+    if (!buffer.length) {
+      throw new Error("Base64 rỗng");
+    }
+  } catch (error) {
+    throw new Error(`Không thể decode Base64: ${error.message}`);
+  }
 
   let updateDate = "Không xác định";
+  let fileDate = new Date().toISOString().slice(0, 10);
   let sha = null;
 
   if (commitRes.ok) {
     const commits = await commitRes.json();
+
     if (commits[0]) {
       sha = commits[0].sha;
-      updateDate = formatDate(commits[0].commit?.committer?.date);
+
+      const commitDate = commits[0].commit?.committer?.date;
+
+      if (commitDate) {
+        updateDate = formatDate(commitDate);
+
+        // YYYY-MM-DD
+        fileDate = new Date(commitDate)
+          .toLocaleDateString('en-CA', {
+            timeZone: 'Asia/Ho_Chi_Minh'
+          });
+      }
     }
   }
 
-  return { buffer, updateDate, sha };
+  const filename = `keybox-${fileDate}.xml`;
+
+  return {
+    buffer,
+    updateDate,
+    sha,
+    filename
+  };
 }
 
 // Lệnh /start
@@ -80,17 +122,24 @@ bot.command('ping', async (ctx) => {
 bot.command('keybox', async (ctx) => {
   try {
     await ctx.sendChatAction('typing');
-    const { buffer, updateDate } = await getKeyboxData();
-    
-    // Đổi sang trạng thái gửi file
+
+    const { buffer, updateDate, filename } = await getKeyboxData();
+
     await ctx.sendChatAction('upload_document');
-    await ctx.replyWithDocument({
-      source: buffer,
-      filename: 'keybox.xml'
-    }, {
-      caption: `🔑 **File Keybox Yuri**\n📅 Ngày cập nhật: \`${updateDate}\``,
-      parse_mode: 'Markdown'
-    });
+
+    await ctx.replyWithDocument(
+      {
+        source: buffer,
+        filename
+      },
+      {
+        caption:
+          `🔑 **File Keybox Yuri**\n` +
+          `📅 Ngày cập nhật: \`${updateDate}\`\n` +
+          `📄 Tên file: \`${filename}\``,
+        parse_mode: 'Markdown'
+      }
+    );
   } catch (error) {
     console.error(error);
     await ctx.reply("❌ Có lỗi xảy ra khi lấy file key.");
@@ -99,8 +148,11 @@ bot.command('keybox', async (ctx) => {
 
 // Cron Job kiểm tra bản mới
 async function handleCron() {
-  const { buffer, updateDate, sha } = await getKeyboxData();
-  if (!sha) throw new Error("Không thể lấy commit SHA");
+  const { buffer, updateDate, sha, filename } = await getKeyboxData();
+
+  if (!sha) {
+    throw new Error("Không thể lấy commit SHA");
+  }
 
   const lastSha = await redis.get('LAST_KEYBOX_SHA');
 
@@ -108,21 +160,42 @@ async function handleCron() {
     const groupId = process.env.GROUP_CHAT_ID;
 
     if (groupId) {
-      await bot.telegram.sendChatAction(groupId, 'upload_document');
-      await bot.telegram.sendDocument(groupId, {
-        source: buffer,
-        filename: 'keybox.xml'
-      }, {
-        caption: `🎉 **Phát hiện file Keybox mới!**\n📅 Ngày cập nhật: \`${updateDate}\``,
-        parse_mode: 'Markdown'
-      });
+      await bot.telegram.sendChatAction(
+        groupId,
+        'upload_document'
+      );
+
+      await bot.telegram.sendDocument(
+        groupId,
+        {
+          source: buffer,
+          filename
+        },
+        {
+          caption:
+            `🎉 **Phát hiện file Keybox mới!**\n` +
+            `📅 Ngày cập nhật: \`${updateDate}\`\n` +
+            `📄 Tên file: \`${filename}\``,
+          parse_mode: 'Markdown'
+        }
+      );
 
       await redis.set('LAST_KEYBOX_SHA', sha);
-      return { updated: true, sha, updateDate };
+
+      return {
+        updated: true,
+        sha,
+        updateDate,
+        filename
+      };
     }
   }
 
-  return { updated: false, sha };
+  return {
+    updated: false,
+    sha,
+    filename
+  };
 }
 
 export default async function handler(req, res) {
