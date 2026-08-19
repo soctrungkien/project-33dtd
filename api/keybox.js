@@ -41,8 +41,8 @@ async function getKeyboxData() {
 bot.command('start', async (ctx) => {
   await ctx.sendChatAction('typing');
   await ctx.reply(
-    "👋 **Chủ đề: Keybox Telegram Bot**\n\n" +
-    "Bot hỗ trợ lấy file keybox mới nhất từ GitHub và tự động cập nhật vào nhóm.\n\n" +
+    "**Keybox Telegram Bot**\n" +
+    "Bot hỗ trợ lấy file keybox yuri mới nhất và tự động cập nhật vào nhóm.\n\n" +
     "Gõ /help để xem danh sách lệnh.",
     { parse_mode: 'Markdown' }
   );
@@ -52,10 +52,10 @@ bot.command('start', async (ctx) => {
 bot.command('help', async (ctx) => {
   await ctx.sendChatAction('typing');
   await ctx.reply(
-    "📖 **Danh sách lệnh:**\n\n" +
-    "• `/keybox` - Tải file keybox mới nhất\n" +
-    "• `/ping` - Kiểm tra độ trễ phản hồi của bot\n" +
-    "• `/help` - Hiển thị hướng dẫn này",
+    "📖 **Danh sách lệnh:**\n" +
+    "• /keybox - Tải file keybox mới nhất\n" +
+    "• /ping - Kiểm tra độ trễ phản hồi của bot\n" +
+    "• /help - Hiển thị hướng dẫn này",
     { parse_mode: 'Markdown' }
   );
 });
@@ -86,9 +86,9 @@ bot.command('keybox', async (ctx) => {
     await ctx.sendChatAction('upload_document');
     await ctx.replyWithDocument({
       source: buffer,
-      filename: 'keybox'
+      filename: 'keybox.xml'
     }, {
-      caption: `🔑 **File Keybox gốc**\n📅 Ngày cập nhật: \`${updateDate}\``,
+      caption: `🔑 **File Keybox Yuri**\n📅 Ngày cập nhật: \`${updateDate}\``,
       parse_mode: 'Markdown'
     });
   } catch (error) {
@@ -111,9 +111,9 @@ async function handleCron() {
       await bot.telegram.sendChatAction(groupId, 'upload_document');
       await bot.telegram.sendDocument(groupId, {
         source: buffer,
-        filename: 'keybox'
+        filename: 'keybox.xml'
       }, {
-        caption: `🎉 **Phát hiện file Key mới!**\n📅 Ngày cập nhật: \`${updateDate}\``,
+        caption: `🎉 **Phát hiện file Keybox mới!**\n📅 Ngày cập nhật: \`${updateDate}\``,
         parse_mode: 'Markdown'
       });
 
