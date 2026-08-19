@@ -1,9 +1,8 @@
 import { Telegraf } from 'telegraf';
-import { Redis } from '@upstash/redis';
+import Redis from 'ioredis';
 
-// Sử dụng biến môi trường BOT_TOKEN_KEYBOX theo yêu cầu
+const redis = new Redis(process.env.REDIS_URL);
 const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
-const redis = Redis.fromEnv();
 
 const KEYBOX_URL = "https://raw.githubusercontent.com/Yurii0307/yurikey/main/key";
 const COMMIT_API = "https://api.github.com/repos/Yurii0307/yurikey/commits?path=key&page=1&per_page=1";
@@ -13,7 +12,6 @@ function formatDate(isoString) {
   return new Date(isoString).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
 
-// Lấy file key trực tiếp dạng Buffer (không qua decode base64)
 async function getKeyboxData() {
   const [fileRes, commitRes] = await Promise.all([
     fetch(KEYBOX_URL),
@@ -39,12 +37,53 @@ async function getKeyboxData() {
   return { buffer, updateDate, sha };
 }
 
-// Xử lý lệnh /keybox
+// Lệnh /start
+bot.command('start', async (ctx) => {
+  await ctx.sendChatAction('typing');
+  await ctx.reply(
+    "👋 **Chủ đề: Keybox Telegram Bot**\n\n" +
+    "Bot hỗ trợ lấy file keybox mới nhất từ GitHub và tự động cập nhật vào nhóm.\n\n" +
+    "Gõ /help để xem danh sách lệnh.",
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Lệnh /help
+bot.command('help', async (ctx) => {
+  await ctx.sendChatAction('typing');
+  await ctx.reply(
+    "📖 **Danh sách lệnh:**\n\n" +
+    "• `/keybox` - Tải file keybox mới nhất\n" +
+    "• `/ping` - Kiểm tra độ trễ phản hồi của bot\n" +
+    "• `/help` - Hiển thị hướng dẫn này",
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Lệnh /ping
+bot.command('ping', async (ctx) => {
+  const start = Date.now();
+  await ctx.sendChatAction('typing');
+  const message = await ctx.reply("🏓 Pong!");
+  const ms = Date.now() - start;
+  
+  await ctx.telegram.editMessageText(
+    ctx.chat.id,
+    message.message_id,
+    null,
+    `🏓 **Pong!**\n⚡ Độ trễ: \`${ms}ms\``,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Lệnh /keybox
 bot.command('keybox', async (ctx) => {
   try {
-    await ctx.reply("⏳ Đang tải file key...");
+    await ctx.sendChatAction('typing');
     const { buffer, updateDate } = await getKeyboxData();
     
+    // Đổi sang trạng thái gửi file
+    await ctx.sendChatAction('upload_document');
     await ctx.replyWithDocument({
       source: buffer,
       filename: 'keybox'
@@ -58,7 +97,7 @@ bot.command('keybox', async (ctx) => {
   }
 });
 
-// Cron Job tự động kiểm tra bản mới
+// Cron Job kiểm tra bản mới
 async function handleCron() {
   const { buffer, updateDate, sha } = await getKeyboxData();
   if (!sha) throw new Error("Không thể lấy commit SHA");
@@ -69,6 +108,7 @@ async function handleCron() {
     const groupId = process.env.GROUP_CHAT_ID;
 
     if (groupId) {
+      await bot.telegram.sendChatAction(groupId, 'upload_document');
       await bot.telegram.sendDocument(groupId, {
         source: buffer,
         filename: 'keybox'
