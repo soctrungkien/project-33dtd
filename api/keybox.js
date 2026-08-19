@@ -162,16 +162,20 @@ bot.command('testauto', async (ctx) => {
   }
 });
 
-// Lệnh /resetauto
+// Lệnh /resetauto (Xóa SHA riêng cho cá nhân hoặc nhóm này)
 bot.command('resetauto', async (ctx) => {
   await saveGroupId(ctx);
   if (!(await isAdmin(ctx))) {
     return ctx.reply("⚠️ Bạn phải là Admin của nhóm/kênh hoặc nhắn riêng với bot!");
   }
 
+  // Tạo Redis key riêng biệt theo ID của Chat (Private / Group / Channel)
+  const chatId = ctx.chat.id;
+  const redisKey = `CRON_KEYBOX_SHA_${chatId}`;
+
   try {
-    await redis.del('CRON_KEYBOX_SHA');
-    await ctx.reply("✅ Đã xóa mã nhânn dạng lưu trữ! Lần chạy Cron hoặc `/testauto` tiếp theo sẽ tự động gửi lại file.");
+    await redis.del(redisKey);
+    await ctx.reply("✅ Đã xóa mã nhận dạng lưu trữ của nhóm/chat này! Lần chạy Cron hoặc `/testauto` tiếp theo sẽ tự động gửi lại file.");
   } catch (error) {
     console.error(error);
     await ctx.reply(`❌ Lỗi khi xóa: ${error.message}`);
