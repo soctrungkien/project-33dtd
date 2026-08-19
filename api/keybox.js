@@ -4,249 +4,107 @@ import Redis from 'ioredis';
 const redis = new Redis(process.env.REDIS_URL);
 const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
 
-const KEYBOX_URL =
-  'https://raw.githubusercontent.com/Yurii0307/yurikey/main/key';
+const KEYBOX_URL = "https://raw.githubusercontent.com/Yurii0307/yurikey/main/key";
+const COMMIT_API = "https://api.github.com/repos/Yurii0307/yurikey/commits?path=key&page=1&per_page=1";
 
-const COMMIT_API =
-  'https://api.github.com/repos/Yurii0307/yurikey/commits?path=key&page=1&per_page=1';
+// Cấu hình ID Admin/Owner dạng danh sách cách nhau bởi dấu phẩy (Ví dụ: "123456789,987654321")
+const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(id => id.trim());
 
-// ============================================================
-// CONFIG
-// ============================================================
+function formatDate(isoString) {
+  if (!isoString) return "Không xác định";
+  return new Date(isoString).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+}
 
-const REDIS_PREFIX = 'keybox:auto';
-const LOCK_KEY = `${REDIS_PREFIX}:cron-lock`;
-const LOCK_TTL = 60;
+// Kiểm tra quyền Admin/Owner (Từ cấu hình ID hoặc danh sách Admin của nhóm)
+async function isAdmin(ctx) {
+  const userId = String(ctx.from?.id);
+  if (ADMIN_IDS.includes(userId)) return true;
 
-// Admin Telegram user IDs
-// Ví dụ:
-// ADMIN_IDS=123456789,987654321
-const ADMIN_IDS = new Set(
-  String(process.env.ADMIN_IDS || '')
-    .split(',')
-    .map(id => id.trim())
-    .filter(Boolean)
-);
-
-// Group IDs
-//
-// Có thể dùng:
-// GROUP_CHAT_ID=-100123456789
-//
-// Hoặc nhiều group:
-// GROUP_CHAT_IDS=-100111111111,-100222222222
-function getGroupIds() {
-  const ids = [];
-
-  if (process.env.GROUP_CHAT_IDS) {
-    ids.push(
-      ...String(process.env.GROUP_CHAT_IDS)
-        .split(',')
-        .map(id => id.trim())
-        .filter(Boolean)
-    );
-  }
-
-  if (process.env.GROUP_CHAT_ID) {
-    const id = String(process.env.GROUP_CHAT_ID).trim();
-
-    if (id && !ids.includes(id)) {
-      ids.push(id);
+  // Nếu là chat nhóm/kênh, kiểm tra quyền Admin trực tiếp trong Telegram
+  if (['group', 'supergroup', 'channel'].includes(ctx.chat?.type)) {
+    try {
+      const member = await ctx.getChatMember(ctx.from.id);
+      return ['creator', 'administrator'].includes(member.status);
+    } catch (err) {
+      console.error("Lỗi kiểm tra quyền Admin:", err);
+      return false;
     }
   }
 
-  return [...new Set(ids)];
+  return false;
 }
-
-// ============================================================
-// REDIS KEY
-// ============================================================
-
-function groupRedisKey(groupId) {
-  return `${REDIS_PREFIX}:group:${groupId}:sha`;
-}
-
-function userRedisKey(userId) {
-  return `${REDIS_PREFIX}:user:${userId}`;
-}
-
-// ============================================================
-// DATE
-// ============================================================
-
-function formatDate(isoString) {
-  if (!isoString) {
-    return 'Không xác định';
-  }
-
-  return new Date(isoString).toLocaleString('vi-VN', {
-    timeZone: 'Asia/Ho_Chi_Minh'
-  });
-}
-
-// ============================================================
-// GET KEYBOX
-// ============================================================
 
 async function getKeyboxData() {
   const [fileRes, commitRes] = await Promise.all([
-    fetch(KEYBOX_URL, {
-      headers: {
-        'Cache-Control': 'no-cache'
-      }
-    }),
-
-    fetch(COMMIT_API, {
-      headers: {
-        'User-Agent': 'Vercel-Cron-Bot',
-        'Accept': 'application/vnd.github+json',
-        'Cache-Control': 'no-cache'
-      }
-    })
+    fetch(KEYBOX_URL),
+    fetch(COMMIT_API, { headers: { 'User-Agent': 'Vercel-Cron-Bot' } })
   ]);
 
-  if (!fileRes.ok) {
-    throw new Error(
-      `Không thể tải file key. HTTP ${fileRes.status}`
-    );
-  }
+  if (!fileRes.ok) throw new Error("Không thể tải file key");
 
-  // File trên repository đang chứa Base64
   const base64Text = await fileRes.text();
-
-  const cleanBase64 = base64Text
-    .replace(/\s+/g, '')
-    .trim();
-
-  if (!cleanBase64) {
-    throw new Error('Base64 rỗng');
-  }
+  const cleanBase64 = base64Text.replace(/\s+/g, '').trim();
 
   let buffer;
-
   try {
     buffer = Buffer.from(cleanBase64, 'base64');
-
-    if (!buffer.length) {
-      throw new Error('Base64 decode ra dữ liệu rỗng');
-    }
+    if (!buffer.length) throw new Error("Base64 rỗng");
   } catch (error) {
-    throw new Error(
-      `Không thể decode Base64: ${error.message}`
-    );
+    throw new Error(`Không thể decode Base64: ${error.message}`);
   }
 
-  let updateDate = 'Không xác định';
-  let fileDate = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'Asia/Ho_Chi_Minh'
-  });
-
+  let updateDate = "Không xác định";
+  let fileDate = new Date().toISOString().slice(0, 10);
   let sha = null;
 
   if (commitRes.ok) {
     const commits = await commitRes.json();
-
-    if (Array.isArray(commits) && commits[0]) {
+    if (commits[0]) {
       sha = commits[0].sha;
-
-      const commitDate =
-        commits[0].commit?.committer?.date ||
-        commits[0].commit?.author?.date;
-
+      const commitDate = commits[0].commit?.committer?.date;
       if (commitDate) {
         updateDate = formatDate(commitDate);
-
-        fileDate = new Date(commitDate).toLocaleDateString(
-          'en-CA',
-          {
-            timeZone: 'Asia/Ho_Chi_Minh'
-          }
-        );
+        fileDate = new Date(commitDate).toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' });
       }
     }
-  } else {
-    console.error(
-      `[GITHUB] Commit API lỗi: ${commitRes.status}`
-    );
-  }
-
-  if (!sha) {
-    throw new Error('Không thể lấy commit SHA');
   }
 
   const filename = `keybox-${fileDate}.xml`;
-
-  return {
-    buffer,
-    updateDate,
-    sha,
-    filename
-  };
+  return { buffer, updateDate, sha, filename };
 }
 
-// ============================================================
-// ADMIN CHECK
-// ============================================================
-
-function isAdmin(userId) {
-  if (!userId) {
-    return false;
-  }
-
-  return ADMIN_IDS.has(String(userId));
-}
-
-// ============================================================
-// /START
-// ============================================================
-
-bot.command('start', async ctx => {
+// Lệnh /start
+bot.command('start', async (ctx) => {
   await ctx.sendChatAction('typing');
-
   await ctx.reply(
-    '**Keybox Telegram Bot**\n' +
-    'Bot hỗ trợ lấy file keybox Yuri mới nhất và tự động cập nhật vào nhóm.\n\n' +
-    'Gõ /help để xem danh sách lệnh.',
-    {
-      parse_mode: 'Markdown'
-    }
+    "👋 **Keybox Telegram Bot**\n" +
+    "Bot hỗ trợ lấy file keybox Yuri mới nhất và tự động cập nhật vào nhóm.\n\n" +
+    "Gõ /help để xem danh sách lệnh.",
+    { parse_mode: 'Markdown' }
   );
 });
 
-// ============================================================
-// /HELP
-// ============================================================
-
-bot.command('help', async ctx => {
+// Lệnh /help
+bot.command('help', async (ctx) => {
   await ctx.sendChatAction('typing');
+  const adminHelp = (await isAdmin(ctx)) 
+    ? "\n\n🛠 **Lệnh quản trị (Admin):**\n• `/testauto` - Kiểm tra và kích hoạt auto-update thủ công\n• `/resetauto` - Xóa cache Redis để ép gửi lại thông báo bản mới"
+    : "";
 
-  let text =
-    '📖 **Danh sách lệnh:**\n' +
-    '• /keybox - Tải file keybox mới nhất\n' +
-    '• /ping - Kiểm tra độ trễ phản hồi của bot\n' +
-    '• /help - Hiển thị hướng dẫn này';
-
-  if (isAdmin(ctx.from?.id)) {
-    text +=
-      '\n• /testauto - Reset auto của group và chạy lại ngay';
-  }
-
-  await ctx.reply(text, {
-    parse_mode: 'Markdown'
-  });
+  await ctx.reply(
+    "📖 **Danh sách lệnh:**\n" +
+    "• `/keybox` - Tải file keybox mới nhất\n" +
+    "• `/ping` - Kiểm tra độ trễ phản hồi của bot\n" +
+    "• `/help` - Hiển thị hướng dẫn này" + adminHelp,
+    { parse_mode: 'Markdown' }
+  );
 });
 
-// ============================================================
-// /PING
-// ============================================================
-
-bot.command('ping', async ctx => {
+// Lệnh /ping
+bot.command('ping', async (ctx) => {
   const start = Date.now();
-
   await ctx.sendChatAction('typing');
-
-  const message = await ctx.reply('🏓 Pong!');
-
+  const message = await ctx.reply("🏓 Pong!");
   const ms = Date.now() - start;
 
   await ctx.telegram.editMessageText(
@@ -254,385 +112,105 @@ bot.command('ping', async ctx => {
     message.message_id,
     null,
     `🏓 **Pong!**\n⚡ Độ trễ: \`${ms}ms\``,
-    {
-      parse_mode: 'Markdown'
-    }
+    { parse_mode: 'Markdown' }
   );
 });
 
-// ============================================================
-// /KEYBOX
-// ============================================================
-
-bot.command('keybox', async ctx => {
+// Lệnh /keybox
+bot.command('keybox', async (ctx) => {
   try {
     await ctx.sendChatAction('typing');
-
-    const {
-      buffer,
-      updateDate,
-      filename
-    } = await getKeyboxData();
-
+    const { buffer, updateDate, filename } = await getKeyboxData();
+    
     await ctx.sendChatAction('upload_document');
-
-    await ctx.replyWithDocument(
-      {
-        source: buffer,
-        filename
-      },
-      {
-        caption:
-          `🔑 **File Keybox Yuri**\n` +
-          `📅 Ngày cập nhật: \`${updateDate}\`\n` +
-          `📄 Tên file: \`${filename}\``,
-        parse_mode: 'Markdown'
-      }
-    );
+    await ctx.replyWithDocument({ source: buffer, filename }, {
+      caption: `🔑 **File Keybox Yuri**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
+      parse_mode: 'Markdown'
+    });
   } catch (error) {
-    console.error('[KEYBOX]', error);
-
-    await ctx.reply(
-      '❌ Có lỗi xảy ra khi lấy file key.'
-    );
+    console.error(error);
+    await ctx.reply("❌ Có lỗi xảy ra khi lấy file key.");
   }
 });
 
-// ============================================================
-// SEND AUTO UPDATE TO ONE GROUP
-// ============================================================
+// Lệnh /testauto (Chỉ Admin/Owner)
+bot.command('testauto', async (ctx) => {
+  if (!(await isAdmin(ctx))) {
+    return ctx.reply("⚠️ Lệnh này chỉ dành cho Admin/Owner!");
+  }
 
-async function updateGroup(groupId, data, options = {}) {
-  const {
-    buffer,
-    updateDate,
-    sha,
-    filename
-  } = data;
+  await ctx.reply("🔄 Đang chạy thử nghiệm luồng Auto-Update...");
+  try {
+    const result = await handleCron();
+    if (result.updated) {
+      await ctx.reply(`✅ Đã gửi bản cập nhật mới vào nhóm!\nSHA: \`${result.sha}\``, { parse_mode: 'Markdown' });
+    } else {
+      await ctx.reply(`ℹ️ Không có bản mới (SHA không đổi).\nSHA hiện tại: \`${result.sha}\``, { parse_mode: 'Markdown' });
+    }
+  } catch (error) {
+    console.error(error);
+    await ctx.reply(`❌ Lỗi khi test auto: ${error.message}`);
+  }
+});
 
-  const force = options.force === true;
-  const userId = options.userId || null;
-
-  const redisKey = groupRedisKey(groupId);
-
-  const lastSha = await redis.get(redisKey);
-
-  // Không force thì nếu group đã nhận SHA này -> bỏ qua
-  if (!force && lastSha === sha) {
-    return {
-      updated: false,
-      groupId,
-      sha,
-      filename,
-      reason: 'already_updated'
-    };
+// Lệnh /resetauto (Chỉ Admin/Owner)
+bot.command('resetauto', async (ctx) => {
+  if (!(await isAdmin(ctx))) {
+    return ctx.reply("⚠️ Lệnh này chỉ dành cho Admin/Owner!");
   }
 
   try {
-    await bot.telegram.sendChatAction(
-      groupId,
-      'upload_document'
-    );
-
-    await bot.telegram.sendDocument(
-      groupId,
-      {
-        source: buffer,
-        filename
-      },
-      {
-        caption:
-          `🎉 **Phát hiện file Keybox mới!**\n` +
-          `📅 Ngày cập nhật: \`${updateDate}\`\n` +
-          `📄 Tên file: \`${filename}\`` +
-          (force
-            ? '\n🧪 **Đây là lần test auto.**'
-            : ''),
-        parse_mode: 'Markdown'
-      }
-    );
-
-    // Chỉ lưu SHA sau khi Telegram gửi thành công
-    await redis.set(redisKey, sha);
-
-    // Lưu thông tin user thực hiện test
-    if (userId) {
-      await redis.hset(
-        userRedisKey(userId),
-        'lastGroupId',
-        String(groupId),
-        'lastSha',
-        sha,
-        'lastFilename',
-        filename,
-        'lastUpdateDate',
-        updateDate,
-        'lastAction',
-        force ? 'testauto' : 'auto',
-        'lastAt',
-        new Date().toISOString()
-      );
-
-      await redis.expire(
-        userRedisKey(userId),
-        60 * 60 * 24 * 30
-      );
-    }
-
-    return {
-      updated: true,
-      groupId,
-      sha,
-      updateDate,
-      filename
-    };
+    await redis.del('CRON_KEYBOX_SHA');
+    await ctx.reply("✅ Đã xóa SHA lưu trữ trong Redis! Lần chạy Cron tiếp theo sẽ tự động gửi lại file vào nhóm.");
   } catch (error) {
-    console.error(
-      `[AUTO] Không thể gửi group ${groupId}:`,
-      error
-    );
-
-    // QUAN TRỌNG:
-    // Không set Redis nếu Telegram gửi thất bại.
-    throw error;
+    console.error(error);
+    await ctx.reply(`❌ Lỗi khi xóa Redis: ${error.message}`);
   }
-}
+});
 
-// ============================================================
-// CRON AUTO UPDATE
-// ============================================================
-
+// Hàm xử lý Cron Auto-Update riêng biệt
 async function handleCron() {
-  // Lock để tránh 2 cron chạy cùng lúc
-  const lockValue =
-    `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const { buffer, updateDate, sha, filename } = await getKeyboxData();
 
-  const lockResult = await redis.set(
-    LOCK_KEY,
-    lockValue,
-    'NX',
-    'EX',
-    LOCK_TTL
-  );
+  if (!sha) throw new Error("Không thể lấy commit SHA");
 
-  if (lockResult !== 'OK') {
-    return {
-      updated: false,
-      skipped: true,
-      reason: 'cron_locked'
-    };
-  }
+  // Dùng key riêng CRON_KEYBOX_SHA cho tiến trình tự động
+  const lastSha = await redis.get('CRON_KEYBOX_SHA');
 
-  try {
-    const groups = getGroupIds();
+  if (sha !== lastSha) {
+    const groupId = process.env.GROUP_CHAT_ID;
 
-    if (!groups.length) {
-      throw new Error(
-        'Chưa cấu hình GROUP_CHAT_ID hoặc GROUP_CHAT_IDS'
-      );
-    }
+    if (groupId) {
+      await bot.telegram.sendChatAction(groupId, 'upload_document');
+      await bot.telegram.sendDocument(groupId, { source: buffer, filename }, {
+        caption: `🎉 **Phát hiện file Keybox mới!**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
+        parse_mode: 'Markdown'
+      });
 
-    const data = await getKeyboxData();
-
-    const results = [];
-
-    for (const groupId of groups) {
-      try {
-        const result = await updateGroup(
-          groupId,
-          data
-        );
-
-        results.push(result);
-      } catch (error) {
-        results.push({
-          updated: false,
-          groupId,
-          error: error.message
-        });
-      }
-    }
-
-    return {
-      updated: results.some(item => item.updated),
-      sha: data.sha,
-      updateDate: data.updateDate,
-      filename: data.filename,
-      groups: results
-    };
-  } finally {
-    // Chỉ xóa lock của chính process này
-    const currentLock = await redis.get(LOCK_KEY);
-
-    if (currentLock === lockValue) {
-      await redis.del(LOCK_KEY);
+      await redis.set('CRON_KEYBOX_SHA', sha);
+      return { updated: true, sha, updateDate, filename };
     }
   }
+
+  return { updated: false, sha, filename };
 }
 
-// ============================================================
-// /TESTAUTO
-// ============================================================
-//
-// Admin dùng:
-//
-// /testauto
-//
-// Lệnh này:
-// 1. Kiểm tra user ID có phải admin không
-// 2. Lấy group hiện tại
-// 3. Xóa SHA Redis của group
-// 4. Gửi file hiện tại
-// 5. Ghi SHA mới vào Redis
-//
-// => Có thể test auto mà không cần đợi GitHub có commit mới.
-//
-
-bot.command('testauto', async ctx => {
-  const userId = ctx.from?.id;
-  const chatId = ctx.chat?.id;
-
-  if (!isAdmin(userId)) {
-    await ctx.reply(
-      '⛔ Bạn không có quyền sử dụng lệnh này.'
-    );
-
-    return;
-  }
-
-  // Chỉ nên test trong group/supergroup
-  if (
-    ctx.chat?.type !== 'group' &&
-    ctx.chat?.type !== 'supergroup'
-  ) {
-    await ctx.reply(
-      '⚠️ Hãy sử dụng /testauto trực tiếp trong group cần test.'
-    );
-
-    return;
-  }
-
-  if (!chatId) {
-    await ctx.reply(
-      '❌ Không xác định được ID group.'
-    );
-
-    return;
-  }
-
-  const groupId = String(chatId);
-  const redisKey = groupRedisKey(groupId);
-
-  try {
-    await ctx.sendChatAction('typing');
-
-    // Xóa SHA của RIÊNG group này
-    await redis.del(redisKey);
-
-    const data = await getKeyboxData();
-
-    const result = await updateGroup(
-      groupId,
-      data,
-      {
-        force: true,
-        userId
-      }
-    );
-
-    await ctx.reply(
-      `✅ **Test auto thành công!**\n\n` +
-      `👤 Admin ID: \`${userId}\`\n` +
-      `👥 Group ID: \`${groupId}\`\n` +
-      `🔑 SHA: \`${data.sha.slice(0, 12)}...\`\n` +
-      `📄 File: \`${data.filename}\`\n` +
-      `📅 Cập nhật: \`${data.updateDate}\``,
-      {
-        parse_mode: 'Markdown'
-      }
-    );
-
-    console.log(
-      `[TESTAUTO] user=${userId} group=${groupId} sha=${data.sha}`
-    );
-
-    return result;
-  } catch (error) {
-    console.error(
-      '[TESTAUTO]',
-      error
-    );
-
-    await ctx.reply(
-      `❌ Test auto thất bại:\n\`${error.message}\``,
-      {
-        parse_mode: 'Markdown'
-      }
-    );
-  }
-});
-
-// ============================================================
-// ERROR HANDLER
-// ============================================================
-
-bot.catch((error, ctx) => {
-  console.error(
-    `[TELEGRAF_ERROR] update=${ctx.update?.update_id}`,
-    error
-  );
-});
-
-// ============================================================
-// VERCEL HANDLER
-// ============================================================
-
+// Handler cho Vercel Serverless
 export default async function handler(req, res) {
-  // Telegram webhook
   if (req.method === 'POST') {
-    try {
-      await bot.handleUpdate(req.body);
-
-      return res.status(200).send('OK');
-    } catch (error) {
-      console.error(
-        '[WEBHOOK]',
-        error
-      );
-
-      return res.status(500).send('Webhook error');
-    }
+    await bot.handleUpdate(req.body);
+    return res.status(200).send('OK');
   }
 
-  // Vercel Cron
-  if (
-    req.method === 'GET' &&
-    (
-      req.query?.cron === 'true' ||
-      req.headers['x-vercel-cron']
-    )
-  ) {
+  if (req.method === 'GET' && (req.query.cron === 'true' || req.headers['x-vercel-cron'])) {
     try {
       const result = await handleCron();
-
-      return res.status(200).json({
-        status: 'Success',
-        ...result
-      });
+      return res.status(200).json({ status: "Success", ...result });
     } catch (error) {
-      console.error(
-        '[CRON]',
-        error
-      );
-
-      return res.status(500).json({
-        status: 'Error',
-        error: error.message
-      });
+      console.error(error);
+      return res.status(500).json({ error: error.message });
     }
   }
 
-  return res.status(200).send(
-    'Bot đang hoạt động.'
-  );
+  return res.status(200).send('Bot đang hoạt động.');
 }
