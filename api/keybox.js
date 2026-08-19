@@ -77,6 +77,7 @@ async function getKeyboxData() {
 
   // Tên file mới an toàn: keybox-7-7-2026.xml
   const filename = `keybox-${fileDate}.xml`;
+  return { buffer, updateDate, sha, filename };
 }
 
 // Lệnh /start
