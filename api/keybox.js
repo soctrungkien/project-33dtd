@@ -1,6 +1,7 @@
 import { Telegraf } from 'telegraf';
 import Redis from 'ioredis';
 
+// Chỉ sử dụng 2 biến môi trường bắt buộc
 const redis = new Redis(process.env.REDIS_URL);
 const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
 
@@ -14,23 +15,26 @@ function formatDate(isoString) {
 
 // Kiểm tra quyền Admin/Owner
 async function isAdmin(ctx) {
-  // 1. Nhắn riêng trực tiếp với Bot (Private Chat) -> Tự động nhận là Admin
-  if (ctx.chat?.type === 'private') {
-    return true;
-  }
+  if (ctx.chat?.type === 'private') return true;
 
-  // 2. Nhắn trong Nhóm (group/supergroup) hoặc Kênh (channel) -> Lấy danh sách Admin từ Telegram
   if (['group', 'supergroup', 'channel'].includes(ctx.chat?.type)) {
     try {
       const member = await ctx.getChatMember(ctx.from.id);
       return ['creator', 'administrator'].includes(member.status);
     } catch (err) {
-      console.error("Lỗi kiểm tra quyền Admin trong nhóm/kênh:", err);
+      console.error("Lỗi kiểm tra quyền Admin:", err);
       return false;
     }
   }
 
   return false;
+}
+
+// Tự động lưu ID của Nhóm/Kênh vào Redis mỗi khi có tin nhắn/lệnh trong nhóm
+async function saveGroupId(ctx) {
+  if (['group', 'supergroup', 'channel'].includes(ctx.chat?.type)) {
+    await redis.set('KEYBOX_TARGET_GROUP_ID', ctx.chat.id);
+  }
 }
 
 async function getKeyboxData() {
@@ -63,7 +67,7 @@ async function getKeyboxData() {
       const commitDate = commits[0].commit?.committer?.date;
       if (commitDate) {
         updateDate = formatDate(commitDate);
-        fileDate = new Date(commitDate).toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' });
+        fileDate = new Date(commitDate).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
       }
     }
   }
@@ -74,10 +78,11 @@ async function getKeyboxData() {
 
 // Lệnh /start
 bot.command('start', async (ctx) => {
+  await saveGroupId(ctx);
   await ctx.sendChatAction('typing');
   await ctx.reply(
     "👋 **Keybox Telegram Bot**\n" +
-    "Bot hỗ trợ lấy file keybox Yuri mới nhất và tự động cập nhật vào nhóm.\n\n" +
+    "Bot hỗ trợ lấy file keybox Yuri mới nhất và tự động cập nhật vào nhóm.\n" +
     "Gõ /help để xem danh sách lệnh.",
     { parse_mode: 'Markdown' }
   );
@@ -85,10 +90,11 @@ bot.command('start', async (ctx) => {
 
 // Lệnh /help
 bot.command('help', async (ctx) => {
+  await saveGroupId(ctx);
   await ctx.sendChatAction('typing');
   const isUserAdmin = await isAdmin(ctx);
   const adminHelp = isUserAdmin 
-    ? "\n\n🛠 **Lệnh quản trị (Admin/Private):**\n• `/testauto` - Kích hoạt kiểm tra auto-update ngay lập tức\n• `/resetauto` - Xóa cache Redis để ép gửi lại thông báo bản mới"
+    ? "\n\n🛠 **Lệnh quản trị (Admin/Private):**\n• `/testauto` - Kích hoạt kiểm tra auto-update ngay lập tức\n• `/resetauto` - Xóa mã nhận dạng lưu trữ để ép gửi lại thông báo bản mới"
     : "";
 
   await ctx.reply(
@@ -102,6 +108,7 @@ bot.command('help', async (ctx) => {
 
 // Lệnh /ping
 bot.command('ping', async (ctx) => {
+  await saveGroupId(ctx);
   const start = Date.now();
   await ctx.sendChatAction('typing');
   const message = await ctx.reply("🏓 Pong!");
@@ -118,6 +125,7 @@ bot.command('ping', async (ctx) => {
 
 // Lệnh /keybox
 bot.command('keybox', async (ctx) => {
+  await saveGroupId(ctx);
   try {
     await ctx.sendChatAction('typing');
     const { buffer, updateDate, filename } = await getKeyboxData();
@@ -133,19 +141,20 @@ bot.command('keybox', async (ctx) => {
   }
 });
 
-// Lệnh /testauto (Chỉ dành cho Admin nhóm/kênh hoặc Chat riêng)
+// Lệnh /testauto
 bot.command('testauto', async (ctx) => {
+  await saveGroupId(ctx);
   if (!(await isAdmin(ctx))) {
-    return ctx.reply("⚠️ Bạn phải là Admin của nhóm/kênh hoặc nhắn riêng với bot để dùng lệnh này!");
+    return ctx.reply("⚠️ Bạn phải là Admin của nhóm/kênh hoặc nhắn riêng với bot!");
   }
 
   await ctx.reply("🔄 Đang chạy thử nghiệm luồng Auto-Update...");
   try {
     const result = await handleCron();
     if (result.updated) {
-      await ctx.reply(`✅ Đã phát hiện bản mới và gửi vào nhóm!\nSHA: \`${result.sha}\``, { parse_mode: 'Markdown' });
+      await ctx.reply(`✅ Đã phát hiện bản mới và tự động gửi vào nhóm!\nMã nhận dạng: \`${result.sha}\``, { parse_mode: 'Markdown' });
     } else {
-      await ctx.reply(`ℹ️ Chưa có bản mới (SHA không đổi).\nSHA hiện tại: \`${result.sha}\``, { parse_mode: 'Markdown' });
+      await ctx.reply(`ℹ️ Chưa có bản mới.\nMã nhận dạng hiện tại: \`${result.sha}\``, { parse_mode: 'Markdown' });
     }
   } catch (error) {
     console.error(error);
@@ -153,49 +162,51 @@ bot.command('testauto', async (ctx) => {
   }
 });
 
-// Lệnh /resetauto (Chỉ dành cho Admin nhóm/kênh hoặc Chat riêng)
+// Lệnh /resetauto
 bot.command('resetauto', async (ctx) => {
+  await saveGroupId(ctx);
   if (!(await isAdmin(ctx))) {
-    return ctx.reply("⚠️ Bạn phải là Admin của nhóm/kênh hoặc nhắn riêng với bot để dùng lệnh này!");
+    return ctx.reply("⚠️ Bạn phải là Admin của nhóm/kênh hoặc nhắn riêng với bot!");
   }
 
   try {
     await redis.del('CRON_KEYBOX_SHA');
-    await ctx.reply("✅ Đã xóa SHA lưu trữ trong Redis! Tiến trình Cron hoặc `/testauto` tiếp theo sẽ tự động gửi lại file vào nhóm.");
+    await ctx.reply("✅ Đã xóa mã nhânn dạng lưu trữ! Lần chạy Cron hoặc `/testauto` tiếp theo sẽ tự động gửi lại file.");
   } catch (error) {
     console.error(error);
-    await ctx.reply(`❌ Lỗi khi xóa Redis: ${error.message}`);
+    await ctx.reply(`❌ Lỗi khi xóa: ${error.message}`);
   }
 });
 
-// Hàm xử lý Cron Auto-Update riêng biệt
+// Hàm xử lý Cron Auto-Update
 async function handleCron() {
   const { buffer, updateDate, sha, filename } = await getKeyboxData();
 
   if (!sha) throw new Error("Không thể lấy commit SHA");
 
-  // Key Redis lưu trạng thái cập nhật tự động
+  // Lấy Group ID đã được lưu tự động trong Redis từ trước
+  const groupId = await redis.get('KEYBOX_TARGET_GROUP_ID');
+  if (!groupId) {
+    throw new Error("Chưa xác định được Nhóm nhận file! Hãy gõ một lệnh bất kỳ (ví dụ /ping) trong Nhóm để bot tự ghi nhớ ID.");
+  }
+
   const lastSha = await redis.get('CRON_KEYBOX_SHA');
 
   if (sha !== lastSha) {
-    const groupId = process.env.GROUP_CHAT_ID;
+    await bot.telegram.sendChatAction(groupId, 'upload_document');
+    await bot.telegram.sendDocument(groupId, { source: buffer, filename }, {
+      caption: `🎉 **Phát hiện file Keybox mới!**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
+      parse_mode: 'Markdown'
+    });
 
-    if (groupId) {
-      await bot.telegram.sendChatAction(groupId, 'upload_document');
-      await bot.telegram.sendDocument(groupId, { source: buffer, filename }, {
-        caption: `🎉 **Phát hiện file Keybox mới!**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
-        parse_mode: 'Markdown'
-      });
-
-      await redis.set('CRON_KEYBOX_SHA', sha);
-      return { updated: true, sha, updateDate, filename };
-    }
+    await redis.set('CRON_KEYBOX_SHA', sha);
+    return { updated: true, sha, updateDate, filename };
   }
 
   return { updated: false, sha, filename };
 }
 
-// Handler cho Vercel Serverless
+// Handler cho Vercel
 export default async function handler(req, res) {
   if (req.method === 'POST') {
     await bot.handleUpdate(req.body);
