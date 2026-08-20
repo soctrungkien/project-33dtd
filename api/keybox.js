@@ -226,7 +226,7 @@ export default async function handler(req, res) {
   // 2. Webhook URL MỚI dành riêng để Trigger 1 tiếng 1 lần:
   // URL truy cập: https://domain-cua-ban.vercel.app/api/cron-hourly
   // Hoặc dùng Tham số URL: https://domain-cua-ban.vercel.app/?cron_hourly=true
-  if (method === 'GET' && (url.includes('/api/cron-hourly-keybox') || req.query.cron_hourly === 'true')) {
+  if (method === 'GET' && (req.query.cron_hourly === 'true')) {
     try {
       // Đặt forceSend = true để ÉP GỬI MỖI 1 TIẾNG (bất chấp file có đổi hay không)
       // Nếu chỉ muốn gửi KHI CÓ FILE MỚI mỗi tiếng, đổi true thành false.
