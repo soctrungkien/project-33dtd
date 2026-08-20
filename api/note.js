@@ -173,7 +173,7 @@ export default async function handler(req, res) {
         "📌 <b>Hướng dẫn sử dụng Bot Note</b>\n\n" +
         "1. <b>Tạo note mới:</b>\n" +
         "   • Gửi /notes rồi <b>reply</b> lại câu hỏi của bot.\n" +
-        "   • Hoặc reply lệnh /notes vào bất kỳ tin nhắn nào.\n" +
+        "   • Hoặc reply lệnh /notes vào bất kỳ tin nhắn nào (không hoạt động trong nhóm).\n" +
         "   • Hoặc viết trực tiếp: /notes &lt;nội dung&gt;\n\n" +
         "2. <b>Chia sẻ:</b>\n" +
         "   Bot sẽ trả về link <code>https://t.me/" +
@@ -185,7 +185,7 @@ export default async function handler(req, res) {
   }
   // Xử lý /notes
   else if (text.startsWith("/notes")) {
-    let content = text.replace(/^\/notes\s*/, "").trim();
+    let content = text.replace(/^\/notes(@\w+)?\s*/i, "").trim();
 
     // Reply vào tin nhắn có sẵn
     if (!content && message.reply_to_message?.text) {
