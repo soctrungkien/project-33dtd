@@ -2,7 +2,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN_NOTE;
 const PASTEFY_API_KEYS = process.env.PASTEFY_API_KEYS;
 const HIDDEN_MARKER = "　";
 
-// 1. Gọi trực tiếp API Pastefy v2 (Xoay vòng API key nếu có)
+// 1. Gọi trực tiếp API Pastefy v2
 async function createPastefyNote(content) {
   try {
     const keys = (PASTEFY_API_KEYS || "")
@@ -16,6 +16,7 @@ async function createPastefyNote(content) {
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
 
+    console.log("[PASTEFY] Đang tạo note mới...");
     const response = await fetch("https://pastefy.app/api/v2/paste", {
       method: "POST",
       headers,
@@ -23,12 +24,14 @@ async function createPastefyNote(content) {
     });
 
     const json = await response.json();
+    console.log("[PASTEFY_RESPONSE]", JSON.stringify(json));
+
     if (json.success && json.paste?.id) {
       return json.paste.id;
     }
     return "FETCH_ERROR";
   } catch (err) {
-    console.error("Pastefy API Error:", err);
+    console.error("[PASTEFY_ERROR]", err);
     return "FETCH_ERROR";
   }
 }
@@ -39,10 +42,17 @@ async function getNoteContent(id) {
       .replace(/https?:\/\/pastefy\.app\//, "")
       .replace(/\/raw.*/, "")
       .trim();
+
+    console.log(`[PASTEFY] Đang lấy nội dung Note ID: ${cleanId}`);
     const res = await fetch(`https://pastefy.app/${cleanId}/raw`);
-    if (!res.ok) return "❌ Không tìm thấy nội dung note.";
+    
+    if (!res.ok) {
+      console.error(`[PASTEFY] Lỗi HTTP status: ${res.status}`);
+      return "❌ Không tìm thấy nội dung note.";
+    }
     return await res.text();
-  } catch {
+  } catch (err) {
+    console.error("[PASTEFY_FETCH_CONTENT_ERROR]", err);
     return "❌ Đã xảy ra lỗi khi tải dữ liệu note.";
   }
 }
@@ -51,13 +61,16 @@ async function getBotUsername() {
   try {
     const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`);
     const data = await res.json();
-    return data.ok ? data.result.username : null;
-  } catch {
+    if (data.ok) return data.result.username;
+    console.error("[TELEGRAM_GETME_ERROR]", data);
+    return null;
+  } catch (err) {
+    console.error("[TELEGRAM_GETME_FETCH_ERROR]", err);
     return null;
   }
 }
 
-// 2. Trạng thái "Đang nhập..." (typing)
+// 2. Trạng thái Typing
 async function sendChatAction(chatId, action = "typing") {
   try {
     await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendChatAction`, {
@@ -65,24 +78,38 @@ async function sendChatAction(chatId, action = "typing") {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, action }),
     });
-  } catch {
-    // Bỏ qua lỗi phụ khi gửi status
+  } catch (err) {
+    console.error("[CHAT_ACTION_ERROR]", err);
   }
 }
 
-// 3. Gửi tin nhắn hỗ trợ Markdown (parse_mode: Markdown)
+// 3. Gửi tin nhắn Telegram (Chuyển sang HTML & Bắt lỗi API Telegram)
 async function sendMessage(chatId, text, extra = {}) {
-  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  try {
+    const body = {
       chat_id: chatId,
       text: text,
-      parse_mode: "Markdown",
       disable_web_page_preview: true,
+      parse_mode: "HTML", // Mặc định sử dụng HTML thay vì Markdown
       ...extra,
-    }),
-  });
+    };
+
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    const data = await res.json();
+    if (!data.ok) {
+      console.error("[TELEGRAM_SEND_FAILED]", JSON.stringify(data));
+    } else {
+      console.log(`[TELEGRAM_SUCCESS] Đã gửi tin nhắn tới ${chatId}`);
+    }
+    return data;
+  } catch (err) {
+    console.error("[TELEGRAM_SEND_ERROR]", err);
+  }
 }
 
 // Hàm xử lý tạo note và gửi link
@@ -94,21 +121,23 @@ async function handleCreateNote(chatId, content) {
   if (!noteId || noteId === "FETCH_ERROR") {
     await sendMessage(
       chatId,
-      "❌ *Lỗi hệ thống:* Không thể tải note lên hệ thống lưu trữ. Vui lòng thử lại!"
+      "❌ <b>Lỗi hệ thống:</b> Không thể tải note lên hệ thống lưu trữ. Vui lòng thử lại!"
     );
     return;
   }
 
   const botUsername = await getBotUsername();
   if (!botUsername) {
-    await sendMessage(chatId, "❌ *Lỗi:* Không thể xác thực `BOT_TOKEN`.");
+    await sendMessage(chatId, "❌ <b>Lỗi:</b> Không thể xác thực <code>BOT_TOKEN</code>.");
     return;
   }
 
   const shareLink = `https://t.me/${botUsername}?start=${noteId}`;
+  console.log(`[SUCCESS] Đã tạo link thành công: ${shareLink}`);
+
   await sendMessage(
     chatId,
-    `✅ *Tạo Note thành công!*\n\n🔗 *Link lấy note:*\n${shareLink}`
+    `✅ <b>Tạo Note thành công!</b>\n\n🔗 <b>Link lấy note:</b>\n${shareLink}`
   );
 }
 
@@ -116,6 +145,8 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(200).send("Bot server is running.");
   }
+
+  console.log("[INCOMING_WEBHOOK]", JSON.stringify(req.body));
 
   const message = req.body?.message;
   if (!message || !message.text) {
@@ -133,19 +164,21 @@ export default async function handler(req, res) {
     if (noteId) {
       await sendChatAction(chatId, "typing");
       const content = await getNoteContent(noteId);
-      await sendMessage(chatId, content);
+      
+      // Gửi nội dung thô (Plain Text) tránh bị lỗi HTML/Markdown Entity Parse
+      await sendMessage(chatId, content, { parse_mode: undefined });
     } else {
       const botUsername = await getBotUsername();
       const helpMessage =
-        "📌 *Hướng dẫn sử dụng Bot Note*\n\n" +
-        "1. *Tạo note mới:*\n" +
-        "   • Gửi `/notes` rồi **reply** lại câu hỏi của bot.\n" +
-        "   • Hoặc **reply** lệnh `/notes` vào bất kỳ tin nhắn nào.\n" +
-        "   • Hoặc viết trực tiếp: `/notes <nội dung>`\n\n" +
-        "2. *Chia sẻ:*\n" +
-        "   Bot sẽ trả về link `https://t.me/" +
+        "📌 <b>Hướng dẫn sử dụng Bot Note</b>\n\n" +
+        "1. <b>Tạo note mới:</b>\n" +
+        "   • Gửi /notes rồi <b>reply</b> lại câu hỏi của bot.\n" +
+        "   • Hoặc reply lệnh /notes vào bất kỳ tin nhắn nào.\n" +
+        "   • Hoặc viết trực tiếp: /notes &lt;nội dung&gt;\n\n" +
+        "2. <b>Chia sẻ:</b>\n" +
+        "   Bot sẽ trả về link <code>https://t.me/" +
         (botUsername || "your_bot") +
-        "?start=<ID>`.\n" +
+        "?start=&lt;ID&gt;</code>.\n" +
         "   Người dùng ấn vào link sẽ tự động mở bot và nhận lại nội dung note.";
       await sendMessage(chatId, helpMessage);
     }
@@ -154,23 +187,23 @@ export default async function handler(req, res) {
   else if (text.startsWith("/notes")) {
     let content = text.replace(/^\/notes\s*/, "").trim();
 
-    // Trường hợp 1: Reply lệnh /notes vào một tin nhắn có sẵn
+    // Reply vào tin nhắn có sẵn
     if (!content && message.reply_to_message?.text) {
       content = message.reply_to_message.text;
     }
 
-    // Trường hợp 2: Chỉ gửi mỗi /notes -> Yêu cầu người dùng trả lời tin nhắn này
+    // Yêu cầu nhập nội dung
     if (!content) {
       await sendMessage(
         chatId,
-        `📝 Vui lòng **trả lời** tin nhắn này với nội dung bạn muốn lưu thành Note.${HIDDEN_MARKER}`,
+        `📝 Vui lòng <b>trả lời</b> tin nhắn này với nội dung bạn muốn lưu thành Note.${HIDDEN_MARKER}`,
         { reply_markup: { force_reply: true, selective: true } }
       );
     } else {
       await handleCreateNote(chatId, content);
     }
   }
-  // Nhận diện tin nhắn người dùng trả lời lại câu hỏi của bot (thông qua ký tự ẩn)
+  // Trả lời tin nhắn theo yêu cầu của bot
   else if (
     message.reply_to_message?.text &&
     message.reply_to_message.text.includes(HIDDEN_MARKER)
