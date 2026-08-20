@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import Redis from 'ioredis';
 
-// Chỉ sử dụng 2 biến môi trường bắt buộc
+// Biến môi trường
 const redis = new Redis(process.env.REDIS_URL);
 const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
 
@@ -109,7 +109,7 @@ bot.command('help', async (ctx) => {
   );
 });
 
-// Lệnh /ping (Đã sửa lỗi editMessageText và tối ưu độ trễ)
+// Lệnh /ping
 bot.command('ping', async (ctx) => {
   await saveGroupId(ctx);
   const start = Date.now();
@@ -143,7 +143,7 @@ bot.command('keybox', async (ctx) => {
   }
 });
 
-// Lệnh /testauto (Kiểm tra trực tiếp cho chat/nhóm hiện tại)
+// Lệnh /testauto
 bot.command('testauto', async (ctx) => {
   await saveGroupId(ctx);
   if (!(await isAdmin(ctx))) {
@@ -152,7 +152,7 @@ bot.command('testauto', async (ctx) => {
 
   await ctx.reply("🔄 Đang chạy thử nghiệm luồng Auto-Update...");
   try {
-    const result = await handleCronForChat(ctx.chat.id);
+    const result = await handleCronForChat(ctx.chat.id, false); // false: chỉ gửi khi có SHA mới
     if (result.updated) {
       await ctx.reply(`✅ Đã phát hiện bản mới và tự động gửi file!\nMã nhận dạng: \`${result.sha}\``, { parse_mode: 'Markdown' });
     } else {
@@ -164,7 +164,7 @@ bot.command('testauto', async (ctx) => {
   }
 });
 
-// Lệnh /resetauto (Xóa SHA lưu trữ riêng cho chat/nhóm hiện tại)
+// Lệnh /resetauto
 bot.command('resetauto', async (ctx) => {
   await saveGroupId(ctx);
   if (!(await isAdmin(ctx))) {
@@ -174,25 +174,26 @@ bot.command('resetauto', async (ctx) => {
   const redisKey = `CRON_KEYBOX_SHA_${ctx.chat.id}`;
   try {
     await redis.del(redisKey);
-    await ctx.reply("✅ Đã xóa mã nhận dạng lưu trữ của nhóm/chat này! Lần chạy Cron hoặc `/testauto` tiếp theo sẽ tự động gửi lại file.");
+    await ctx.reply("✅ Đã xóa mã nhận dạng lưu trữ của nhóm/chat này!");
   } catch (error) {
     console.error(error);
     await ctx.reply(`❌ Lỗi khi xóa: ${error.message}`);
   }
 });
 
-// Hàm xử lý gửi bản cập nhật cho 1 Chat cụ thể
-async function handleCronForChat(targetChatId) {
+// Hàm gửi file tới Chat
+async function handleCronForChat(targetChatId, forceSend = false) {
   const { buffer, updateDate, sha, filename } = await getKeyboxData();
   if (!sha) throw new Error("Không thể lấy commit SHA");
 
   const redisKey = `CRON_KEYBOX_SHA_${targetChatId}`;
   const lastSha = await redis.get(redisKey);
 
-  if (sha !== lastSha) {
+  // Gửi file nếu forceSend = true HOẶC nếu phát hiện commit SHA mới
+  if (forceSend || sha !== lastSha) {
     await bot.telegram.sendChatAction(targetChatId, 'upload_document');
     await bot.telegram.sendDocument(targetChatId, { source: buffer, filename }, {
-      caption: `🎉 **Phát hiện file Keybox mới!**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
+      caption: `🎉 **Cập nhật Keybox mới!**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
       parse_mode: 'Markdown'
     });
 
@@ -203,25 +204,44 @@ async function handleCronForChat(targetChatId) {
   return { updated: false, sha, filename };
 }
 
-// Hàm xử lý Cron chạy tự động từ Vercel
-async function handleCron() {
+// Hàm Cron
+async function handleCron(forceSend = false) {
   const groupId = await redis.get('KEYBOX_TARGET_GROUP_ID');
   if (!groupId) {
     throw new Error("Chưa xác định được Nhóm nhận file! Hãy tương tác trong Nhóm để bot ghi nhớ ID.");
   }
-  return await handleCronForChat(groupId);
+  return await handleCronForChat(groupId, forceSend);
 }
 
 // Entrypoint cho Vercel Serverless
 export default async function handler(req, res) {
-  if (req.method === 'POST') {
+  const { url, method } = req;
+
+  // 1. Webhook chính nhận tin nhắn Telegram từ Bot
+  if (method === 'POST') {
     await bot.handleUpdate(req.body);
     return res.status(200).send('OK');
   }
 
-  if (req.method === 'GET' && (req.query.cron === 'true' || req.headers['x-vercel-cron'])) {
+  // 2. Webhook URL MỚI dành riêng để Trigger 1 tiếng 1 lần:
+  // URL truy cập: https://domain-cua-ban.vercel.app/api/cron-hourly
+  // Hoặc dùng Tham số URL: https://domain-cua-ban.vercel.app/?cron_hourly=true
+  if (method === 'GET' && (url.includes('/api/cron-hourly-keybox') || req.query.cron_hourly === 'true')) {
     try {
-      const result = await handleCron();
+      // Đặt forceSend = true để ÉP GỬI MỖI 1 TIẾNG (bất chấp file có đổi hay không)
+      // Nếu chỉ muốn gửi KHI CÓ FILE MỚI mỗi tiếng, đổi true thành false.
+      const result = await handleCron(true); 
+      return res.status(200).json({ status: "Success", message: "Đã gửi Keybox định kỳ 1 tiếng 1 lần", ...result });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // 3. Giữ lại route Cron kiểm tra SHA cũ của Vercel (nếu dùng)
+  if (method === 'GET' && (req.query.cron === 'true' || req.headers['x-vercel-cron'])) {
+    try {
+      const result = await handleCron(false);
       return res.status(200).json({ status: "Success", ...result });
     } catch (error) {
       console.error(error);
