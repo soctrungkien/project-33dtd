@@ -54,8 +54,8 @@ bot.command('start', async (ctx) => {
   await ctx.reply(
     "👋 **Keybox Telegram Bot**\n\n" +
     "📖 **Danh sách lệnh:**\n" +
-    "• `/keybox` - Tải file keybox Yuri mới nhất\n" +
-    "• `/start` - Hiển thị menu trợ giúp này",
+    "• /keybox - Tải file keybox Yuri mới nhất\n" +
+    "• /start - Hiển thị menu trợ giúp này",
     { parse_mode: 'Markdown' }
   );
 });
