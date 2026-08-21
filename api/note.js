@@ -207,7 +207,7 @@ export default async function handler(req, res) {
     }
 
     const fullName = `${targetUser.first_name || ""} ${targetUser.last_name || ""}`.trim();
-    const username = targetUser.username ? `@${targetUser.username}` : "Không có";
+    const username = targetUser.username ? `${targetUser.username}` : "Không có";
     const userTag = targetUser.username 
       ? `@${targetUser.username}` 
       : `<a href="tg://user?id=${targetUser.id}">${fullName || "User"}</a>`;
@@ -238,11 +238,11 @@ export default async function handler(req, res) {
         "📌 <b>Hướng dẫn sử dụng Bot Note</b>\n\n" +
         "1. <b>Tạo note mới:</b>\n" +
         "   • Gửi /notes rồi <b>reply</b> lại câu hỏi của bot.\n" +
-        "   • Hoặc reply lệnh /notes vào bất kỳ tin nhắn nào (không hoạt động trong nhóm).\n" +
+        "   • Hoặc reply lệnh /notes vào bất kỳ tin nhắn nào.\n" +
         "   • Hoặc viết trực tiếp: /notes &lt;nội dung&gt;\n" +
         `   • Giới hạn: Tối đa <b>${MAX_CHAR_LIMIT}</b> ký tự.\n\n` +
         "2. <b>Xem thông tin người dùng:</b>\n" +
-        "   • Gửi /who để xem UID, Tên, Username và Tag của bạn (hoặc reply người khác để xem thông tin của họ (không hoạt động trong nhóm)).\n\n" +
+        "   • Gửi /who để xem UID, Tên, Username và Tag của bạn (hoặc reply người khác để xem thông tin của họ).\n\n" +
         "3. <b>Chia sẻ:</b>\n" +
         "   Bot sẽ trả về link <code>https://t.me/" +
         (botUsername || "your_bot") +
