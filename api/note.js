@@ -51,7 +51,9 @@ async function getNoteContent(id) {
       console.error(`[PASTEFY] Lỗi HTTP status: ${res.status}`);
       return "❌ Không tìm thấy nội dung note.";
     }
-    return await res.text();
+    const rawText = await res.text();
+    // Loại bỏ dòng [UID: ...] ở đầu nếu có
+    return rawText.replace(/^\[UID:\s*\d+\]\n\n?/, "");
   } catch (err) {
     console.error("[PASTEFY_FETCH_CONTENT_ERROR]", err);
     return "❌ Đã xảy ra lỗi khi tải dữ liệu note.";
@@ -172,8 +174,42 @@ export default async function handler(req, res) {
   const user = message.from;
 
   // Xử lý lệnh /who
-  if (text.startsWith("/who")) {
-    const targetUser = message.reply_to_message?.from || user;
+if (text.startsWith("/who")) {
+  const args = text.split(/\s+/);
+  const inputParam = args[1]; // Lấy tham số phía sau /who (ví dụ: /who https://pastefy.app/abcxyz)
+
+  let targetUser = message.reply_to_message?.from || user;
+
+  // Nếu người dùng nhập thêm Link hoặc ID sau lệnh /who
+  if (inputParam) {
+    // Tách lấy ID từ các loại link (pastefy, t.me, hoặc giữ nguyên nếu là ID)
+    const cleanId = inputParam
+      .replace(/https?:\/\/(t\.me\/[^\?]+\?start=|pastefy\.app\/)/gi, "")
+      .replace(/\/raw.*/, "")
+      .trim();
+
+    // Tải nội dung note từ Pastefy để soi UID
+    const rawContent = await getNoteContent(cleanId);
+    const uidMatch = rawContent.match(/^\[UID:\s*(\d+)\]/);
+
+    if (uidMatch) {
+      const extractedUid = uidMatch[1];
+      
+      // Lấy thông tin user trực tiếp từ Telegram API theo UID tìm được
+      try {
+        const chatRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getChat?chat_id=${extractedUid}`);
+        const chatData = await chatRes.json();
+        if (chatData.ok) {
+          targetUser = chatData.result;
+        } else {
+          // Trường hợp Bot chưa từng tương tác với UID đó
+          targetUser = { id: extractedUid, first_name: "Unknown", username: null };
+        }
+      } catch (e) {
+        targetUser = { id: extractedUid, first_name: "Unknown", username: null };
+      }
+    }
+  }
     const fullName = `${targetUser.first_name || ""} ${targetUser.last_name || ""}`.trim();
     const username = targetUser.username ? `@${targetUser.username}` : "Không có";
     const userTag = targetUser.username 
