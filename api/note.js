@@ -174,42 +174,39 @@ export default async function handler(req, res) {
   const user = message.from;
 
   // Xử lý lệnh /who
-if (text.startsWith("/who")) {
-  const args = text.split(/\s+/);
-  const inputParam = args[1]; // Lấy tham số phía sau /who (ví dụ: /who https://pastefy.app/abcxyz)
+  if (text.startsWith("/who")) {
+    const args = text.split(/\s+/);
+    const inputParam = args[1];
 
-  let targetUser = message.reply_to_message?.from || user;
+    let targetUser = message.reply_to_message?.from || user;
 
-  // Nếu người dùng nhập thêm Link hoặc ID sau lệnh /who
-  if (inputParam) {
-    // Tách lấy ID từ các loại link (pastefy, t.me, hoặc giữ nguyên nếu là ID)
-    const cleanId = inputParam
-      .replace(/https?:\/\/(t\.me\/[^\?]+\?start=|pastefy\.app\/)/gi, "")
-      .replace(/\/raw.*/, "")
-      .trim();
+    if (inputParam) {
+      // Tách lấy Note ID từ Pastefy link, Telegram link hoặc ID thuần
+      const cleanId = inputParam
+        .replace(/https?:\/\/(t\.me\/[^\?]+\?start=|pastefy\.app\/)/gi, "")
+        .replace(/\/raw.*/, "")
+        .trim();
 
-    // Tải nội dung note từ Pastefy để soi UID
-    const rawContent = await getNoteContent(cleanId);
-    const uidMatch = rawContent.match(/^\[UID:\s*(\d+)\]/);
+      const rawContent = await getNoteContent(cleanId);
+      const uidMatch = rawContent.match(/^\[UID:\s*(\d+)\]/);
 
-    if (uidMatch) {
-      const extractedUid = uidMatch[1];
-      
-      // Lấy thông tin user trực tiếp từ Telegram API theo UID tìm được
-      try {
-        const chatRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getChat?chat_id=${extractedUid}`);
-        const chatData = await chatRes.json();
-        if (chatData.ok) {
-          targetUser = chatData.result;
-        } else {
-          // Trường hợp Bot chưa từng tương tác với UID đó
-          targetUser = { id: extractedUid, first_name: "Unknown", username: null };
+      if (uidMatch) {
+        const extractedUid = uidMatch[1];
+        
+        try {
+          const chatRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getChat?chat_id=${extractedUid}`);
+          const chatData = await chatRes.json();
+          if (chatData.ok) {
+            targetUser = chatData.result;
+          } else {
+            targetUser = { id: extractedUid, first_name: "User", username: null };
+          }
+        } catch (e) {
+          targetUser = { id: extractedUid, first_name: "User", username: null };
         }
-      } catch (e) {
-        targetUser = { id: extractedUid, first_name: "Unknown", username: null };
       }
     }
-  }
+
     const fullName = `${targetUser.first_name || ""} ${targetUser.last_name || ""}`.trim();
     const username = targetUser.username ? `@${targetUser.username}` : "Không có";
     const userTag = targetUser.username 
@@ -232,8 +229,10 @@ if (text.startsWith("/who")) {
 
     if (noteId) {
       await sendChatAction(chatId, "typing");
-      const content = await getNoteContent(noteId);
-      await sendMessage(chatId, content, { parse_mode: undefined });
+      const rawContent = await getNoteContent(noteId);
+      // Xóa header UID trước khi hiển thị cho người xem
+      const cleanContent = rawContent.replace(/^\[UID:\s*\d+\]\n\n?/, "");
+      await sendMessage(chatId, cleanContent, { parse_mode: undefined });
     } else {
       const botUsername = await getBotUsername();
       const helpMessage =
