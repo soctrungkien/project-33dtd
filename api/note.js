@@ -1,6 +1,7 @@
 const BOT_TOKEN = process.env.BOT_TOKEN_NOTE;
 const PASTEFY_API_KEYS = process.env.PASTEFY_API_KEYS;
 const HIDDEN_MARKER = "　";
+const MAX_CHAR_LIMIT = 3600; // Giới hạn số ký tự
 
 // 1. Gọi trực tiếp API Pastefy v2
 async function createPastefyNote(content) {
@@ -83,14 +84,14 @@ async function sendChatAction(chatId, action = "typing") {
   }
 }
 
-// 3. Gửi tin nhắn Telegram (Chuyển sang HTML & Bắt lỗi API Telegram)
+// 3. Gửi tin nhắn Telegram
 async function sendMessage(chatId, text, extra = {}) {
   try {
     const body = {
       chat_id: chatId,
       text: text,
       disable_web_page_preview: true,
-      parse_mode: "HTML", // Mặc định sử dụng HTML thay vì Markdown
+      parse_mode: "HTML",
       ...extra,
     };
 
@@ -112,11 +113,24 @@ async function sendMessage(chatId, text, extra = {}) {
   }
 }
 
-// Hàm xử lý tạo note và gửi link
-async function handleCreateNote(chatId, content) {
+// Hàm xử lý tạo note (Đặt UID lên đầu raw text)
+async function handleCreateNote(chatId, content, user) {
+  // Kiểm tra giới hạn ký tự
+  if (content.length > MAX_CHAR_LIMIT) {
+    await sendMessage(
+      chatId,
+      `❌ <b>Lỗi:</b> Nội dung quá dài! Giới hạn tối đa là <b>${MAX_CHAR_LIMIT}</b> ký tự (Hiện tại: ${content.length} ký tự).`
+    );
+    return;
+  }
+
   await sendChatAction(chatId, "typing");
 
-  const noteId = await createPastefyNote(content);
+  // Đặt UID ngay dòng đầu tiên của Raw Text
+  const rawHeader = `[UID: ${user.id}]\n\n`;
+  const fullContent = rawHeader + content;
+
+  const noteId = await createPastefyNote(fullContent);
 
   if (!noteId || noteId === "FETCH_ERROR") {
     await sendMessage(
@@ -155,17 +169,34 @@ export default async function handler(req, res) {
 
   const chatId = message.chat.id;
   const text = message.text.trim();
+  const user = message.from;
 
+  // Xử lý lệnh /who
+  if (text.startsWith("/who")) {
+    const targetUser = message.reply_to_message?.from || user;
+    const fullName = `${targetUser.first_name || ""} ${targetUser.last_name || ""}`.trim();
+    const username = targetUser.username ? `@${targetUser.username}` : "Không có";
+    const userTag = targetUser.username 
+      ? `@${targetUser.username}` 
+      : `<a href="tg://user?id=${targetUser.id}">${fullName || "User"}</a>`;
+
+    const whoMessage = 
+      `👤 <b>Thông tin người dùng:</b>\n\n` +
+      `🆔 <b>UID:</b> <code>${targetUser.id}</code>\n` +
+      `📛 <b>Tên:</b> ${fullName || "Không có"}\n` +
+      `🌐 <b>Username:</b> ${username}\n` +
+      `🏷️ <b>Tag:</b> ${userTag}`;
+
+    await sendMessage(chatId, whoMessage);
+  }
   // Xử lý /start
-  if (text.startsWith("/start")) {
+  else if (text.startsWith("/start")) {
     const args = text.split(" ");
     const noteId = args[1];
 
     if (noteId) {
       await sendChatAction(chatId, "typing");
       const content = await getNoteContent(noteId);
-      
-      // Gửi nội dung thô (Plain Text) tránh bị lỗi HTML/Markdown Entity Parse
       await sendMessage(chatId, content, { parse_mode: undefined });
     } else {
       const botUsername = await getBotUsername();
@@ -174,12 +205,14 @@ export default async function handler(req, res) {
         "1. <b>Tạo note mới:</b>\n" +
         "   • Gửi /notes rồi <b>reply</b> lại câu hỏi của bot.\n" +
         "   • Hoặc reply lệnh /notes vào bất kỳ tin nhắn nào (không hoạt động trong nhóm).\n" +
-        "   • Hoặc viết trực tiếp: /notes &lt;nội dung&gt;\n\n" +
-        "2. <b>Chia sẻ:</b>\n" +
+        "   • Hoặc viết trực tiếp: /notes &lt;nội dung&gt;\n" +
+        `   • Giới hạn: Tối đa <b>${MAX_CHAR_LIMIT}</b> ký tự.\n\n` +
+        "2. <b>Xem thông tin người dùng:</b>\n" +
+        "   • Gửi /who để xem UID, Tên, Username và Tag của bạn (hoặc reply người khác để xem thông tin của họ (không hoạt động trong nhóm)).\n\n" +
+        "3. <b>Chia sẻ:</b>\n" +
         "   Bot sẽ trả về link <code>https://t.me/" +
         (botUsername || "your_bot") +
-        "?start=&lt;ID&gt;</code>.\n" +
-        "   Người dùng ấn vào link sẽ tự động mở bot và nhận lại nội dung note.";
+        "?start=&lt;ID&gt;</code>.";
       await sendMessage(chatId, helpMessage);
     }
   }
@@ -187,12 +220,10 @@ export default async function handler(req, res) {
   else if (text.startsWith("/notes")) {
     let content = text.replace(/^\/notes(@\w+)?\s*/i, "").trim();
 
-    // Reply vào tin nhắn có sẵn
     if (!content && message.reply_to_message?.text) {
       content = message.reply_to_message.text;
     }
 
-    // Yêu cầu nhập nội dung
     if (!content) {
       await sendMessage(
         chatId,
@@ -200,7 +231,7 @@ export default async function handler(req, res) {
         { reply_markup: { force_reply: true, selective: true } }
       );
     } else {
-      await handleCreateNote(chatId, content);
+      await handleCreateNote(chatId, content, user);
     }
   }
   // Trả lời tin nhắn theo yêu cầu của bot
@@ -208,7 +239,7 @@ export default async function handler(req, res) {
     message.reply_to_message?.text &&
     message.reply_to_message.text.includes(HIDDEN_MARKER)
   ) {
-    await handleCreateNote(chatId, text);
+    await handleCreateNote(chatId, text, user);
   }
 
   return res.status(200).json({ ok: true });
