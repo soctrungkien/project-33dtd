@@ -215,8 +215,8 @@ export default async function handler(req, res) {
     const whoMessage = 
       `👤 <b>Thông tin người dùng:</b>\n\n` +
       `🆔 <b>UID:</b> <code>${targetUser.id}</code>\n` +
-      `📛 <b>Tên:</b> ${fullName || "Không có"}\n` +
-      `🌐 <b>Username:</b> ${username}\n` +
+      `📛 <b>Tên:</b> <code>${fullName || "Không có"}</code>\n` +
+      `🌐 <b>Username:</b> <code>${username}</code>\n` +
       `🏷️ <b>Tag:</b> ${userTag}`;
 
     await sendMessage(chatId, whoMessage);
@@ -242,7 +242,7 @@ export default async function handler(req, res) {
         "   • Hoặc viết trực tiếp: /notes &lt;nội dung&gt;\n" +
         `   • Giới hạn: Tối đa <b>${MAX_CHAR_LIMIT}</b> ký tự.\n\n` +
         "2. <b>Xem thông tin người dùng:</b>\n" +
-        "   • Gửi /who để xem UID, Tên, Username và Tag của bạn (hoặc reply người khác để xem thông tin của họ).\n\n" +
+        "   • Gửi /who để xem UID, Tên, Username và Tag của bạn hoặc reply người khác để xem thông tin của họ hay là dùng /who link note để xem thông tin ng đăng note.\n\n" +
         "3. <b>Chia sẻ:</b>\n" +
         "   Bot sẽ trả về link <code>https://t.me/" +
         (botUsername || "your_bot") +
