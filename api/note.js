@@ -52,8 +52,7 @@ async function getNoteContent(id) {
       return "❌ Không tìm thấy nội dung note.";
     }
     const rawText = await res.text();
-    // Loại bỏ dòng [UID: ...] ở đầu nếu có
-    return rawText.replace(/^\[UID:\s*\d+\]\n\n?/, "");
+    return rawText;
   } catch (err) {
     console.error("[PASTEFY_FETCH_CONTENT_ERROR]", err);
     return "❌ Đã xảy ra lỗi khi tải dữ liệu note.";
