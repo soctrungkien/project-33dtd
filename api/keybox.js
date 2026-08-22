@@ -1,23 +1,27 @@
-import { Telegraf } from 'telegraf';
+import { Telegraf, Markup } from 'telegraf';
 
 const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
 
-const KEYBOX_URL = "https://raw.githubusercontent.com/Yurii0307/yurikey/main/key";
-const COMMIT_API = "https://api.github.com/repos/Yurii0307/yurikey/commits?path=key&page=1&per_page=1";
+// Các URL nguồn keybox
+const YURI_URL = "https://raw.githubusercontent.com/Yurii0307/yurikey/main/key";
+const YURI_COMMIT_API = "https://api.github.com/repos/Yurii0307/yurikey/commits?path=key&page=1&per_page=1";
+
+const KAORIOS_URL = "https://raw.githubusercontent.com/Wuang26/Kaorios-Toolbox/refs/heads/main/Toolbox-data/Keybox.xml";
+const KAORIOS_COMMIT_API = "https://api.github.com/repos/Wuang26/Kaorios-Toolbox/commits?path=Toolbox-data/Keybox.xml&page=1&per_page=1";
 
 function formatDate(isoString) {
   if (!isoString) return "Không xác định";
   return new Date(isoString).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
 
-// Lấy file Keybox và thông tin commit từ GitHub
-async function getKeyboxData() {
+// 1. Tải và xử lý Keybox từ Yuri (Cần Decode Base64)
+async function getYuriKeybox() {
   const [fileRes, commitRes] = await Promise.all([
-    fetch(KEYBOX_URL),
-    fetch(COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
+    fetch(YURI_URL),
+    fetch(YURI_COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
   ]);
 
-  if (!fileRes.ok) throw new Error("Không thể tải file key");
+  if (!fileRes.ok) throw new Error("Không thể tải file key Yuri");
 
   const base64Text = await fileRes.text();
   const cleanBase64 = base64Text.replace(/\s+/g, '').trim();
@@ -44,36 +48,109 @@ async function getKeyboxData() {
     }
   }
 
-  const filename = `keybox-${fileDate}.xml`;
+  const filename = `keybox-yuri-${fileDate}.xml`;
   return { buffer, updateDate, filename };
 }
 
-// Lệnh /start (Gộp cả thông tin hướng dẫn)
+// 2. Tải và xử lý Keybox từ Kaorios (XML trực tiếp)
+async function getKaoriosKeybox() {
+  const [fileRes, commitRes] = await Promise.all([
+    fetch(KAORIOS_URL),
+    fetch(KAORIOS_COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
+  ]);
+
+  if (!fileRes.ok) throw new Error("Không thể tải file key Kaorios");
+
+  const xmlText = await fileRes.text();
+  const buffer = Buffer.from(xmlText, 'utf-8');
+
+  let updateDate = "Không xác định";
+  let fileDate = new Date().toISOString().slice(0, 10);
+
+  if (commitRes.ok) {
+    const commits = await commitRes.json();
+    if (commits[0]?.commit?.committer?.date) {
+      const commitDate = commits[0].commit.committer.date;
+      updateDate = formatDate(commitDate);
+
+      const d = new Date(commitDate);
+      fileDate = `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
+    }
+  }
+
+  const filename = `keybox-kaorios-${fileDate}.xml`;
+  return { buffer, updateDate, filename };
+}
+
+// Lệnh /start
 bot.command('start', async (ctx) => {
   await ctx.sendChatAction('typing');
   await ctx.reply(
     "👋 **Keybox Telegram Bot**\n\n" +
     "📖 **Danh sách lệnh:**\n" +
-    "• /keybox - Tải file keybox Yuri mới nhất\n" +
+    "• /keybox - Tải file keybox (Yuri / Kaorios)\n" +
     "• /start - Hiển thị menu trợ giúp này",
     { parse_mode: 'Markdown' }
   );
 });
 
-// Lệnh /keybox
+// Lệnh /keybox - Tạo menu chọn nguồn
 bot.command('keybox', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.reply(
+    "🔑 **Vui lòng chọn nguồn Keybox muốn tải:**",
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback("Yuri", `get_keybox:yuri:${userId}`),
+        Markup.button.callback("Kaorios", `get_keybox:kaorios:${userId}`)
+      ]
+    ])
+  );
+});
+
+// Xử lý nút bấm callback
+bot.action(/^get_keybox:(yuri|kaorios):(\d+)$/, async (ctx) => {
+  const source = ctx.match[1];
+  const ownerId = Number(ctx.match[2]);
+  const clickedUserId = ctx.from.id;
+
+  // Kiểm tra nếu người bấm không phải người dùng gọi lệnh /keybox
+  if (clickedUserId !== ownerId) {
+    return ctx.answerCbQuery("⚠️ Chỉ người gõ lệnh /keybox mới có quyền chọn!", { show_alert: true });
+  }
+
+  // Thông báo phản hồi thao tác click
+  await ctx.answerCbQuery("Đang xử lý tải file...");
+
   try {
-    await ctx.sendChatAction('typing');
-    const { buffer, updateDate, filename } = await getKeyboxData();
-    
     await ctx.sendChatAction('upload_document');
-    await ctx.replyWithDocument({ source: buffer, filename }, {
-      caption: `🔑 **File Keybox Yuri**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
-      parse_mode: 'Markdown'
-    });
+    
+    let keyData;
+    let sourceName = "";
+
+    if (source === 'yuri') {
+      keyData = await getYuriKeybox();
+      sourceName = "Yuri";
+    } else {
+      keyData = await getKaoriosKeybox();
+      sourceName = "Kaorios";
+    }
+
+    const { buffer, updateDate, filename } = keyData;
+
+    await ctx.replyWithDocument(
+      { source: buffer, filename },
+      {
+        caption: `🔑 **File Keybox (${sourceName})**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
+        parse_mode: 'Markdown'
+      }
+    );
+
+    // Xóa menu chọn sau khi gửi file thành công
+    await ctx.deleteMessage().catch(() => {});
   } catch (error) {
     console.error(error);
-    await ctx.reply("❌ Có lỗi xảy ra khi lấy file key.");
+    await ctx.reply(`❌ Có lỗi xảy ra khi lấy file keybox.`);
   }
 });
 
