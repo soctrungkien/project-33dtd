@@ -114,13 +114,13 @@ bot.action(/^get_keybox:(yuri|kaorios):(\d+)$/, async (ctx) => {
   const ownerId = Number(ctx.match[2]);
   const clickedUserId = ctx.from.id;
 
-  // Kiểm tra nếu người bấm không phải người dùng gọi lệnh /keybox
+  // Kiểm tra quyền ngay lập tức
   if (clickedUserId !== ownerId) {
-    return ctx.answerCbQuery("⚠️ Chỉ người gõ lệnh /keybox mới có quyền chọn!", { show_alert: true });
+    return ctx.answerCbQuery("⚠️ Chỉ người gõ lệnh /keybox mới có quyền chọn!", { show_alert: true }).catch(() => {});
   }
 
-  // Thông báo phản hồi thao tác click
-  await ctx.answerCbQuery("Đang xử lý tải file...");
+  // Phản hồi callback khẩn cấp để tránh lỗi Timeout
+  await ctx.answerCbQuery("Đang xử lý tải file...").catch(() => {});
 
   try {
     await ctx.sendChatAction('upload_document');
