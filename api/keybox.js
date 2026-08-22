@@ -99,6 +99,7 @@ bot.command('keybox', async (ctx) => {
   const userId = ctx.from.id;
   await ctx.reply(
     "🔑 **Vui lòng chọn nguồn Keybox muốn tải:**",
+    parse_mode: 'Markdown',
     Markup.inlineKeyboard([
       [
         Markup.button.callback("Yuri", `get_keybox:yuri:${userId}`),
