@@ -293,8 +293,7 @@ async function handleTelegramUpdate(update) {
     if (isPrivate) {
       await sendTelegramMessage(
         chatId,
-        'Please send me a keybox.xml, and I will check if it is valid.\n\n' +
-        'Github: https://github.com/KimmyXYC/KeyboxChecker'
+        'Please send me a keybox.xml, and I will check if it is valid.'
       );
     }
     return;
