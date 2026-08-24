@@ -265,9 +265,9 @@ bot.command('check', async (ctx) => {
         const { buffer } = await src.fetcher();
         const xmlContent = buffer.toString('utf-8');
         const isPassed = await validateKeyboxXml(xmlContent);
-        return { name: src.filename, passed: isPassed };
+        return { name: src.name, passed: isPassed };
       } catch (err) {
-        return { name: src.filename, passed: false };
+        return { name: src.name, passed: false };
       }
     })
   );
@@ -275,7 +275,7 @@ bot.command('check', async (ctx) => {
   let message = "Kết quả check keybox:\n";
   results.forEach((item) => {
     const icon = item.passed ? "✅" : "❌";
-    message += `${icon} Keybox ${item.filename}\n`;
+    message += `${icon} Keybox ${item.name}\n`;
   });
   message += "@check_key_boz_bot";
 
