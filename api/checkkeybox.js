@@ -1,20 +1,30 @@
 import axios from 'axios';
+import https from 'https';
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import { Readable } from 'stream';
 import pem from 'pem';
 import asn1 from 'asn1.js';
-import X509 from '@peculiar/x509';
+import { X509Certificate } from '@peculiar/x509';
 
 // ============================================================================
-// CONFIG
+// CONFIG & AXIOS CLIENT
 // ============================================================================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN_CHECK_KEYBOX;
 const TELEGRAM_API = 'https://api.telegram.org';
 const GOOGLE_REVOCATION_URL = 'https://android.googleapis.com/attestation/status';
 
-// Embedded PEM keys (instead of reading from files)
+// Hạn chế lỗi TLS Socket Disconnect trên Vercel bằng cách tắt Keep-Alive
+const httpsAgent = new https.Agent({
+  keepAlive: false,
+  timeout: 10000,
+});
+
+const telegramClient = axios.create({
+  baseURL: TELEGRAM_API,
+  httpsAgent: httpsAgent,
+  timeout: 10000,
+});
+
+// Embedded PEM keys
 const PEM_KEYS = {
   google: `-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xU
@@ -49,21 +59,15 @@ ZsapxB0gAOs0jSPRX5M=
 };
 
 // ============================================================================
-// UTILITY: XML & CERT PARSING
+// UTILITY & CERT PARSING
 // ============================================================================
 
-/**
- * Parse NumberOfCertificates from XML
- */
 function parseNumberOfCertificates(xmlString) {
   const match = xmlString.match(/<NumberOfCertificates>(\d+)<\/NumberOfCertificates>/);
   if (!match) throw new Error('No NumberOfCertificates found.');
   return parseInt(match[1], 10);
 }
 
-/**
- * Parse PEM certificates from XML
- */
 function parseCertificates(xmlString, pemNumber) {
   const certRegex = /<Certificate format="pem">([\s\S]*?)<\/Certificate>/g;
   const certs = [];
@@ -75,86 +79,60 @@ function parseCertificates(xmlString, pemNumber) {
   return certs;
 }
 
-/**
- * Compare two PEM public keys (string format)
- */
 function comparePemKeys(pem1, pem2) {
   return pem1.replace(/\s/g, '') === pem2.replace(/\s/g, '');
 }
 
-/**
- * Download file from Telegram
- */
 async function downloadFromTelegram(filePath) {
-  const url = `${TELEGRAM_API}/file/bot${TELEGRAM_TOKEN}/${filePath}`;
-  const response = await axios.get(url, { responseType: 'arraybuffer' });
+  const response = await telegramClient.get(`/file/bot${TELEGRAM_TOKEN}/${filePath}`, {
+    responseType: 'arraybuffer',
+  });
   return response.data.toString('utf-8');
 }
 
-/**
- * Fetch Google's revocation list
- */
 async function loadRevocationList() {
   try {
     const response = await axios.get(GOOGLE_REVOCATION_URL, {
       headers: { 'Cache-Control': 'max-age=0, no-cache, no-store, must-revalidate' },
       timeout: 5000,
+      httpsAgent,
     });
     return response.data;
   } catch (error) {
-    // Return empty on failure (graceful degradation)
     return { entries: {} };
   }
 }
 
 /**
- * Extract serial number from PEM cert (simplified, for demo)
- * In production, use a proper X.509 library
+ * Sử dụng thư viện `pem` để kiểm tra toàn bộ Certificate Chain
  */
-function extractSerialFromPem(pemCert) {
-  // This is a simplified extraction. In real code, use @peculiar/x509 or similar
-  try {
-    const cert = new X509.X509Certificate(pemCert);
-    const sn = cert.serialNumber;
-    return sn.toString(16).toLowerCase();
-  } catch {
-    return null;
-  }
-}
+function verifyCertificateChain(certs) {
+  return new Promise((resolve) => {
+    if (certs.length < 2) return resolve(true);
 
-/**
- * Verify certificate chain (basic signature validation)
- * Note: Full implementation requires OpenSSL or cryptographic library
- */
-async function verifyCertificateChain(certs) {
-  // For each certificate, verify it was signed by the next certificate's public key
-  const chain = [];
-  for (let i = 0; i < certs.length - 1; i++) {
-    try {
-      const childCert = new X509.X509Certificate(certs[i]);
-      const parentCert = new X509.X509Certificate(certs[i + 1]);
+    let checksCompleted = 0;
+    let isChainValid = true;
 
-      // Check issuer matches
-      if (childCert.issuer !== parentCert.subject) {
-        return false;
-      }
-
-      // Note: Full signature verification requires OpenSSL bindings
-      // This is a simplified check
-      chain.push(true);
-    } catch (e) {
-      return false;
+    for (let i = 0; i < certs.length - 1; i++) {
+      pem.verifySigningChain(certs[i], [certs[i + 1]], (err, isValid) => {
+        checksCompleted++;
+        if (err || !isValid) {
+          isChainValid = false;
+        }
+        if (checksCompleted === certs.length - 1) {
+          resolve(isChainValid);
+        }
+      });
     }
-  }
-  return chain.length === certs.length - 1;
+  });
 }
 
 /**
- * Check certificate validity period
+ * Sử dụng `@peculiar/x509` để parse thời hạn chứng chỉ
  */
 function checkCertificateValidity(pemCert) {
   try {
-    const cert = new X509.X509Certificate(pemCert);
+    const cert = new X509Certificate(pemCert);
     const now = new Date();
     const notBefore = cert.notBefore;
     const notAfter = cert.notAfter;
@@ -170,9 +148,6 @@ function checkCertificateValidity(pemCert) {
   }
 }
 
-/**
- * Identify root certificate type
- */
 function identifyRootCert(pemCert) {
   for (const [name, key] of Object.entries(PEM_KEYS)) {
     if (comparePemKeys(pemCert, key)) {
@@ -189,14 +164,10 @@ function identifyRootCert(pemCert) {
 // MAIN VALIDATION LOGIC
 // ============================================================================
 
-/**
- * Main keybox validation function
- */
 async function validateKeybox(xmlContent) {
   const result = { success: false, report: [], status: [] };
 
   try {
-    // 1. Parse XML structure
     const numCerts = parseNumberOfCertificates(xmlContent);
     const pemCerts = parseCertificates(xmlContent, numCerts);
 
@@ -204,10 +175,10 @@ async function validateKeybox(xmlContent) {
       throw new Error('No certificates found in keybox');
     }
 
-    // 2. Check first certificate validity
+    // Đọc thông tin chi tiết bằng @peculiar/x509
     const firstCertValidity = checkCertificateValidity(pemCerts[0]);
-    const cert = new X509.X509Certificate(pemCerts[0]);
-    const serialNumber = cert.serialNumber.toString(16).toLowerCase();
+    const cert = new X509Certificate(pemCerts[0]);
+    const serialNumber = cert.serialNumber.toLowerCase();
 
     result.report.push(`🔐 *Serial number:* \`${serialNumber}\``);
     result.report.push(`ℹ️ *Subject:* \`${cert.subject}\``);
@@ -223,7 +194,7 @@ async function validateKeybox(xmlContent) {
       result.status.push('not_yet_valid');
     }
 
-    // 3. Verify certificate chain
+    // Verify Certificate Chain bằng thư viện `pem`
     const chainValid = await verifyCertificateChain(pemCerts);
     if (chainValid) {
       result.report.push('✅ Valid keychain');
@@ -233,12 +204,12 @@ async function validateKeybox(xmlContent) {
       result.status.push('chain_invalid');
     }
 
-    // 4. Check root certificate
+    // Check Root Certificate
     const rootCertInfo = identifyRootCert(pemCerts[pemCerts.length - 1]);
     result.report.push(`${rootCertInfo.icon} ${rootCertInfo.type}`);
     result.status.push(`root_${rootCertInfo.name}`);
 
-    // 5. Check revocation list
+    // Check Revocation List
     const revocationList = await loadRevocationList();
     const isRevoked = revocationList.entries?.[serialNumber];
     if (isRevoked) {
@@ -263,24 +234,18 @@ async function validateKeybox(xmlContent) {
 // TELEGRAM HANDLERS
 // ============================================================================
 
-/**
- * Send message to Telegram
- */
 async function sendTelegramMessage(chatId, text, parseMode = 'Markdown') {
   try {
-    await axios.post(`${TELEGRAM_API}/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    await telegramClient.post(`/bot${TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: chatId,
       text,
       parse_mode: parseMode,
     });
   } catch (error) {
-    console.error('Failed to send Telegram message:', error.message);
+    console.error('Failed to send Telegram message:', error.response?.data || error.message);
   }
 }
 
-/**
- * Handle Telegram webhook
- */
 async function handleTelegramUpdate(update) {
   const message = update.message;
   if (!message) return;
@@ -288,7 +253,6 @@ async function handleTelegramUpdate(update) {
   const chatId = message.chat.id;
   const isPrivate = message.chat.type === 'private';
 
-  // Start/Help command
   if (message.text === '/start' || message.text === '/help') {
     if (isPrivate) {
       await sendTelegramMessage(
@@ -299,33 +263,26 @@ async function handleTelegramUpdate(update) {
     return;
   }
 
-  // File upload handler
   if (message.document) {
     const doc = message.document;
 
-    // Check file type
     if (doc.mime_type !== 'application/xml' && doc.mime_type !== 'text/xml') {
       await sendTelegramMessage(chatId, 'File format error. Please send an XML file.');
       return;
     }
 
-    // Check file size
     if (doc.file_size > 20 * 1024) {
       await sendTelegramMessage(chatId, 'File size is too large (max 20KB).');
       return;
     }
 
-    // Download and validate
     try {
-      const fileInfo = await axios.get(
-        `${TELEGRAM_API}/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`
-      );
+      const fileInfo = await telegramClient.get(`/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`);
       const filePath = fileInfo.data.result.file_path;
       const xmlContent = await downloadFromTelegram(filePath);
 
       const validation = await validateKeybox(xmlContent);
-      const reportText = validation.report.join('\n');
-      await sendTelegramMessage(chatId, reportText);
+      await sendTelegramMessage(chatId, validation.report.join('\n'));
     } catch (error) {
       console.error('Validation error:', error.message);
       await sendTelegramMessage(chatId, `Error processing file: ${error.message}`);
@@ -333,7 +290,6 @@ async function handleTelegramUpdate(update) {
     return;
   }
 
-  // /check command (reply to file)
   if (message.text === '/check') {
     const replyTo = message.reply_to_message;
     if (!replyTo?.document) {
@@ -353,15 +309,12 @@ async function handleTelegramUpdate(update) {
     }
 
     try {
-      const fileInfo = await axios.get(
-        `${TELEGRAM_API}/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`
-      );
+      const fileInfo = await telegramClient.get(`/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`);
       const filePath = fileInfo.data.result.file_path;
       const xmlContent = await downloadFromTelegram(filePath);
 
       const validation = await validateKeybox(xmlContent);
-      const reportText = validation.report.join('\n');
-      await sendTelegramMessage(chatId, reportText);
+      await sendTelegramMessage(chatId, validation.report.join('\n'));
     } catch (error) {
       console.error('Validation error:', error.message);
       await sendTelegramMessage(chatId, `Error processing file: ${error.message}`);
@@ -374,26 +327,29 @@ async function handleTelegramUpdate(update) {
 // ============================================================================
 
 export default async function handler(req, res) {
-  // Telegram webhook (POST)
   if (req.method === 'POST') {
+    // API trực tiếp
+    if (req.body.xml) {
+      try {
+        const result = await validateKeybox(req.body.xml);
+        return res.status(200).json(result);
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+    }
+
+    // Telegram Webhook (Thêm await để không bị ngắt kết nối Socket giữa chừng)
     try {
-      const update = req.body;
-
-      // Handle Telegram update asynchronously (don't await)
-      handleTelegramUpdate(update).catch(error => {
-        console.error('Update handler error:', error);
-      });
-
-      // Return 200 immediately to Telegram
-      res.status(200).json({ ok: true });
+      if (req.body && req.body.update_id) {
+        await handleTelegramUpdate(req.body);
+      }
+      return res.status(200).json({ ok: true });
     } catch (error) {
       console.error('Handler error:', error);
-      res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: error.message });
     }
-    return;
   }
 
-  // Direct API validation (GET or POST with XML)
   if (req.method === 'GET') {
     return res.status(200).json({
       status: 'KeyboxChecker API is running',
@@ -402,15 +358,6 @@ export default async function handler(req, res) {
         direct: 'POST /api with { xml: "<keybox>...</keybox>" }',
       },
     });
-  }
-
-  if (req.method === 'POST' && req.body.xml) {
-    try {
-      const result = await validateKeybox(req.body.xml);
-      return res.status(200).json(result);
-    } catch (error) {
-      return res.status(400).json({ error: error.message });
-    }
   }
 
   res.status(405).json({ error: 'Method not allowed' });
