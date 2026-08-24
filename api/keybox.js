@@ -147,28 +147,93 @@ async function validateKeyboxXml(rawXmlContent) {
   }
 }
 
+// 1. Tải và xử lý Keybox từ Yuri (Decode Base64)
 async function getYuriKeybox() {
-  const fileRes = await fetch(YURI_URL);
+  const [fileRes, commitRes] = await Promise.all([
+    fetch(YURI_URL),
+    fetch(YURI_COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
+  ]);
+
   if (!fileRes.ok) throw new Error("Không thể tải file key Yuri");
+
   const base64Text = await fileRes.text();
-  const buffer = Buffer.from(base64Text.replace(/\s+/g, '').trim(), 'base64');
-  return { buffer, name: "Yuri" };
+  const cleanBase64 = base64Text.replace(/\s+/g, '').trim();
+
+  let buffer;
+  try {
+    buffer = Buffer.from(cleanBase64, 'base64');
+    if (!buffer.length) throw new Error("Base64 rỗng");
+  } catch (error) {
+    throw new Error(`Không thể decode Base64: ${error.message}`);
+  }
+
+  let updateDate = "Không xác định";
+  let fileDate = new Date().toISOString().slice(0, 10);
+
+  if (commitRes.ok) {
+    const commits = await commitRes.json();
+    if (commits[0]?.commit?.committer?.date) {
+      const commitDate = commits[0].commit.committer.date;
+      updateDate = formatDate(commitDate);
+      
+      const d = new Date(commitDate);
+      fileDate = `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
+    }
+  }
+
+  const filename = `keybox-yuri-${fileDate}.xml`;
+  return { buffer, updateDate, filename };
 }
 
+// 2. Tải và xử lý Keybox từ Kaorios (XML trực tiếp)
 async function getKaoriosKeybox() {
-  const fileRes = await fetch(KAORIOS_URL);
+  const [fileRes, commitRes] = await Promise.all([
+    fetch(KAORIOS_URL),
+    fetch(KAORIOS_COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
+  ]);
+
   if (!fileRes.ok) throw new Error("Không thể tải file key Kaorios");
+
   const xmlText = await fileRes.text();
   const buffer = Buffer.from(xmlText, 'utf-8');
-  return { buffer, name: "Kaorios" };
+
+  let updateDate = "Không xác định";
+  let fileDate = new Date().toISOString().slice(0, 10);
+
+  if (commitRes.ok) {
+    const commits = await commitRes.json();
+    if (commits[0]?.commit?.committer?.date) {
+      const commitDate = commits[0].commit.committer.date;
+      updateDate = formatDate(commitDate);
+
+      const d = new Date(commitDate);
+      fileDate = `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
+    }
+  }
+
+  const filename = `keybox-kaorios-${fileDate}.xml`;
+  return { buffer, updateDate, filename };
 }
 
+// 3. Tải và xử lý Keybox từ Evoker (Decode Base64, không có API kiểm tra ngày)
 async function getEvokerKeybox() {
   const fileRes = await fetch(EVOKER_URL);
   if (!fileRes.ok) throw new Error("Không thể tải file key Evoker");
+
   const base64Text = await fileRes.text();
-  const buffer = Buffer.from(base64Text.replace(/\s+/g, '').trim(), 'base64');
-  return { buffer, name: "Evoker" };
+  const cleanBase64 = base64Text.replace(/\s+/g, '').trim();
+
+  let buffer;
+  try {
+    buffer = Buffer.from(cleanBase64, 'base64');
+    if (!buffer.length) throw new Error("Base64 rỗng");
+  } catch (error) {
+    throw new Error(`Không thể decode Base64: ${error.message}`);
+  }
+
+  const updateDate = "Không có dữ liệu ngày";
+  const filename = `keybox-evoker.xml`;
+  return { buffer, updateDate, filename };
 }
 
 // Bot Commands
@@ -200,9 +265,9 @@ bot.command('check', async (ctx) => {
         const { buffer } = await src.fetcher();
         const xmlContent = buffer.toString('utf-8');
         const isPassed = await validateKeyboxXml(xmlContent);
-        return { name: src.name, passed: isPassed };
+        return { name: src.filename, passed: isPassed };
       } catch (err) {
-        return { name: src.name, passed: false };
+        return { name: src.filename, passed: false };
       }
     })
   );
@@ -210,7 +275,7 @@ bot.command('check', async (ctx) => {
   let message = "Kết quả check keybox:\n";
   results.forEach((item) => {
     const icon = item.passed ? "✅" : "❌";
-    message += `${icon} Keybox ${item.name}\n`;
+    message += `${icon} Keybox ${item.filename}\n`;
   });
   message += "@check_key_boz_bot";
 
@@ -236,14 +301,17 @@ bot.action(/^get_keybox:(yuri|kaorios|evoker):(\d+)$/, async (ctx) => {
   const ownerId = Number(ctx.match[2]);
   const clickedUserId = ctx.from.id;
 
+  // Kiểm tra quyền ngay lập tức
   if (clickedUserId !== ownerId) {
     return ctx.answerCbQuery("눈⁠‸⁠눈 Đừng làm phiền người ta", { show_alert: true }).catch(() => {});
   }
 
+  // Phản hồi callback khẩn cấp để tránh lỗi Timeout
   await ctx.answerCbQuery("Đang xử lý tải file...").catch(() => {});
 
   try {
     await ctx.sendChatAction('upload_document');
+    
     let keyData;
     let sourceName = "";
 
@@ -258,13 +326,17 @@ bot.action(/^get_keybox:(yuri|kaorios|evoker):(\d+)$/, async (ctx) => {
       sourceName = "Evoker";
     }
 
-    const { buffer, filename = `keybox-${source}.xml` } = keyData;
+    const { buffer, updateDate, filename } = keyData;
 
     await ctx.replyWithDocument(
       { source: buffer, filename },
-      { caption: `🔑 **File Keybox (${sourceName})**`, parse_mode: 'Markdown' }
+      {
+        caption: `🔑 **File Keybox (${sourceName})**\n📅 Ngày cập nhật: \`${updateDate}\`\n📄 Tên file: \`${filename}\``,
+        parse_mode: 'Markdown'
+      }
     );
 
+    // Xóa menu chọn sau khi gửi file thành công
     await ctx.deleteMessage().catch(() => {});
   } catch (error) {
     console.error(error);
