@@ -1,28 +1,26 @@
-import { Telegraf } from 'telegraf';
 import axios from 'axios';
 import https from 'https';
-import pem from 'pem';
+import crypto from 'crypto';
 import { X509Certificate } from '@peculiar/x509';
 
 // ============================================================================
-// CẤU HÌNH & KHỞI TẠO BOT TELEGRAF
+// CẤU HÌNH & CLIENT HTTP
 // ============================================================================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN_CHECK_KEYBOX;
+const TELEGRAM_API = 'https://api.telegram.org';
 const GOOGLE_REVOCATION_URL = 'https://android.googleapis.com/attestation/status';
 
-if (!TELEGRAM_TOKEN) {
-  console.error('LỖI: Chưa cấu hình biến môi trường TELEGRAM_BOT_TOKEN_CHECK_KEYBOX!');
-}
-
-const bot = new Telegraf(TELEGRAM_TOKEN);
-
-// Tắt Keep-Alive để tránh lỗi TLS Socket Disconnect trên môi trường Serverless (Vercel)
 const httpsAgent = new https.Agent({
   keepAlive: false,
   timeout: 10000,
 });
 
-// Danh sách Public Key gốc (Root Certificates) chuẩn Google & Samsung Knox
+const telegramClient = axios.create({
+  baseURL: TELEGRAM_API,
+  httpsAgent: httpsAgent,
+  timeout: 10000,
+});
+
 const PEM_KEYS = {
   google: `-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xU
@@ -57,47 +55,51 @@ ZsapxB0gAOs0jSPRX5M=
 };
 
 // ============================================================================
-// HÀM XỬ LÝ & LÀM SẠCH CHỨNG CHỈ (CERTIFICATE CLEANER)
+// HÀM XỬ LÝ & BÓC TÁCH CHỨNG CHỈ (LÀM SẠCH VÀ SỬA LỖI FORMAT)
 // ============================================================================
 
-/**
- * Làm sạch chuỗi PEM để tránh lỗi định dạng của `@peculiar/x509`
- */
-function cleanAndFormatPem(rawPem) {
-  if (!rawPem) return null;
-
+function formatPem(rawPem) {
+  if (!rawPem) return '';
+  
+  // Loại bỏ các thẻ HTML Entity, khoảng trắng, xuống dòng rác
   let base64 = rawPem
-    .replace(/&#13;/g, '')
-    .replace(/&#10;/g, '')
     .replace(/-----BEGIN CERTIFICATE-----/gi, '')
     .replace(/-----END CERTIFICATE-----/gi, '')
+    .replace(/&#13;/g, '')
+    .replace(/&#10;/g, '')
+    .replace(/[\r\n\t]/g, '')
     .replace(/\s+/g, '');
 
-  if (!base64) return null;
+  if (!base64) return '';
 
+  // Đảm bảo đủ độ dài chuỗi Base64 (Padding với dấu =)
   while (base64.length % 4 !== 0) {
     base64 += '=';
   }
 
+  // Cắt dòng 64 ký tự theo chuẩn RFC 1421
   const lines = base64.match(/.{1,64}/g) || [];
   return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
 }
 
 /**
- * Trích xuất chứng chỉ từ XML, đồng thời TỰ ĐỘNG XÓA BỎ các thẻ chú thích <!-- Nội dung -->
+ * Hàm bóc tách chứng chỉ an toàn: Tự động loại bỏ chú thích <!-- Nội dung --> và dính chùm
  */
-function parseCertificatesFromXml(xmlString) {
-  // Loại bỏ hoàn toàn các đoạn chú thích dạng <!-- Nội dung --> để tránh lỗi phân tích
-  const cleanXml = xmlString.replace(/<!--[\s\S]*?-->/g, '');
-
+function extractCertificatesFromXml(xmlString) {
   const certs = [];
-  const certRegex = /<Certificate[\s\S]*?>([\s\S]*?)<\/Certificate>/gi;
-  let match;
+  
+  // Tự động xóa sạch mọi thẻ chú thích XML/HTML <!-- ... --> trước khi match
+  const cleanXml = xmlString.replace(/<!--[\s\S]*?-->/g, '');
+  
+  const certBlocks = cleanXml.match(/<Certificate[\s\S]*?>([\s\S]*?)<\/Certificate>/gi) || [];
 
-  while ((match = certRegex.exec(cleanXml)) !== null) {
-    const formatted = cleanAndFormatPem(match[1]);
-    if (formatted) {
-      certs.push(formatted);
+  for (const block of certBlocks) {
+    const contentMatch = block.match(/<Certificate[\s\S]*?>([\s\S]*?)<\/Certificate>/i);
+    if (contentMatch && contentMatch[1]) {
+      const formatted = formatPem(contentMatch[1]);
+      if (formatted) {
+        certs.push(formatted);
+      }
     }
   }
 
@@ -106,6 +108,13 @@ function parseCertificatesFromXml(xmlString) {
 
 function comparePemKeys(pem1, pem2) {
   return pem1.replace(/\s/g, '') === pem2.replace(/\s/g, '');
+}
+
+async function downloadFromTelegram(filePath) {
+  const response = await telegramClient.get(`/file/bot${TELEGRAM_TOKEN}/${filePath}`, {
+    responseType: 'arraybuffer',
+  });
+  return response.data.toString('utf-8');
 }
 
 async function loadRevocationList() {
@@ -121,46 +130,44 @@ async function loadRevocationList() {
   }
 }
 
-/**
- * Xác minh tính hợp lệ chuỗi chứng chỉ bằng thư viện `pem`
- */
-function verifyCertificateChain(certs) {
-  return new Promise((resolve) => {
-    if (certs.length < 2) return resolve(true);
+async function verifyCertificateChain(certs) {
+  if (certs.length < 2) return true;
 
-    let completed = 0;
-    let isValidChain = true;
-
+  try {
     for (let i = 0; i < certs.length - 1; i++) {
-      pem.verifySigningChain(certs[i], [certs[i + 1]], (err, isValid) => {
-        completed++;
-        if (err || !isValid) {
-          isValidChain = false;
-        }
-        if (completed === certs.length - 1) {
-          resolve(isValidChain);
-        }
+      const child = new X509Certificate(certs[i]);
+      const parent = new X509Certificate(certs[i + 1]);
+
+      if (child.issuer !== parent.subject) {
+        return false;
+      }
+
+      const isValidSignature = await child.verify({
+        publicKey: await parent.publicKey.export(),
       });
+
+      if (!isValidSignature) {
+        return false;
+      }
     }
-  });
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 function checkCertificateValidity(pemCert) {
-  try {
-    const cert = new X509Certificate(pemCert);
-    const now = new Date();
-    const notBefore = cert.notBefore;
-    const notAfter = cert.notAfter;
+  const cert = new X509Certificate(pemCert);
+  const now = new Date();
+  const notBefore = cert.notBefore;
+  const notAfter = cert.notAfter;
 
-    return {
-      isValid: notBefore <= now && now <= notAfter,
-      notBefore,
-      notAfter,
-      expired: now > notAfter,
-    };
-  } catch (error) {
-    throw new Error(`Không thể phân tích chứng chỉ: ${error.message}`);
-  }
+  return {
+    isValid: notBefore <= now && now <= notAfter,
+    notBefore,
+    notAfter,
+    expired: now > notAfter,
+  };
 }
 
 function identifyRootCert(pemCert) {
@@ -176,21 +183,20 @@ function identifyRootCert(pemCert) {
         if (name === 'knox') return { name, type: 'Xác thực Samsung Knox', icon: '✅' };
       }
     }
-  } catch (e) {
-    // Bỏ qua lỗi
-  }
+  } catch (e) {}
 
   return { name: 'unknown', type: 'Chứng chỉ gốc không xác định', icon: '❌' };
 }
 
 // ============================================================================
-// HÀM KIỂM TRA KEYBOX TỔNG THỂ
+// LOGIC KIỂM TRA KEYBOX TỔNG THỂ
 // ============================================================================
+
 async function validateKeybox(xmlContent) {
   const result = { success: false, report: [], status: [] };
 
   try {
-    const pemCerts = parseCertificatesFromXml(xmlContent);
+    const pemCerts = extractCertificatesFromXml(xmlContent);
 
     if (pemCerts.length === 0) {
       throw new Error('Không tìm thấy chứng chỉ hợp lệ trong file XML');
@@ -198,6 +204,8 @@ async function validateKeybox(xmlContent) {
 
     const firstCertValidity = checkCertificateValidity(pemCerts[0]);
     const cert = new X509Certificate(pemCerts[0]);
+    
+    // Tách lấy Serial Number chuẩn Hex không bị tràn chuỗi
     const serialNumber = cert.serialNumber.replace(/^0x/i, '').toLowerCase();
 
     result.report.push(`🔐 *Số Serial:* \`${serialNumber}\``);
@@ -214,6 +222,7 @@ async function validateKeybox(xmlContent) {
       result.status.push('not_yet_valid');
     }
 
+    // Kiểm tra chuỗi xác thực (Keychain)
     const chainValid = await verifyCertificateChain(pemCerts);
     if (chainValid) {
       result.report.push('✅ Chuỗi xác thực (Keychain) hợp lệ');
@@ -223,10 +232,12 @@ async function validateKeybox(xmlContent) {
       result.status.push('chain_invalid');
     }
 
+    // Kiểm tra chứng chỉ Root
     const rootCertInfo = identifyRootCert(pemCerts[pemCerts.length - 1]);
     result.report.push(`${rootCertInfo.icon} ${rootCertInfo.type}`);
     result.status.push(`root_${rootCertInfo.name}`);
 
+    // Tra cứu danh sách thu hồi của Google
     const revocationList = await loadRevocationList();
     const isRevoked = revocationList.entries?.[serialNumber];
     if (isRevoked) {
@@ -248,68 +259,89 @@ async function validateKeybox(xmlContent) {
 }
 
 // ============================================================================
-// CÁC TRÌNH XỬ LÝ SỰ KIỆN TELEGRAF BOT
+// TELEGRAM HANDLERS
 // ============================================================================
 
-bot.start((ctx) => {
-  if (ctx.chat.type === 'private') {
-    ctx.reply('Chào bạn! Hãy gửi file `keybox.xml` trực tiếp cho tôi hoặc dùng lệnh /check để kiểm tra tính hợp lệ.');
-  }
-});
-
-bot.help((ctx) => {
-  ctx.reply('Gửi hoặc phản hồi (reply) file XML chứa keybox để hệ thống tiến hành kiểm tra chứng chỉ phần cứng.');
-});
-
-// Xử lý khi người dùng gửi file trực tiếp
-bot.on('document', async (ctx) => {
-  const doc = ctx.message.document;
-
-  if (doc.file_size > 50 * 1024) {
-    return ctx.reply('Dung lượng file quá lớn (Giới hạn tối đa là 50KB).');
-  }
-
+async function sendTelegramMessage(chatId, text, parseMode = 'Markdown') {
   try {
-    const fileLink = await ctx.telegram.getFileLink(doc.file_id);
-    const response = await axios.get(fileLink.href, { responseType: 'text' });
-    const xmlContent = response.data;
-
-    const validation = await validateKeybox(xmlContent);
-    await ctx.reply(validation.report.join('\n'), { parse_mode: 'Markdown' });
+    await telegramClient.post(`/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      chat_id: chatId,
+      text,
+      parse_mode: parseMode,
+    });
   } catch (error) {
-    console.error('Lỗi xử lý tệp:', error.message);
-    await ctx.reply(`Lỗi khi phân tích tệp: ${error.message}`);
+    console.error('Lỗi gửi tin nhắn Telegram:', error.response?.data || error.message);
   }
-});
+}
 
-// Xử lý lệnh /check khi reply vào file
-bot.command('check', async (ctx) => {
-  const replyTo = ctx.message.reply_to_message;
-  if (!replyTo || !replyTo.document) {
-    return ctx.reply('Vui lòng phản hồi (reply) vào file keybox.xml và gõ lệnh /check');
+async function handleTelegramUpdate(update) {
+  const message = update.message;
+  if (!message) return;
+
+  const chatId = message.chat.id;
+  const isPrivate = message.chat.type === 'private';
+
+  if (message.text === '/start' || message.text === '/help') {
+    if (isPrivate) {
+      await sendTelegramMessage(
+        chatId,
+        'Chào bạn! Hãy gửi cho tôi file `keybox.xml` để kiểm tra tính hợp lệ.'
+      );
+    }
+    return;
   }
 
-  const doc = replyTo.document;
-  try {
-    const fileLink = await ctx.telegram.getFileLink(doc.file_id);
-    const response = await axios.get(fileLink.href, { responseType: 'text' });
-    const xmlContent = response.data;
+  if (message.document) {
+    const doc = message.document;
 
-    const validation = await validateKeybox(xmlContent);
-    await ctx.reply(validation.report.join('\n'), { parse_mode: 'Markdown' });
-  } catch (error) {
-    console.error('Lỗi xử lý tệp qua lệnh /check:', error.message);
-    await ctx.reply(`Lỗi khi phân tích tệp: ${error.message}`);
+    if (doc.file_size > 50 * 1024) {
+      await sendTelegramMessage(chatId, 'Dung lượng file quá lớn (Tối đa 50KB).');
+      return;
+    }
+
+    try {
+      const fileInfo = await telegramClient.get(`/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`);
+      const filePath = fileInfo.data.result.file_path;
+      const xmlContent = await downloadFromTelegram(filePath);
+
+      const validation = await validateKeybox(xmlContent);
+      await sendTelegramMessage(chatId, validation.report.join('\n'));
+    } catch (error) {
+      console.error('Lỗi xử lý file:', error.message);
+      await sendTelegramMessage(chatId, `Lỗi khi phân tích file: ${error.message}`);
+    }
+    return;
   }
-});
+
+  if (message.text === '/check') {
+    const replyTo = message.reply_to_message;
+    if (!replyTo?.document) {
+      await sendTelegramMessage(chatId, 'Vui lòng reply (trả lời) vào file keybox.xml với lệnh /check');
+      return;
+    }
+
+    const doc = replyTo.document;
+    try {
+      const fileInfo = await telegramClient.get(`/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`);
+      const filePath = fileInfo.data.result.file_path;
+      const xmlContent = await downloadFromTelegram(filePath);
+
+      const validation = await validateKeybox(xmlContent);
+      await sendTelegramMessage(chatId, validation.report.join('\n'));
+    } catch (error) {
+      console.error('Lỗi xử lý file:', error.message);
+      await sendTelegramMessage(chatId, `Lỗi khi phân tích file: ${error.message}`);
+    }
+  }
+}
 
 // ============================================================================
-// VERCEL SERVERLESS HANDLER (Dùng Telegraf Webhook)
+// VERCEL HANDLER
 // ============================================================================
+
 export default async function handler(req, res) {
   if (req.method === 'POST') {
-    // Hỗ trợ cả kiểm tra qua API Body JSON trực tiếp
-    if (req.body && req.body.xml) {
+    if (req.body.xml) {
       try {
         const result = await validateKeybox(req.body.xml);
         return res.status(200).json(result);
@@ -318,18 +350,19 @@ export default async function handler(req, res) {
       }
     }
 
-    // Xử lý Webhook chuẩn của Telegraf
     try {
-      await bot.handleUpdate(req.body);
+      if (req.body && req.body.update_id) {
+        await handleTelegramUpdate(req.body);
+      }
       return res.status(200).json({ ok: true });
     } catch (error) {
-      console.error('Lỗi Webhook Telegraf:', error);
+      console.error('Lỗi Webhook Handler:', error);
       return res.status(500).json({ error: error.message });
     }
   }
 
   if (req.method === 'GET') {
-    return res.status(200).json({ status: 'Keybox Checker Bot (Telegraf) đang hoạt động ổn định!' });
+    return res.status(200).json({ status: 'KeyboxChecker API đang hoạt động bình thường' });
   }
 
   res.status(405).json({ error: 'Method not allowed' });
