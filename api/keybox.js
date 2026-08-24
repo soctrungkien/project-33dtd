@@ -13,7 +13,7 @@ const YURI_COMMIT_API = "https://api.github.com/repos/Yurii0307/yurikey/commits?
 const KAORIOS_URL = "https://raw.githubusercontent.com/Wuang26/Kaorios-Toolbox/refs/heads/main/Toolbox-data/Keybox.xml";
 const KAORIOS_COMMIT_API = "https://api.github.com/repos/Wuang26/Kaorios-Toolbox/commits?path=Toolbox-data/Keybox.xml&page=1&per_page=1";
 
-const EVOKER_URL = "https://evoker.qzz.io/key";
+const EVOKER_URL = "https://evoker.qzz.io/";
 
 const httpsAgent = new https.Agent({ keepAlive: false, timeout: 10000 });
 
