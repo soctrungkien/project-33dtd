@@ -1,7 +1,6 @@
 import axios from 'axios';
 import https from 'https';
 import crypto from 'crypto';
-import asn1 from 'asn1.js';
 import { X509Certificate } from '@peculiar/x509';
 
 // ============================================================================
@@ -56,45 +55,39 @@ ZsapxB0gAOs0jSPRX5M=
 };
 
 // ============================================================================
-// UTILITY & CERT PARSING
+// UTILITY & PARSING FIXES
 // ============================================================================
 
-/**
- * Chuẩn hóa chuỗi PEM từ XML để ngắt dòng đúng chuẩn RFC 64 ký tự/dòng
- */
 function formatPem(rawPem) {
   if (!rawPem) return '';
-  
-  // Tách lấy phần Base64 thuần túy
   let base64 = rawPem
-    .replace(/-----BEGIN CERTIFICATE-----/g, '')
-    .replace(/-----END CERTIFICATE-----/g, '')
+    .replace(/-----BEGIN CERTIFICATE-----/gi, '')
+    .replace(/-----END CERTIFICATE-----/gi, '')
+    .replace(/&#13;/g, '')
     .replace(/\s+/g, '');
 
   if (!base64) return '';
-
-  // Chia dòng 64 ký tự
   const lines = base64.match(/.{1,64}/g) || [];
   return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
 }
 
-function parseNumberOfCertificates(xmlString) {
-  const match = xmlString.match(/<NumberOfCertificates>(\d+)<\/NumberOfCertificates>/);
-  if (!match) throw new Error('No NumberOfCertificates found.');
-  return parseInt(match[1], 10);
-}
-
-function parseCertificates(xmlString, pemNumber) {
-  const certRegex = /<Certificate format="pem">([\s\S]*?)<\/Certificate>/g;
+/**
+ * Hàm bóc tách chứng chỉ an toàn, giải quyết triệt để lỗi dính chùm hoặc sai lệch index
+ */
+function extractCertificatesFromXml(xmlString) {
   const certs = [];
-  let match;
-  while ((match = certRegex.exec(xmlString)) !== null && certs.length < pemNumber) {
-    const cleanPem = formatPem(match[1]);
-    if (cleanPem) {
-      certs.push(cleanPem);
+  const certBlocks = xmlString.match(/<Certificate[\s\S]*?>([\s\S]*?)<\/Certificate>/gi) || [];
+
+  for (const block of certBlocks) {
+    const contentMatch = block.match(/<Certificate[\s\S]*?>([\s\S]*?)<\/Certificate>/i);
+    if (contentMatch && contentMatch[1]) {
+      const formatted = formatPem(contentMatch[1]);
+      if (formatted) {
+        certs.push(formatted);
+      }
     }
   }
-  if (certs.length === 0) throw new Error('No valid Certificate found.');
+
   return certs;
 }
 
@@ -122,9 +115,6 @@ async function loadRevocationList() {
   }
 }
 
-/**
- * Xác minh Certificate Chain bằng `@peculiar/x509` (Không phụ thuộc vào OpenSSL)
- */
 async function verifyCertificateChain(certs) {
   if (certs.length < 2) return true;
 
@@ -133,12 +123,10 @@ async function verifyCertificateChain(certs) {
       const child = new X509Certificate(certs[i]);
       const parent = new X509Certificate(certs[i + 1]);
 
-      // 1. Kiểm tra Issuer của con khớp với Subject của cha
       if (child.issuer !== parent.subject) {
         return false;
       }
 
-      // 2. Xác minh chữ ký số của cha lên con
       const isValidSignature = await child.verify({
         publicKey: await parent.publicKey.export(),
       });
@@ -154,21 +142,17 @@ async function verifyCertificateChain(certs) {
 }
 
 function checkCertificateValidity(pemCert) {
-  try {
-    const cert = new X509Certificate(pemCert);
-    const now = new Date();
-    const notBefore = cert.notBefore;
-    const notAfter = cert.notAfter;
+  const cert = new X509Certificate(pemCert);
+  const now = new Date();
+  const notBefore = cert.notBefore;
+  const notAfter = cert.notAfter;
 
-    return {
-      isValid: notBefore <= now && now <= notAfter,
-      notBefore,
-      notAfter,
-      expired: now > notAfter,
-    };
-  } catch (error) {
-    throw new Error(`Failed to parse certificate: ${error.message}`);
-  }
+  return {
+    isValid: notBefore <= now && now <= notAfter,
+    notBefore,
+    notAfter,
+    expired: now > notAfter,
+  };
 }
 
 function identifyRootCert(pemCert) {
@@ -184,9 +168,7 @@ function identifyRootCert(pemCert) {
         if (name === 'knox') return { name, type: 'Samsung Knox attestation', icon: '✅' };
       }
     }
-  } catch (e) {
-    // Ignore parse error for root comparison fallback
-  }
+  } catch (e) {}
 
   return { name: 'unknown', type: 'Unknown root certificate', icon: '❌' };
 }
@@ -199,17 +181,16 @@ async function validateKeybox(xmlContent) {
   const result = { success: false, report: [], status: [] };
 
   try {
-    const numCerts = parseNumberOfCertificates(xmlContent);
-    const pemCerts = parseCertificates(xmlContent, numCerts);
+    const pemCerts = extractCertificatesFromXml(xmlContent);
 
     if (pemCerts.length === 0) {
-      throw new Error('No certificates found in keybox');
+      throw new Error('No valid certificates found in XML');
     }
 
     const firstCertValidity = checkCertificateValidity(pemCerts[0]);
     const cert = new X509Certificate(pemCerts[0]);
     
-    // Format Serial Number dạng Hex chuẩn
+    // Tách lấy Serial Number chuẩn Hex không bị tràn chuỗi
     const serialNumber = cert.serialNumber.replace(/^0x/i, '').toLowerCase();
 
     result.report.push(`🔐 *Serial number:* \`${serialNumber}\``);
@@ -226,7 +207,7 @@ async function validateKeybox(xmlContent) {
       result.status.push('not_yet_valid');
     }
 
-    // Verify Keychain
+    // Checking Chain
     const chainValid = await verifyCertificateChain(pemCerts);
     if (chainValid) {
       result.report.push('✅ Valid keychain');
@@ -236,12 +217,12 @@ async function validateKeybox(xmlContent) {
       result.status.push('chain_invalid');
     }
 
-    // Check Root Certificate
+    // Checking Root
     const rootCertInfo = identifyRootCert(pemCerts[pemCerts.length - 1]);
     result.report.push(`${rootCertInfo.icon} ${rootCertInfo.type}`);
     result.status.push(`root_${rootCertInfo.name}`);
 
-    // Check Revocation List
+    // Revocation Check
     const revocationList = await loadRevocationList();
     const isRevoked = revocationList.entries?.[serialNumber];
     if (isRevoked) {
@@ -298,13 +279,8 @@ async function handleTelegramUpdate(update) {
   if (message.document) {
     const doc = message.document;
 
-    if (doc.mime_type !== 'application/xml' && doc.mime_type !== 'text/xml' && !doc.file_name.endsWith('.xml')) {
-      await sendTelegramMessage(chatId, 'File format error. Please send an XML file.');
-      return;
-    }
-
-    if (doc.file_size > 20 * 1024) {
-      await sendTelegramMessage(chatId, 'File size is too large (max 20KB).');
+    if (doc.file_size > 50 * 1024) {
+      await sendTelegramMessage(chatId, 'File size is too large (max 50KB).');
       return;
     }
 
@@ -345,7 +321,7 @@ async function handleTelegramUpdate(update) {
 }
 
 // ============================================================================
-// VERCEL SERVERLESS HANDLER
+// VERCEL HANDLER
 // ============================================================================
 
 export default async function handler(req, res) {
@@ -371,13 +347,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'GET') {
-    return res.status(200).json({
-      status: 'KeyboxChecker API is running',
-      endpoints: {
-        telegram: 'POST /api with Telegram webhook',
-        direct: 'POST /api with { xml: "<keybox>...</keybox>" }',
-      },
-    });
+    return res.status(200).json({ status: 'KeyboxChecker API is running' });
   }
 
   res.status(405).json({ error: 'Method not allowed' });
