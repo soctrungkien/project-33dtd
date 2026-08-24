@@ -1,7 +1,6 @@
 import axios from 'axios';
 import https from 'https';
 import crypto from 'crypto';
-import pem from 'pem';
 import asn1 from 'asn1.js';
 import { X509Certificate } from '@peculiar/x509';
 
@@ -12,7 +11,6 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN_CHECK_KEYBOX;
 const TELEGRAM_API = 'https://api.telegram.org';
 const GOOGLE_REVOCATION_URL = 'https://android.googleapis.com/attestation/status';
 
-// Hạn chế lỗi TLS Socket Disconnect trên Vercel bằng cách tắt Keep-Alive
 const httpsAgent = new https.Agent({
   keepAlive: false,
   timeout: 10000,
@@ -24,7 +22,6 @@ const telegramClient = axios.create({
   timeout: 10000,
 });
 
-// Embedded PEM keys
 const PEM_KEYS = {
   google: `-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xU
@@ -62,6 +59,25 @@ ZsapxB0gAOs0jSPRX5M=
 // UTILITY & CERT PARSING
 // ============================================================================
 
+/**
+ * Chuẩn hóa chuỗi PEM từ XML để ngắt dòng đúng chuẩn RFC 64 ký tự/dòng
+ */
+function formatPem(rawPem) {
+  if (!rawPem) return '';
+  
+  // Tách lấy phần Base64 thuần túy
+  let base64 = rawPem
+    .replace(/-----BEGIN CERTIFICATE-----/g, '')
+    .replace(/-----END CERTIFICATE-----/g, '')
+    .replace(/\s+/g, '');
+
+  if (!base64) return '';
+
+  // Chia dòng 64 ký tự
+  const lines = base64.match(/.{1,64}/g) || [];
+  return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
+}
+
 function parseNumberOfCertificates(xmlString) {
   const match = xmlString.match(/<NumberOfCertificates>(\d+)<\/NumberOfCertificates>/);
   if (!match) throw new Error('No NumberOfCertificates found.');
@@ -73,9 +89,12 @@ function parseCertificates(xmlString, pemNumber) {
   const certs = [];
   let match;
   while ((match = certRegex.exec(xmlString)) !== null && certs.length < pemNumber) {
-    certs.push(match[1].trim());
+    const cleanPem = formatPem(match[1]);
+    if (cleanPem) {
+      certs.push(cleanPem);
+    }
   }
-  if (certs.length === 0) throw new Error('No Certificate found.');
+  if (certs.length === 0) throw new Error('No valid Certificate found.');
   return certs;
 }
 
@@ -104,32 +123,36 @@ async function loadRevocationList() {
 }
 
 /**
- * Sử dụng thư viện `pem` để kiểm tra toàn bộ Certificate Chain
+ * Xác minh Certificate Chain bằng `@peculiar/x509` (Không phụ thuộc vào OpenSSL)
  */
-function verifyCertificateChain(certs) {
-  return new Promise((resolve) => {
-    if (certs.length < 2) return resolve(true);
+async function verifyCertificateChain(certs) {
+  if (certs.length < 2) return true;
 
-    let checksCompleted = 0;
-    let isChainValid = true;
-
+  try {
     for (let i = 0; i < certs.length - 1; i++) {
-      pem.verifySigningChain(certs[i], [certs[i + 1]], (err, isValid) => {
-        checksCompleted++;
-        if (err || !isValid) {
-          isChainValid = false;
-        }
-        if (checksCompleted === certs.length - 1) {
-          resolve(isChainValid);
-        }
+      const child = new X509Certificate(certs[i]);
+      const parent = new X509Certificate(certs[i + 1]);
+
+      // 1. Kiểm tra Issuer của con khớp với Subject của cha
+      if (child.issuer !== parent.subject) {
+        return false;
+      }
+
+      // 2. Xác minh chữ ký số của cha lên con
+      const isValidSignature = await child.verify({
+        publicKey: await parent.publicKey.export(),
       });
+
+      if (!isValidSignature) {
+        return false;
+      }
     }
-  });
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
-/**
- * Sử dụng `@peculiar/x509` để parse thời hạn chứng chỉ
- */
 function checkCertificateValidity(pemCert) {
   try {
     const cert = new X509Certificate(pemCert);
@@ -149,14 +172,22 @@ function checkCertificateValidity(pemCert) {
 }
 
 function identifyRootCert(pemCert) {
-  for (const [name, key] of Object.entries(PEM_KEYS)) {
-    if (comparePemKeys(pemCert, key)) {
-      if (name === 'google') return { name, type: 'Google hardware attestation', icon: '✅' };
-      if (name === 'aosp_ec') return { name, type: 'AOSP software attestation (EC)', icon: '🟡' };
-      if (name === 'aosp_rsa') return { name, type: 'AOSP software attestation (RSA)', icon: '🟡' };
-      if (name === 'knox') return { name, type: 'Samsung Knox attestation', icon: '✅' };
+  try {
+    const cert = new X509Certificate(pemCert);
+    const rootPublicKeyPem = cert.publicKey.toString('pem');
+
+    for (const [name, key] of Object.entries(PEM_KEYS)) {
+      if (comparePemKeys(rootPublicKeyPem, key)) {
+        if (name === 'google') return { name, type: 'Google hardware attestation', icon: '✅' };
+        if (name === 'aosp_ec') return { name, type: 'AOSP software attestation (EC)', icon: '🟡' };
+        if (name === 'aosp_rsa') return { name, type: 'AOSP software attestation (RSA)', icon: '🟡' };
+        if (name === 'knox') return { name, type: 'Samsung Knox attestation', icon: '✅' };
+      }
     }
+  } catch (e) {
+    // Ignore parse error for root comparison fallback
   }
+
   return { name: 'unknown', type: 'Unknown root certificate', icon: '❌' };
 }
 
@@ -175,10 +206,11 @@ async function validateKeybox(xmlContent) {
       throw new Error('No certificates found in keybox');
     }
 
-    // Đọc thông tin chi tiết bằng @peculiar/x509
     const firstCertValidity = checkCertificateValidity(pemCerts[0]);
     const cert = new X509Certificate(pemCerts[0]);
-    const serialNumber = cert.serialNumber.toLowerCase();
+    
+    // Format Serial Number dạng Hex chuẩn
+    const serialNumber = cert.serialNumber.replace(/^0x/i, '').toLowerCase();
 
     result.report.push(`🔐 *Serial number:* \`${serialNumber}\``);
     result.report.push(`ℹ️ *Subject:* \`${cert.subject}\``);
@@ -194,7 +226,7 @@ async function validateKeybox(xmlContent) {
       result.status.push('not_yet_valid');
     }
 
-    // Verify Certificate Chain bằng thư viện `pem`
+    // Verify Keychain
     const chainValid = await verifyCertificateChain(pemCerts);
     if (chainValid) {
       result.report.push('✅ Valid keychain');
@@ -266,7 +298,7 @@ async function handleTelegramUpdate(update) {
   if (message.document) {
     const doc = message.document;
 
-    if (doc.mime_type !== 'application/xml' && doc.mime_type !== 'text/xml') {
+    if (doc.mime_type !== 'application/xml' && doc.mime_type !== 'text/xml' && !doc.file_name.endsWith('.xml')) {
       await sendTelegramMessage(chatId, 'File format error. Please send an XML file.');
       return;
     }
@@ -298,16 +330,6 @@ async function handleTelegramUpdate(update) {
     }
 
     const doc = replyTo.document;
-    if (doc.mime_type !== 'application/xml' && doc.mime_type !== 'text/xml') {
-      await sendTelegramMessage(chatId, 'File format error.');
-      return;
-    }
-
-    if (doc.file_size > 20 * 1024) {
-      await sendTelegramMessage(chatId, 'File size is too large.');
-      return;
-    }
-
     try {
       const fileInfo = await telegramClient.get(`/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`);
       const filePath = fileInfo.data.result.file_path;
@@ -328,7 +350,6 @@ async function handleTelegramUpdate(update) {
 
 export default async function handler(req, res) {
   if (req.method === 'POST') {
-    // API trực tiếp
     if (req.body.xml) {
       try {
         const result = await validateKeybox(req.body.xml);
@@ -338,7 +359,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Telegram Webhook (Thêm await để không bị ngắt kết nối Socket giữa chừng)
     try {
       if (req.body && req.body.update_id) {
         await handleTelegramUpdate(req.body);
