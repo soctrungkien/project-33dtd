@@ -1,16 +1,20 @@
+import { Telegraf } from 'telegraf';
 import axios from 'axios';
 import https from 'https';
-import crypto from 'crypto';
 import pem from 'pem';
-import asn1 from 'asn1.js';
 import { X509Certificate } from '@peculiar/x509';
 
 // ============================================================================
-// CẤU HÌNH & CLIENT HTTP
+// CẤU HÌNH & KHỞI TẠO BOT TELEGRAF
 // ============================================================================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN_CHECK_KEYBOX;
-const TELEGRAM_API = 'https://api.telegram.org';
 const GOOGLE_REVOCATION_URL = 'https://android.googleapis.com/attestation/status';
+
+if (!TELEGRAM_TOKEN) {
+  console.error('LỖI: Chưa cấu hình biến môi trường TELEGRAM_BOT_TOKEN_CHECK_KEYBOX!');
+}
+
+const bot = new Telegraf(TELEGRAM_TOKEN);
 
 // Tắt Keep-Alive để tránh lỗi TLS Socket Disconnect trên môi trường Serverless (Vercel)
 const httpsAgent = new https.Agent({
@@ -18,13 +22,7 @@ const httpsAgent = new https.Agent({
   timeout: 10000,
 });
 
-const telegramClient = axios.create({
-  baseURL: TELEGRAM_API,
-  httpsAgent: httpsAgent,
-  timeout: 10000,
-});
-
-// Danh sách Public Key gốc (Root Certificates)
+// Danh sách Public Key gốc (Root Certificates) chuẩn Google & Samsung Knox
 const PEM_KEYS = {
   google: `-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xU
@@ -59,12 +57,11 @@ ZsapxB0gAOs0jSPRX5M=
 };
 
 // ============================================================================
-// HÀM HỖ TRỢ XỬ LÝ CHỨNG CHỈ (CERTIFICATE PARSER)
+// HÀM XỬ LÝ & LÀM SẠCH CHỨNG CHỈ (CERTIFICATE CLEANER)
 // ============================================================================
 
 /**
- * Làm sạch và chuẩn hóa chuỗi PEM từ file XML
- * Sửa triệt để lỗi "Unsupported format of 'raw' argument"
+ * Làm sạch chuỗi PEM để tránh lỗi định dạng của `@peculiar/x509`
  */
 function cleanAndFormatPem(rawPem) {
   if (!rawPem) return null;
@@ -87,14 +84,17 @@ function cleanAndFormatPem(rawPem) {
 }
 
 /**
- * Bóc tách tất cả các chứng chỉ trong file XML
+ * Trích xuất chứng chỉ từ XML, đồng thời TỰ ĐỘNG XÓA BỎ các thẻ chú thích <!-- Nội dung -->
  */
 function parseCertificatesFromXml(xmlString) {
+  // Loại bỏ hoàn toàn các đoạn chú thích dạng <!-- Nội dung --> để tránh lỗi phân tích
+  const cleanXml = xmlString.replace(/<!--[\s\S]*?-->/g, '');
+
   const certs = [];
   const certRegex = /<Certificate[\s\S]*?>([\s\S]*?)<\/Certificate>/gi;
   let match;
 
-  while ((match = certRegex.exec(xmlString)) !== null) {
+  while ((match = certRegex.exec(cleanXml)) !== null) {
     const formatted = cleanAndFormatPem(match[1]);
     if (formatted) {
       certs.push(formatted);
@@ -106,13 +106,6 @@ function parseCertificatesFromXml(xmlString) {
 
 function comparePemKeys(pem1, pem2) {
   return pem1.replace(/\s/g, '') === pem2.replace(/\s/g, '');
-}
-
-async function downloadFromTelegram(filePath) {
-  const response = await telegramClient.get(`/file/bot${TELEGRAM_TOKEN}/${filePath}`, {
-    responseType: 'arraybuffer',
-  });
-  return response.data.toString('utf-8');
 }
 
 async function loadRevocationList() {
@@ -129,7 +122,7 @@ async function loadRevocationList() {
 }
 
 /**
- * Xác minh tính hợp lệ của chuỗi chứng chỉ bằng thư viện `pem`
+ * Xác minh tính hợp lệ chuỗi chứng chỉ bằng thư viện `pem`
  */
 function verifyCertificateChain(certs) {
   return new Promise((resolve) => {
@@ -152,9 +145,6 @@ function verifyCertificateChain(certs) {
   });
 }
 
-/**
- * Kiểm tra hạn sử dụng chứng chỉ bằng `@peculiar/x509`
- */
 function checkCertificateValidity(pemCert) {
   try {
     const cert = new X509Certificate(pemCert);
@@ -173,9 +163,6 @@ function checkCertificateValidity(pemCert) {
   }
 }
 
-/**
- * Nhận diện chứng chỉ gốc (Root Certificate)
- */
 function identifyRootCert(pemCert) {
   try {
     const cert = new X509Certificate(pemCert);
@@ -190,16 +177,15 @@ function identifyRootCert(pemCert) {
       }
     }
   } catch (e) {
-    // Bỏ qua lỗi so khớp khóa
+    // Bỏ qua lỗi
   }
 
   return { name: 'unknown', type: 'Chứng chỉ gốc không xác định', icon: '❌' };
 }
 
 // ============================================================================
-// LOGIC KIỂM TRA KEYBOX CHÍNH
+// HÀM KIỂM TRA KEYBOX TỔNG THỂ
 // ============================================================================
-
 async function validateKeybox(xmlContent) {
   const result = { success: false, report: [], status: [] };
 
@@ -262,89 +248,68 @@ async function validateKeybox(xmlContent) {
 }
 
 // ============================================================================
-// SỰ KIỆN XỬ LÝ TELEGRAM
+// CÁC TRÌNH XỬ LÝ SỰ KIỆN TELEGRAF BOT
 // ============================================================================
 
-async function sendTelegramMessage(chatId, text, parseMode = 'Markdown') {
+bot.start((ctx) => {
+  if (ctx.chat.type === 'private') {
+    ctx.reply('Chào bạn! Hãy gửi file `keybox.xml` trực tiếp cho tôi hoặc dùng lệnh /check để kiểm tra tính hợp lệ.');
+  }
+});
+
+bot.help((ctx) => {
+  ctx.reply('Gửi hoặc phản hồi (reply) file XML chứa keybox để hệ thống tiến hành kiểm tra chứng chỉ phần cứng.');
+});
+
+// Xử lý khi người dùng gửi file trực tiếp
+bot.on('document', async (ctx) => {
+  const doc = ctx.message.document;
+
+  if (doc.file_size > 50 * 1024) {
+    return ctx.reply('Dung lượng file quá lớn (Giới hạn tối đa là 50KB).');
+  }
+
   try {
-    await telegramClient.post(`/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: chatId,
-      text,
-      parse_mode: parseMode,
-    });
+    const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+    const response = await axios.get(fileLink.href, { responseType: 'text' });
+    const xmlContent = response.data;
+
+    const validation = await validateKeybox(xmlContent);
+    await ctx.reply(validation.report.join('\n'), { parse_mode: 'Markdown' });
   } catch (error) {
-    console.error('Lỗi gửi tin nhắn Telegram:', error.response?.data || error.message);
+    console.error('Lỗi xử lý tệp:', error.message);
+    await ctx.reply(`Lỗi khi phân tích tệp: ${error.message}`);
   }
-}
+});
 
-async function handleTelegramUpdate(update) {
-  const message = update.message;
-  if (!message) return;
-
-  const chatId = message.chat.id;
-  const isPrivate = message.chat.type === 'private';
-
-  if (message.text === '/start' || message.text === '/help') {
-    if (isPrivate) {
-      await sendTelegramMessage(
-        chatId,
-        'Chào bạn! Hãy gửi cho tôi file `keybox.xml` để kiểm tra tính hợp lệ.'
-      );
-    }
-    return;
+// Xử lý lệnh /check khi reply vào file
+bot.command('check', async (ctx) => {
+  const replyTo = ctx.message.reply_to_message;
+  if (!replyTo || !replyTo.document) {
+    return ctx.reply('Vui lòng phản hồi (reply) vào file keybox.xml và gõ lệnh /check');
   }
 
-  if (message.document) {
-    const doc = message.document;
+  const doc = replyTo.document;
+  try {
+    const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+    const response = await axios.get(fileLink.href, { responseType: 'text' });
+    const xmlContent = response.data;
 
-    if (doc.file_size > 50 * 1024) {
-      await sendTelegramMessage(chatId, 'Dung lượng file quá lớn (Tối đa 50KB).');
-      return;
-    }
-
-    try {
-      const fileInfo = await telegramClient.get(`/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`);
-      const filePath = fileInfo.data.result.file_path;
-      const xmlContent = await downloadFromTelegram(filePath);
-
-      const validation = await validateKeybox(xmlContent);
-      await sendTelegramMessage(chatId, validation.report.join('\n'));
-    } catch (error) {
-      console.error('Lỗi xử lý file:', error.message);
-      await sendTelegramMessage(chatId, `Lỗi khi phân tích file: ${error.message}`);
-    }
-    return;
+    const validation = await validateKeybox(xmlContent);
+    await ctx.reply(validation.report.join('\n'), { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('Lỗi xử lý tệp qua lệnh /check:', error.message);
+    await ctx.reply(`Lỗi khi phân tích tệp: ${error.message}`);
   }
-
-  if (message.text === '/check') {
-    const replyTo = message.reply_to_message;
-    if (!replyTo?.document) {
-      await sendTelegramMessage(chatId, 'Vui lòng reply (trả lời) vào file keybox.xml với lệnh /check');
-      return;
-    }
-
-    const doc = replyTo.document;
-    try {
-      const fileInfo = await telegramClient.get(`/bot${TELEGRAM_TOKEN}/getFile?file_id=${doc.file_id}`);
-      const filePath = fileInfo.data.result.file_path;
-      const xmlContent = await downloadFromTelegram(filePath);
-
-      const validation = await validateKeybox(xmlContent);
-      await sendTelegramMessage(chatId, validation.report.join('\n'));
-    } catch (error) {
-      console.error('Lỗi xử lý file:', error.message);
-      await sendTelegramMessage(chatId, `Lỗi khi phân tích file: ${error.message}`);
-    }
-  }
-}
+});
 
 // ============================================================================
-// VERCEL SERVERLESS HANDLER
+// VERCEL SERVERLESS HANDLER (Dùng Telegraf Webhook)
 // ============================================================================
-
 export default async function handler(req, res) {
   if (req.method === 'POST') {
-    if (req.body.xml) {
+    // Hỗ trợ cả kiểm tra qua API Body JSON trực tiếp
+    if (req.body && req.body.xml) {
       try {
         const result = await validateKeybox(req.body.xml);
         return res.status(200).json(result);
@@ -353,19 +318,18 @@ export default async function handler(req, res) {
       }
     }
 
+    // Xử lý Webhook chuẩn của Telegraf
     try {
-      if (req.body && req.body.update_id) {
-        await handleTelegramUpdate(req.body);
-      }
+      await bot.handleUpdate(req.body);
       return res.status(200).json({ ok: true });
     } catch (error) {
-      console.error('Lỗi Webhook Handler:', error);
+      console.error('Lỗi Webhook Telegraf:', error);
       return res.status(500).json({ error: error.message });
     }
   }
 
   if (req.method === 'GET') {
-    return res.status(200).json({ status: 'KeyboxChecker API đang hoạt động bình thường' });
+    return res.status(200).json({ status: 'Keybox Checker Bot (Telegraf) đang hoạt động ổn định!' });
   }
 
   res.status(405).json({ error: 'Method not allowed' });
