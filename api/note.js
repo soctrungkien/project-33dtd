@@ -114,6 +114,21 @@ async function sendMessage(chatId, text, extra = {}) {
   }
 }
 
+async function isCommandForThisBot(text, commandName) {
+  const match = text.match(new RegExp(`^\\/${commandName}(?:@([A-Za-z0-9_]+))?(?:\\s|$)`, "i"));
+
+  if (!match) return false;
+
+  // Không có @username → cho phép xử lý
+  if (!match[1]) return true;
+
+  // Có @username → chỉ xử lý nếu đúng bot này
+  const botUsername = await getBotUsername();
+
+  return botUsername &&
+    match[1].toLowerCase() === botUsername.toLowerCase();
+}
+
 // Hàm xử lý tạo note (Đặt UID lên đầu raw text)
 async function handleCreateNote(chatId, content, user) {
   // Kiểm tra giới hạn ký tự
@@ -172,8 +187,12 @@ export default async function handler(req, res) {
   const text = message.text.trim();
   const user = message.from;
 
+  const isWho = await isCommandForThisBot(text, "who");
+  const isStart = await isCommandForThisBot(text, "start");
+  const isNotes = await isCommandForThisBot(text, "notes");
+
   // Xử lý lệnh /who
-  if (text.startsWith("/who")) {
+  if (isWho) {
     const args = text.split(/\s+/);
     const inputParam = args[1];
 
@@ -222,7 +241,7 @@ export default async function handler(req, res) {
     await sendMessage(chatId, whoMessage);
   }
   // Xử lý /start
-  else if (text.startsWith("/start")) {
+  else if (isStart) {
     const args = text.split(" ");
     const noteId = args[1];
 
@@ -251,7 +270,7 @@ export default async function handler(req, res) {
     }
   }
   // Xử lý /notes
-  else if (text.startsWith("/notes")) {
+  else if (isNotes) {
     let content = text.replace(/^\/notes(@\w+)?\s*/i, "").trim();
 
     if (!content && message.reply_to_message?.text) {
