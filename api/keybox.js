@@ -4,6 +4,7 @@ import https from 'https';
 import { X509Certificate } from '@peculiar/x509';
 
 const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
+const checkkeyboz = process.env.USERNAME_BOT_CHECK_KEYBOX;
 
 // Configuration & Keys
 const GOOGLE_REVOCATION_URL = 'https://android.googleapis.com/attestation/status';
@@ -277,7 +278,7 @@ bot.command('check', async (ctx) => {
     const icon = item.passed ? "✅" : "❌";
     message += `${icon} Keybox ${item.name}\n`;
   });
-  message += "@check_key_boz_bot";
+  message += checkkeyboz;
 
   await ctx.reply(message.trim());
 });
