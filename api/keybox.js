@@ -278,7 +278,7 @@ bot.command('check', async (ctx) => {
     const icon = item.passed ? "✅" : "❌";
     message += `${icon} Keybox ${item.name}\n`;
   });
-  message += checkkeyboz;
+  message += `@${checkkeyboz}`;
 
   await ctx.reply(message.trim());
 });
