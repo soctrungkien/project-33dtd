@@ -278,10 +278,10 @@ export default async function handler(req, res) {
         "   • Hoặc <b>reply</b> lệnh /notes vào bất kỳ tin nhắn nào.\n" +
         `   • Giới hạn: Tối đa <b>${MAX_CHAR_LIMIT}</b> ký tự.\n\n` +
         "2. <b>Clone Note:</b>\n" +
-        "   • Cú pháp: <code>/clone &lt;link_tele|id&gt;</code>\n" +
-        "   • Hoặc reply tin nhắn chứa link note bằng lệnh <code>/clone</code>.\n\n" +
+        "   • Cú pháp: <code>/clone &lt;link_tele|id|raw_link&gt;</code>\n" +
+        "   • Hoặc reply tin nhắn chứa link note bằng lệnh /clone.\n\n" +
         "3. <b>Xem thông tin người dùng:</b>\n" +
-        "   • Gửi <code>/who</code> để xem thông tin của bạn.\n" +
+        "   • Gửi /who để xem thông tin của bạn.\n" +
         "   • Reply người khác hoặc dùng <code>/who &lt;link_tele|id&gt;</code> để xem thông tin người tạo note.\n\n" +
         "4. <b>Chia sẻ:</b>\n" +
         "   Bot sẽ trả về link <code>https://t.me/" +
