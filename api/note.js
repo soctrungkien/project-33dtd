@@ -3,7 +3,14 @@ const PASTEFY_API_KEYS = process.env.PASTEFY_API_KEYS;
 const HIDDEN_MARKER = "　";
 const MAX_CHAR_LIMIT = 3600; // Giới hạn số ký tự
 
-// 1. Gọi trực tiếp API Pastefy v2
+// Hàm bóc tách ID: Nếu match link Telegram thì lấy ID, nếu không match thì dùng luôn chuỗi Raw
+function extractNoteId(input) {
+  if (!input) return "";
+  const match = input.match(/start=([A-Za-z0-9_-]+)/i);
+  return match ? match[1] : input.trim();
+}
+
+// 1. Gọi trực tiếp API v2
 async function createPastefyNote(content) {
   try {
     const keys = (PASTEFY_API_KEYS || "")
@@ -17,7 +24,7 @@ async function createPastefyNote(content) {
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
 
-    console.log("[PASTEFY] Đang tạo note mới...");
+    console.log("[SERVER] Đang tạo note mới...");
     const response = await fetch("https://pastefy.app/api/v2/paste", {
       method: "POST",
       headers,
@@ -25,36 +32,31 @@ async function createPastefyNote(content) {
     });
 
     const json = await response.json();
-    console.log("[PASTEFY_RESPONSE]", JSON.stringify(json));
 
     if (json.success && json.paste?.id) {
       return json.paste.id;
     }
     return "FETCH_ERROR";
   } catch (err) {
-    console.error("[PASTEFY_ERROR]", err);
+    console.error("[SERVER_ERROR]", err);
     return "FETCH_ERROR";
   }
 }
 
 async function getNoteContent(id) {
   try {
-    const cleanId = id
-      .replace(/https?:\/\/pastefy\.app\//, "")
-      .replace(/\/raw.*/, "")
-      .trim();
+    const cleanId = extractNoteId(id);
 
-    console.log(`[PASTEFY] Đang lấy nội dung Note ID: ${cleanId}`);
+    console.log(`[SERVER] Đang lấy nội dung Note ID: ${cleanId}`);
     const res = await fetch(`https://pastefy.app/${cleanId}/raw`);
     
     if (!res.ok) {
-      console.error(`[PASTEFY] Lỗi HTTP status: ${res.status}`);
       return "❌ Không tìm thấy nội dung note.";
     }
     const rawText = await res.text();
     return rawText;
   } catch (err) {
-    console.error("[PASTEFY_FETCH_CONTENT_ERROR]", err);
+    console.error("[FETCH_CONTENT_ERROR]", err);
     return "❌ Đã xảy ra lỗi khi tải dữ liệu note.";
   }
 }
@@ -64,10 +66,8 @@ async function getBotUsername() {
     const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`);
     const data = await res.json();
     if (data.ok) return data.result.username;
-    console.error("[TELEGRAM_GETME_ERROR]", data);
     return null;
   } catch (err) {
-    console.error("[TELEGRAM_GETME_FETCH_ERROR]", err);
     return null;
   }
 }
@@ -103,11 +103,6 @@ async function sendMessage(chatId, text, extra = {}) {
     });
 
     const data = await res.json();
-    if (!data.ok) {
-      console.error("[TELEGRAM_SEND_FAILED]", JSON.stringify(data));
-    } else {
-      console.log(`[TELEGRAM_SUCCESS] Đã gửi tin nhắn tới ${chatId}`);
-    }
     return data;
   } catch (err) {
     console.error("[TELEGRAM_SEND_ERROR]", err);
@@ -118,20 +113,14 @@ async function isCommandForThisBot(text, commandName) {
   const match = text.match(new RegExp(`^\\/${commandName}(?:@([A-Za-z0-9_]+))?(?:\\s|$)`, "i"));
 
   if (!match) return false;
-
-  // Không có @username → cho phép xử lý
   if (!match[1]) return true;
 
-  // Có @username → chỉ xử lý nếu đúng bot này
   const botUsername = await getBotUsername();
-
-  return botUsername &&
-    match[1].toLowerCase() === botUsername.toLowerCase();
+  return botUsername && match[1].toLowerCase() === botUsername.toLowerCase();
 }
 
-// Hàm xử lý tạo note (Đặt UID lên đầu raw text)
+// Hàm xử lý tạo note
 async function handleCreateNote(chatId, content, user) {
-  // Kiểm tra giới hạn ký tự
   if (content.length > MAX_CHAR_LIMIT) {
     await sendMessage(
       chatId,
@@ -142,7 +131,6 @@ async function handleCreateNote(chatId, content, user) {
 
   await sendChatAction(chatId, "typing");
 
-  // Đặt UID ngay dòng đầu tiên của Raw Text
   const rawHeader = `[UID: ${user.id}]\n\n`;
   const fullContent = rawHeader + content;
 
@@ -151,19 +139,18 @@ async function handleCreateNote(chatId, content, user) {
   if (!noteId || noteId === "FETCH_ERROR") {
     await sendMessage(
       chatId,
-      "❌ <b>Lỗi hệ thống:</b> Không thể tải note lên hệ thống lưu trữ. Vui lòng thử lại!"
+      "❌ <b>Lỗi hệ thống:</b> Không thể lưu trữ note. Vui lòng thử lại sau!"
     );
     return;
   }
 
   const botUsername = await getBotUsername();
   if (!botUsername) {
-    await sendMessage(chatId, "❌ <b>Lỗi:</b> Không thể xác thực <code>BOT_TOKEN</code>.");
+    await sendMessage(chatId, "❌ <b>Lỗi:</b> Không thể xác thực Bot.");
     return;
   }
 
   const shareLink = `https://t.me/${botUsername}?start=${noteId}`;
-  console.log(`[SUCCESS] Đã tạo link thành công: ${shareLink}`);
 
   await sendMessage(
     chatId,
@@ -176,20 +163,20 @@ export default async function handler(req, res) {
     return res.status(200).send("Bot server is running.");
   }
 
-  console.log("[INCOMING_WEBHOOK]", JSON.stringify(req.body));
-
   const message = req.body?.message;
   if (!message || !message.text) {
     return res.status(200).json({ ok: true });
   }
 
   const chatId = message.chat.id;
+  const isGroup = message.chat.type !== "private";
   const text = message.text.trim();
   const user = message.from;
 
   const isWho = await isCommandForThisBot(text, "who");
   const isStart = await isCommandForThisBot(text, "start");
   const isNotes = await isCommandForThisBot(text, "notes");
+  const isClone = await isCommandForThisBot(text, "clone");
 
   // Xử lý lệnh /who
   if (isWho) {
@@ -199,12 +186,7 @@ export default async function handler(req, res) {
     let targetUser = message.reply_to_message?.from || user;
 
     if (inputParam) {
-      // Tách lấy Note ID từ Pastefy link, Telegram link hoặc ID thuần
-      const cleanId = inputParam
-        .replace(/https?:\/\/(t\.me\/[^\?]+\?start=|pastefy\.app\/)/gi, "")
-        .replace(/\/raw.*/, "")
-        .trim();
-
+      const cleanId = extractNoteId(inputParam);
       const rawContent = await getNoteContent(cleanId);
       const uidMatch = rawContent.match(/^\[UID:\s*(\d+)\]/);
 
@@ -240,6 +222,37 @@ export default async function handler(req, res) {
 
     await sendMessage(chatId, whoMessage);
   }
+  // Xử lý /clone
+  else if (isClone) {
+    const args = text.split(/\s+/);
+    let targetLink = args[1];
+
+    if (!targetLink && message.reply_to_message?.text) {
+      targetLink = message.reply_to_message.text;
+    }
+
+    if (!targetLink) {
+      await sendMessage(
+        chatId,
+        "❌ <b>Lỗi:</b> Vui lòng nhập link Telegram hoặc ID raw/reply tin nhắn chứa link note để clone.\nVí dụ: <code>/clone https://t.me/bot?start=abcxyz</code>"
+      );
+      return;
+    }
+
+    const cleanId = extractNoteId(targetLink);
+
+    await sendChatAction(chatId, "typing");
+    const rawContent = await getNoteContent(cleanId);
+
+    if (rawContent.startsWith("❌")) {
+      await sendMessage(chatId, rawContent);
+      return;
+    }
+
+    // Tách bỏ UID cũ và thay bằng UID người clone
+    const cleanContent = rawContent.replace(/^\[UID:\s*\d+\]\n\n?/, "");
+    await handleCreateNote(chatId, cleanContent, user);
+  }
   // Xử lý /start
   else if (isStart) {
     const args = text.split(" ");
@@ -247,8 +260,8 @@ export default async function handler(req, res) {
 
     if (noteId) {
       await sendChatAction(chatId, "typing");
-      const rawContent = await getNoteContent(noteId);
-      // Xóa header UID trước khi hiển thị cho người xem
+      const cleanId = extractNoteId(noteId);
+      const rawContent = await getNoteContent(cleanId);
       const cleanContent = rawContent.replace(/^\[UID:\s*\d+\]\n\n?/, "");
       await sendMessage(chatId, cleanContent, { parse_mode: undefined });
     } else {
@@ -256,13 +269,16 @@ export default async function handler(req, res) {
       const helpMessage =
         "📌 <b>Hướng dẫn sử dụng Bot Note</b>\n\n" +
         "1. <b>Tạo note mới:</b>\n" +
-        "   • Gửi /notes rồi <b>reply</b> lại câu hỏi của bot.\n" +
-        "   • Hoặc reply lệnh /notes vào bất kỳ tin nhắn nào.\n" +
-        "   • Hoặc viết trực tiếp: /notes &lt;nội dung&gt;\n" +
+        "   • Viết trực tiếp: <code>/notes &lt;nội dung&gt;</code>\n" +
+        "   • Hoặc <b>reply</b> lệnh /notes vào bất kỳ tin nhắn nào.\n" +
         `   • Giới hạn: Tối đa <b>${MAX_CHAR_LIMIT}</b> ký tự.\n\n` +
-        "2. <b>Xem thông tin người dùng:</b>\n" +
-        "   • Gửi /who để xem UID, Tên, Username và Tag của bạn hoặc reply người khác để xem thông tin của họ hay là dùng /who link note để xem thông tin ng đăng note.\n\n" +
-        "3. <b>Chia sẻ:</b>\n" +
+        "2. <b>Clone Note:</b>\n" +
+        "   • Cú pháp: <code>/clone &lt;link_tele|id&gt;</code>\n" +
+        "   • Hoặc reply tin nhắn chứa link note bằng lệnh <code>/clone</code>.\n\n" +
+        "3. <b>Xem thông tin người dùng:</b>\n" +
+        "   • Gửi <code>/who</code> để xem thông tin của bạn.\n" +
+        "   • Reply người khác hoặc dùng <code>/who &lt;link_tele|id&gt;</code> để xem thông tin người tạo note.\n\n" +
+        "4. <b>Chia sẻ:</b>\n" +
         "   Bot sẽ trả về link <code>https://t.me/" +
         (botUsername || "your_bot") +
         "?start=&lt;ID&gt;</code>.";
@@ -278,17 +294,25 @@ export default async function handler(req, res) {
     }
 
     if (!content) {
-      await sendMessage(
-        chatId,
-        `📝 Vui lòng <b>trả lời</b> tin nhắn này với nội dung bạn muốn lưu thành Note.${HIDDEN_MARKER}`,
-        { reply_markup: { force_reply: true, selective: true } }
-      );
+      if (isGroup) {
+        await sendMessage(
+          chatId,
+          "📝 <b>Cú pháp tạo Note trong nhóm:</b>\n\n• Nhập: <code>/notes &lt;nội dung&gt;</code>\n• Hoặc <b>reply (trả lời)</b> lệnh <code>/notes</code> vào tin nhắn có sẵn."
+        );
+      } else {
+        await sendMessage(
+          chatId,
+          `📝 Vui lòng <b>trả lời</b> tin nhắn này với nội dung bạn muốn lưu thành Note.${HIDDEN_MARKER}`,
+          { reply_markup: { force_reply: true, selective: true } }
+        );
+      }
     } else {
       await handleCreateNote(chatId, content, user);
     }
   }
-  // Trả lời tin nhắn theo yêu cầu của bot
+  // Trả lời tin nhắn theo yêu cầu force_reply (Chỉ hoạt động trong Chat cá nhân)
   else if (
+    !isGroup &&
     message.reply_to_message?.text &&
     message.reply_to_message.text.includes(HIDDEN_MARKER)
   ) {
