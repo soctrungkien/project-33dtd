@@ -43,12 +43,17 @@ async function createPastefyNote(content) {
   }
 }
 
-async function getNoteContent(id) {
+async function getNoteContent(input) {
   try {
-    const cleanId = extractNoteId(id);
+    const cleanId = extractNoteId(input);
 
-    console.log(`[SERVER] Đang lấy nội dung Note ID: ${cleanId}`);
-    const res = await fetch(`https://pastefy.app/${cleanId}/raw`);
+    // Nếu là URL (bắt đầu bằng http:// hoặc https://) thì tải thẳng link đó, ngược lại mới ghép với Pastefy
+    const fetchUrl = /^https?:\/\//i.test(cleanId)
+      ? cleanId
+      : `https://pastefy.app/${cleanId}/raw`;
+
+    console.log(`[SERVER] Đang lấy nội dung từ: ${fetchUrl}`);
+    const res = await fetch(fetchUrl);
     
     if (!res.ok) {
       return "❌ Không tìm thấy nội dung note.";
