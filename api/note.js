@@ -3,11 +3,20 @@ const PASTEFY_API_KEYS = process.env.PASTEFY_API_KEYS;
 const HIDDEN_MARKER = "　";
 const MAX_CHAR_LIMIT = 3600; // Giới hạn số ký tự
 
-// Hàm bóc tách ID: Nếu match link Telegram thì lấy ID, nếu không match thì dùng luôn chuỗi Raw
+// Hàm bóc tách ID / URL linh hoạt từ văn bản
 function extractNoteId(input) {
   if (!input) return "";
-  const match = input.match(/start=([A-Za-z0-9_-]+)/i);
-  return match ? match[1] : input.trim();
+  
+  // 1. Tìm param start=ID trong link Telegram
+  const startMatch = input.match(/start=([A-Za-z0-9_-]+)/i);
+  if (startMatch) return startMatch[1];
+
+  // 2. Tìm link HTTP/HTTPS bất kỳ trong câu văn (khi reply tin nhắn dài)
+  const urlMatch = input.match(/(https?:\/\/[^\s]+)/i);
+  if (urlMatch) return urlMatch[1];
+
+  // 3. Nếu không match link, dùng chuỗi gốc đã trim
+  return input.trim();
 }
 
 // 1. Gọi trực tiếp API v2
@@ -29,6 +38,7 @@ async function createPastefyNote(content) {
       method: "POST",
       headers,
       body: JSON.stringify({ content }),
+      signal: AbortSignal.timeout(8000) // Timeout 8 giây tránh kẹt
     });
 
     const json = await response.json();
@@ -46,29 +56,34 @@ async function createPastefyNote(content) {
 async function getNoteContent(input) {
   try {
     const cleanId = extractNoteId(input);
+    if (!cleanId) return "❌ Không tìm thấy link hoặc ID hợp lệ.";
 
-    // Nếu là URL (bắt đầu bằng http:// hoặc https://) thì tải thẳng link đó, ngược lại mới ghép với Pastefy
     const fetchUrl = /^https?:\/\//i.test(cleanId)
       ? cleanId
       : `https://pastefy.app/${cleanId}/raw`;
 
     console.log(`[SERVER] Đang lấy nội dung từ: ${fetchUrl}`);
-    const res = await fetch(fetchUrl);
+    
+    // Thêm Timeout 8 giây để ngắt request nếu link bị treo
+    const res = await fetch(fetchUrl, { signal: AbortSignal.timeout(8000) });
     
     if (!res.ok) {
-      return "❌ Không tìm thấy nội dung note.";
+      return `❌ Không tìm thấy nội dung note (Lỗi HTTP ${res.status}).`;
     }
     const rawText = await res.text();
     return rawText;
   } catch (err) {
     console.error("[FETCH_CONTENT_ERROR]", err);
-    return "❌ Đã xảy ra lỗi khi tải dữ liệu note.";
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      return "❌ Thời gian tải note quá lâu (Timeout). Vui lòng thử lại!";
+    }
+    return "❌ Đã xảy ra lỗi khi tải dữ liệu note (Link không hợp lệ hoặc bị lỗi).";
   }
 }
 
 async function getBotUsername() {
   try {
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`);
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`, { signal: AbortSignal.timeout(5000) });
     const data = await res.json();
     if (data.ok) return data.result.username;
     return null;
@@ -84,6 +99,7 @@ async function sendChatAction(chatId, action = "typing") {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, action }),
+      signal: AbortSignal.timeout(3000)
     });
   } catch (err) {
     console.error("[CHAT_ACTION_ERROR]", err);
@@ -105,6 +121,7 @@ async function sendMessage(chatId, text, extra = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000)
     });
 
     const data = await res.json();
@@ -199,7 +216,7 @@ export default async function handler(req, res) {
         const extractedUid = uidMatch[1];
         
         try {
-          const chatRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getChat?chat_id=${extractedUid}`);
+          const chatRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getChat?chat_id=${extractedUid}`, { signal: AbortSignal.timeout(5000) });
           const chatData = await chatRes.json();
           if (chatData.ok) {
             targetUser = chatData.result;
@@ -227,36 +244,39 @@ export default async function handler(req, res) {
 
     await sendMessage(chatId, whoMessage);
   }
-  // Xử lý /clone
+  // Xử lý /clone (Bọc Try/Catch hoàn chỉnh)
   else if (isClone) {
-    const args = text.split(/\s+/);
-    let targetLink = args[1];
+    try {
+      const args = text.split(/\s+/);
+      let targetLink = args[1];
 
-    if (!targetLink && message.reply_to_message?.text) {
-      targetLink = message.reply_to_message.text;
+      if (!targetLink && message.reply_to_message?.text) {
+        targetLink = message.reply_to_message.text;
+      }
+
+      if (!targetLink) {
+        await sendMessage(
+          chatId,
+          "❌ <b>Lỗi:</b> Vui lòng nhập link Telegram hoặc ID raw/reply tin nhắn chứa link note để clone.\nVí dụ: <code>/clone https://t.me/bot?start=abcxyz</code>"
+        );
+        return res.status(200).json({ ok: true });
+      }
+
+      await sendChatAction(chatId, "typing");
+      const rawContent = await getNoteContent(targetLink);
+
+      if (rawContent.startsWith("❌")) {
+        await sendMessage(chatId, rawContent);
+        return res.status(200).json({ ok: true });
+      }
+
+      // Tách bỏ UID cũ và thay bằng UID người clone
+      const cleanContent = rawContent.replace(/^\[UID:\s*\d+\]\n\n?/, "");
+      await handleCreateNote(chatId, cleanContent, user);
+    } catch (err) {
+      console.error("[CLONE_FATAL_ERROR]", err);
+      await sendMessage(chatId, "❌ <b>Lỗi:</b> Không thể clone note. Vui lòng kiểm tra lại link/ID.");
     }
-
-    if (!targetLink) {
-      await sendMessage(
-        chatId,
-        "❌ <b>Lỗi:</b> Vui lòng nhập link Telegram hoặc ID raw/reply tin nhắn chứa link note để clone.\nVí dụ: <code>/clone https://t.me/bot?start=abcxyz</code>"
-      );
-      return;
-    }
-
-    const cleanId = extractNoteId(targetLink);
-
-    await sendChatAction(chatId, "typing");
-    const rawContent = await getNoteContent(cleanId);
-
-    if (rawContent.startsWith("❌")) {
-      await sendMessage(chatId, rawContent);
-      return;
-    }
-
-    // Tách bỏ UID cũ và thay bằng UID người clone
-    const cleanContent = rawContent.replace(/^\[UID:\s*\d+\]\n\n?/, "");
-    await handleCreateNote(chatId, cleanContent, user);
   }
   // Xử lý /start
   else if (isStart) {
