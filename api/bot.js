@@ -333,37 +333,81 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
-// Xử lý Lệnh /start & Xử lý Deep Link ?start=get_1234
+// Xử lý Lệnh /start & Deep Link (?start=list, ?start=get_12345)
 bot.command("start", async (ctx) => {
   const text = ctx.message.text.trim();
-  const args = text.split(" ");
+  const args = text.split(/\s+/);
 
-  // Kiểm tra nếu gọi deep link: /start get_12345
+  // /start list hoặc ?start=list
+  if (args.length > 1 && args[1].toLowerCase() === "list") {
+    const waitMsg = await ctx.reply("Đang lấy danh sách...");
+
+    try {
+      const botUsername = ctx.botInfo.username;
+      const { text, keyboard } = await renderListPage(botUsername, 1);
+
+      try {
+        await ctx.deleteMessage(waitMsg.message_id);
+      } catch {}
+
+      await ctx.reply(text, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...(keyboard || {})
+      });
+    } catch (e) {
+      try {
+        await ctx.deleteMessage(waitMsg.message_id);
+      } catch {}
+
+      logError("START_LIST", "Lỗi hiển thị danh sách", e);
+      await ctx.reply("❌ Không thể lấy danh sách APK!");
+    }
+
+    return;
+  }
+
+  // /start get_12345
   if (args.length > 1 && args[1].startsWith("get_")) {
     const msgId = parseInt(args[1].replace("get_", ""));
-    if (isNaN(msgId)) return ctx.reply("❌ ID tin nhắn không hợp lệ!");
+
+    if (isNaN(msgId)) {
+      return ctx.reply("❌ ID tin nhắn không hợp lệ!");
+    }
 
     const waitMsg = await ctx.reply("🚀 Đang tải file...");
     await ctx.sendChatAction("upload_document");
 
     const allApks = await getAllApksFromChannelOptimized(false);
-    const item = allApks.find((a) => Number(a.message_id) === msgId);
+    const item = allApks.find(
+      (a) => Number(a.message_id) === msgId
+    );
 
-    try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+    try {
+      await ctx.deleteMessage(waitMsg.message_id);
+    } catch {}
 
     if (item) {
       await sendApkViaCopy(ctx, item);
     } else {
-      // Nếu không tìm thấy trong RAM, thử ép gửi trực tiếp bằng ID
-      const success = await sendApkViaCopy(ctx, { chat_id: STORAGE_CHANNEL, message_id: msgId, file_name: `Message #${msgId}` });
+      // Không có trong cache thì thử lấy trực tiếp bằng message ID
+      const success = await sendApkViaCopy(ctx, {
+        chat_id: STORAGE_CHANNEL,
+        message_id: msgId,
+        file_name: `Message #${msgId}`
+      });
+
       if (!success) {
         await ctx.reply("❌ Không tìm thấy dữ liệu APK này!");
       }
     }
+
     return;
   }
 
-  await ctx.reply("Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng.");
+  await ctx.reply(
+    "Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng."
+  );
 });
 
 bot.command("help", async (ctx) => {
@@ -383,7 +427,7 @@ bot.command("help", async (ctx) => {
   await ctx.reply(helpText);
 });
 
-// Hàm tạo danh sách theo định dạng: Danh sách apk <trang>: \n <id>. <filename>
+// Hàm tạo danh sách dạng Text duy nhất để dùng cho editMessageText
 async function renderListPage(botUsername, page = 1) {
   const allApks = await getAllApksFromChannelOptimized(false);
   const totalItems = allApks.length;
@@ -395,29 +439,19 @@ async function renderListPage(botUsername, page = 1) {
   const pageItems = allApks.slice(startIndex, startIndex + PAGE_SIZE);
 
   if (pageItems.length === 0) {
-    return { messages: ["Hiện chưa có file APK nào!"], keyboard: null };
+    return { text: "Hiện chưa có file APK nào!", keyboard: null };
   }
 
-  const messages = [];
-  let currentText = `<b>Danh sách apk ${page}:</b>\n\n`;
+  let text = `<b>Danh sách apk (Trang ${page}/${totalPages}):</b>\n\n`;
 
   pageItems.forEach((item) => {
     const deepLink = `https://t.me/${botUsername}?start=get_${item.message_id}`;
-    // Định dạng: <id>. <filename> (Bấm vào tên file để mở bot tải file)
     const itemText = `<code>${item.message_id}</code>. <a href="${deepLink}">${item.file_name}</a>\n`;
 
-    // Cắt tin nhắn nếu dài hơn 3800 ký tự để tránh vượt giới hạn Telegram
-    if ((currentText + itemText).length > 3800) {
-      messages.push(currentText);
-      currentText = itemText;
-    } else {
-      currentText += itemText;
+    if ((text + itemText).length <= 3800) {
+      text += itemText;
     }
   });
-
-  if (currentText.trim()) {
-    messages.push(currentText);
-  }
 
   const buttons = [];
   if (page > 1) {
@@ -429,53 +463,15 @@ async function renderListPage(botUsername, page = 1) {
 
   const keyboard = Markup.inlineKeyboard([
     buttons,
-    [Markup.button.callback(`🔄 Đóng / Hủy`, "close_list")]
+    [Markup.button.callback("🔄 Đóng / Hủy", "close_list")]
   ]);
 
-  return { messages, keyboard };
+  return { text, keyboard };
 }
 
 // Lệnh /list
 bot.command("list", async (ctx) => {
   const waitMsg = await ctx.reply("Đang lấy danh sách...");
-  const botUsername = ctx.botInfo.username;
-
-  const { messages, keyboard } = await renderListPage(botUsername, 1);
-  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
-
-  for (let i = 0; i < messages.length; i++) {
-    const isLast = i === messages.length - 1;
-    await ctx.reply(messages[i], {
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      ...(isLast && keyboard ? keyboard : {})
-    });
-  }
-});
-
-// Nút bấm chuyển trang
-bot.action(/^list_page_(\d+)$/, async (ctx) => {
-  const page = parseInt(ctx.match[1]);
-  const botUsername = ctx.botInfo.username;
-
-  await ctx.answerCbQuery();
-  const { messages, keyboard } = await renderListPage(botUsername, page);
-
-  try { await ctx.deleteMessage(); } catch (e) {}
-
-  for (let i = 0; i < messages.length; i++) {
-    const isLast = i === messages.length - 1;
-    await ctx.reply(messages[i], {
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      ...(isLast && keyboard ? keyboard : {})
-    });
-  }
-});
-
-// Lệnh /list phân trang
-bot.command("list", async (ctx) => {
-  const waitMsg = await ctx.reply("Đang lấy danh sách file...");
   const botUsername = ctx.botInfo.username;
 
   const { text, keyboard } = await renderListPage(botUsername, 1);
@@ -488,11 +484,12 @@ bot.command("list", async (ctx) => {
   });
 });
 
-// Xử lý Chuyển trang /list qua Inline Button
+// Xử lý chuyển trang qua Inline Button
 bot.action(/^list_page_(\d+)$/, async (ctx) => {
-  const page = parseInt(ctx.match[1]);
+  const page = parseInt(ctx.match[1], 10);
   const botUsername = ctx.botInfo.username;
 
+  await ctx.answerCbQuery();
   const { text, keyboard } = await renderListPage(botUsername, page);
 
   try {
@@ -502,7 +499,7 @@ bot.action(/^list_page_(\d+)$/, async (ctx) => {
       ...(keyboard || {})
     });
   } catch (e) {
-    await ctx.answerCbQuery();
+    logError("LIST", "Lỗi cập nhật trang", e);
   }
 });
 
@@ -634,9 +631,7 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
 
   await ctx.answerCbQuery();
 
-  try {
-    await ctx.deleteMessage();
-  } catch (e) {}
+  try { await ctx.deleteMessage(); } catch (e) {}
 
   if (!matchedIds || matchedIds.length === 0) {
     return ctx.reply("Kết quả đã hết hạn!");
