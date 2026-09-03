@@ -9,9 +9,10 @@ const OWNER_ID = process.env.OWNER_ID;
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
 
-const MAX_RAM_CACHE = 50000; // Mở rộng lưu 50,000 APK index nhẹ trên RAM
-const INITIAL_SCAN_LIMIT = 50000; // Sửa lỗi lần đầu quét: lấy sâu tối đa 50k tin nhắn thay vì 2000
-const MAX_SEARCH_CACHE = 1000; 
+const MAX_RAM_CACHE = 50000;
+const INITIAL_SCAN_LIMIT = 50000;
+const MAX_SEARCH_CACHE = 1000;
+const PAGE_SIZE = 100; // Số lượng APK hiển thị trên 1 trang /list
 
 // Khởi tạo Redis Client
 const redis = new Redis(process.env.REDIS_URL, {
@@ -23,7 +24,7 @@ redis.on("error", (err) => {
   logError("REDIS", "Lỗi kết nối Redis", err);
 });
 
-// 7. Bắt lỗi toàn cục cho Telegraf tránh crash process hoặc treo Webhook 500
+// Bắt lỗi toàn cục cho Telegraf
 bot.catch((err, ctx) => {
   logError("TELEGRAF", `Lỗi xử lý Update ID ${ctx.update?.update_id}`, err);
 });
@@ -80,16 +81,24 @@ async function getGramClient() {
   }
 }
 
-// 1. Dò ID lớn nhất chính xác
+// Xóa file hỏng/đã bị xóa khỏi cache RAM & Redis
+async function removeApkFromCache(messageId) {
+  try {
+    liveSweepCache.data = liveSweepCache.data.filter((item) => Number(item.message_id) !== Number(messageId));
+    let storedApks = JSON.parse((await redis.get("apk_list")) || "[]");
+    storedApks = storedApks.filter((item) => Number(item.message_id) !== Number(messageId));
+    await redis.set("apk_list", JSON.stringify(storedApks));
+    logInfo("CACHE_PURGE", `Đã xóa message_id ${messageId} bị lỗi khỏi cache.`);
+  } catch (e) {
+    logError("CACHE_PURGE", "Lỗi xóa item khỏi cache", e);
+  }
+}
+
 async function getMaxMessageId(client, channelPeer) {
-  const probeIds = [
-    10, 50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000,
-  ];
+  const probeIds = [10, 50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000];
   try {
     const msgs = await client.getMessages(channelPeer, { ids: probeIds });
-    const validMsgs = (Array.isArray(msgs) ? msgs : []).filter(
-      (m) => m && m.id,
-    );
+    const validMsgs = (Array.isArray(msgs) ? msgs : []).filter((m) => m && m.id);
     if (validMsgs.length === 0) return 500;
     const highestFound = Math.max(...validMsgs.map((m) => m.id));
     return highestFound + 100;
@@ -142,7 +151,6 @@ async function getAllApksFromChannelOptimized(forceCheck = false) {
       return ramCache;
     }
 
-    // 2. Tăng giới hạn lần quét đầu tiên tránh mất dữ liệu APK cũ
     const startId = lastScannedId === 0 
       ? Math.max(1, currentMaxId - INITIAL_SCAN_LIMIT) 
       : lastScannedId + 1;
@@ -265,24 +273,28 @@ function getSenderTag(ctx) {
   return `<a href="tg://user?id=${user.id}">${user.first_name || "Người dùng"}</a>`;
 }
 
+// Hàm gửi APK có xử lý tự động xóa cache nếu file bị xóa trên Telegram
 async function sendApkViaCopy(ctx, item) {
   try {
     await ctx.telegram.copyMessage(ctx.chat.id, item.chat_id, item.message_id, { caption: "" });
   } catch (e) {
-    logError("SEND", "Lỗi copyMessage", e);
-    return ctx.reply("❌ Không thể lấy file APK!");
+    logError("SEND", `Lỗi copyMessage ID ${item.message_id}`, e);
+    await removeApkFromCache(item.message_id);
+    await ctx.reply("❌ File APK này không còn tồn tại hoặc đã bị xoá!");
+    return false;
   }
 
   const data = parseStandardApkName(item.file_name);
   let text = data && data.isValid 
-    ? `Tên ứng dụng: ${data.appName}\nPhiên bản: ${data.version}\nMods: ${data.mods}\n`
-    : `Tên file: ${item.file_name}\n`;
+    ? `<b>Tên ứng dụng:</b> ${data.appName}\n<b>Phiên bản:</b> ${data.version}\n<b>Mods:</b> ${data.mods}\n`
+    : `<b>Tên file:</b> ${item.file_name}\n`;
 
   if (item.sender) text += `Apk đc gửi bởi: ${item.sender}`;
 
   if (text.trim()) {
     await ctx.reply(text.trim(), { parse_mode: "HTML" });
   }
+  return true;
 }
 
 async function handleSearchResults(ctx, matches) {
@@ -302,7 +314,6 @@ async function handleSearchResults(ctx, matches) {
       global.searchCache.delete(firstKey);
     }
 
-    // 5. Chỉ lưu danh sách message_id nhẹ vào RAM thay vì toàn bộ Object
     const idList = matches.map((m) => m.message_id);
     global.searchCache.set(searchId, idList);
 
@@ -322,7 +333,36 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
+// Xử lý Lệnh /start & Xử lý Deep Link ?start=get_1234
 bot.command("start", async (ctx) => {
+  const text = ctx.message.text.trim();
+  const args = text.split(" ");
+
+  // Kiểm tra nếu gọi deep link: /start get_12345
+  if (args.length > 1 && args[1].startsWith("get_")) {
+    const msgId = parseInt(args[1].replace("get_", ""));
+    if (isNaN(msgId)) return ctx.reply("❌ ID tin nhắn không hợp lệ!");
+
+    const waitMsg = await ctx.reply("🚀 Đang tải file...");
+    await ctx.sendChatAction("upload_document");
+
+    const allApks = await getAllApksFromChannelOptimized(false);
+    const item = allApks.find((a) => Number(a.message_id) === msgId);
+
+    try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+
+    if (item) {
+      await sendApkViaCopy(ctx, item);
+    } else {
+      // Nếu không tìm thấy trong RAM, thử ép gửi trực tiếp bằng ID
+      const success = await sendApkViaCopy(ctx, { chat_id: STORAGE_CHANNEL, message_id: msgId, file_name: `Message #${msgId}` });
+      if (!success) {
+        await ctx.reply("❌ Không tìm thấy dữ liệu APK này!");
+      }
+    }
+    return;
+  }
+
   await ctx.reply("Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng.");
 });
 
@@ -330,6 +370,7 @@ bot.command("help", async (ctx) => {
   let helpText = `Danh sách lệnh hỗ trợ:
 /ping - Kiểm tra tốc độ
 /apk - Đếm số lượng APK có sẵn
+/list - Liệt kê danh sách APK
 /any <từ khoá> - Tìm kiếm tên file trực tiếp
 /many <từ khoá> - Tìm kiếm APK (Chuẩn thông tin)
 /regex <pattern> - Tìm kiếm bằng Regex trực tiếp
@@ -340,6 +381,133 @@ bot.command("help", async (ctx) => {
   }
 
   await ctx.reply(helpText);
+});
+
+// Hàm tạo danh sách theo định dạng: Danh sách apk <trang>: \n <id>. <filename>
+async function renderListPage(botUsername, page = 1) {
+  const allApks = await getAllApksFromChannelOptimized(false);
+  const totalItems = allApks.length;
+  const totalPages = Math.ceil(totalItems / PAGE_SIZE) || 1;
+
+  page = Math.max(1, Math.min(page, totalPages));
+
+  const startIndex = (page - 1) * PAGE_SIZE;
+  const pageItems = allApks.slice(startIndex, startIndex + PAGE_SIZE);
+
+  if (pageItems.length === 0) {
+    return { messages: ["Hiện chưa có file APK nào!"], keyboard: null };
+  }
+
+  const messages = [];
+  let currentText = `<b>Danh sách apk ${page}:</b>\n\n`;
+
+  pageItems.forEach((item) => {
+    const deepLink = `https://t.me/${botUsername}?start=get_${item.message_id}`;
+    // Định dạng: <id>. <filename> (Bấm vào tên file để mở bot tải file)
+    const itemText = `<code>${item.message_id}</code>. <a href="${deepLink}">${item.file_name}</a>\n`;
+
+    // Cắt tin nhắn nếu dài hơn 3800 ký tự để tránh vượt giới hạn Telegram
+    if ((currentText + itemText).length > 3800) {
+      messages.push(currentText);
+      currentText = itemText;
+    } else {
+      currentText += itemText;
+    }
+  });
+
+  if (currentText.trim()) {
+    messages.push(currentText);
+  }
+
+  const buttons = [];
+  if (page > 1) {
+    buttons.push(Markup.button.callback("⬅️ Trang trước", `list_page_${page - 1}`));
+  }
+  if (page < totalPages) {
+    buttons.push(Markup.button.callback("Trang sau ➡️", `list_page_${page + 1}`));
+  }
+
+  const keyboard = Markup.inlineKeyboard([
+    buttons,
+    [Markup.button.callback(`🔄 Đóng / Hủy`, "close_list")]
+  ]);
+
+  return { messages, keyboard };
+}
+
+// Lệnh /list
+bot.command("list", async (ctx) => {
+  const waitMsg = await ctx.reply("Đang lấy danh sách...");
+  const botUsername = ctx.botInfo.username;
+
+  const { messages, keyboard } = await renderListPage(botUsername, 1);
+  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+
+  for (let i = 0; i < messages.length; i++) {
+    const isLast = i === messages.length - 1;
+    await ctx.reply(messages[i], {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...(isLast && keyboard ? keyboard : {})
+    });
+  }
+});
+
+// Nút bấm chuyển trang
+bot.action(/^list_page_(\d+)$/, async (ctx) => {
+  const page = parseInt(ctx.match[1]);
+  const botUsername = ctx.botInfo.username;
+
+  await ctx.answerCbQuery();
+  const { messages, keyboard } = await renderListPage(botUsername, page);
+
+  try { await ctx.deleteMessage(); } catch (e) {}
+
+  for (let i = 0; i < messages.length; i++) {
+    const isLast = i === messages.length - 1;
+    await ctx.reply(messages[i], {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...(isLast && keyboard ? keyboard : {})
+    });
+  }
+});
+
+// Lệnh /list phân trang
+bot.command("list", async (ctx) => {
+  const waitMsg = await ctx.reply("Đang lấy danh sách file...");
+  const botUsername = ctx.botInfo.username;
+
+  const { text, keyboard } = await renderListPage(botUsername, 1);
+  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+
+  await ctx.reply(text, {
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...(keyboard || {})
+  });
+});
+
+// Xử lý Chuyển trang /list qua Inline Button
+bot.action(/^list_page_(\d+)$/, async (ctx) => {
+  const page = parseInt(ctx.match[1]);
+  const botUsername = ctx.botInfo.username;
+
+  const { text, keyboard } = await renderListPage(botUsername, page);
+
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...(keyboard || {})
+    });
+  } catch (e) {
+    await ctx.answerCbQuery();
+  }
+});
+
+bot.action("close_list", async (ctx) => {
+  try { await ctx.deleteMessage(); } catch (e) {}
 });
 
 bot.command("delcache", async (ctx) => {
@@ -466,7 +634,6 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
 
   await ctx.answerCbQuery();
 
-  // 🗑️ Xoá tin nhắn chứa nút bấm ngay lập tức
   try {
     await ctx.deleteMessage();
   } catch (e) {}
@@ -477,7 +644,6 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
 
   await ctx.sendChatAction("upload_document");
 
-  // Lấy dữ liệu và gửi file APK
   const allApks = await getAllApksFromChannelOptimized(false);
   const apkMap = new Map(allApks.map((item) => [item.message_id, item]));
 
