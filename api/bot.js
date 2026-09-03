@@ -12,7 +12,7 @@ const API_HASH = process.env.API_HASH || "";
 const MAX_RAM_CACHE = 50000;
 const INITIAL_SCAN_LIMIT = 50000;
 const MAX_SEARCH_CACHE = 1000;
-const PAGE_SIZE = 100; // Số lượng APK hiển thị trên 1 trang /list
+const PAGE_SIZE = 25; // Số lượng APK hiển thị trên 1 trang /list
 
 // Khởi tạo Redis Client
 const redis = new Redis(process.env.REDIS_URL, {
