@@ -455,15 +455,15 @@ async function renderListPage(botUsername, page = 1) {
 
   const buttons = [];
   if (page > 1) {
-    buttons.push(Markup.button.callback("⬅️ Trang trước", `list_page_${page - 1}`));
+    buttons.push(Markup.button.callback("⬅️", `list_page_${page - 1}`));
   }
   if (page < totalPages) {
-    buttons.push(Markup.button.callback("Trang sau ➡️", `list_page_${page + 1}`));
+    buttons.push(Markup.button.callback("➡️", `list_page_${page + 1}`));
   }
 
   const keyboard = Markup.inlineKeyboard([
     buttons,
-    [Markup.button.callback("🔄 Đóng / Hủy", "close_list")]
+    [Markup.button.callback("Đóng", "close_list")]
   ]);
 
   return { text, keyboard };
@@ -562,7 +562,7 @@ bot.action("cancel_delcache", async (ctx) => {
 bot.command("ping", async (ctx) => {
   const start = Date.now();
   await ctx.sendChatAction("typing");
-  await ctx.reply(`🏓 Pong: ${Date.now() - start}ms`);
+  await ctx.reply(`🏓 Pong!: ${Date.now() - start}ms`);
 });
 
 bot.command("apk", async (ctx) => {
