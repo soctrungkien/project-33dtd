@@ -273,14 +273,12 @@ function getSenderTag(ctx) {
   return `<a href="tg://user?id=${user.id}">${user.first_name || "Người dùng"}</a>`;
 }
 
-// Hàm gửi APK có xử lý lỗi thông minh
 async function sendApkViaCopy(ctx, item) {
   try {
     await ctx.telegram.copyMessage(ctx.chat.id, item.chat_id, item.message_id, { caption: "" });
   } catch (e) {
     logError("SEND", `Lỗi copyMessage ID ${item.message_id}`, e);
 
-    // Chỉ xóa khỏi Cache khi chắc chắn tin nhắn đã bị gỡ trên Telegram (Lỗi 400 Bad Request)
     if (e.response && e.response.error_code === 400) {
       await removeApkFromCache(item.message_id);
       await ctx.reply("❌ File APK này không còn tồn tại hoặc đã bị xóa!");
@@ -339,17 +337,75 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
-// Xử lý /start & Deep Link (?start=list, ?start=get_12345)
+// Hàm render danh sách APK
+async function renderListPage(botUsername, page = 1) {
+  const validUsername = botUsername || bot.botInfo?.username || "";
+  const allApks = await getAllApksFromChannelOptimized(false);
+  const totalItems = allApks.length;
+  const totalPages = Math.ceil(totalItems / PAGE_SIZE) || 1;
+
+  page = Math.max(1, Math.min(page, totalPages));
+
+  const startIndex = (page - 1) * PAGE_SIZE;
+  const pageItems = allApks.slice(startIndex, startIndex + PAGE_SIZE);
+
+  if (pageItems.length === 0) {
+    return { text: "Hiện chưa có file APK nào!", keyboard: null };
+  }
+
+  let text = `Danh sách apk (Trang ${page}/${totalPages}):\n`;
+
+  pageItems.forEach((item) => {
+    const deepLink = `https://t.me/${validUsername}?start=get_${item.message_id}`;
+    const itemText = `<code>${item.message_id}</code>. <a href="${deepLink}">${item.file_name}</a>\n`;
+
+    if ((text + itemText).length <= 3800) {
+      text += itemText;
+    }
+  });
+
+  const buttons = [];
+  if (page > 1) {
+    buttons.push(Markup.button.callback("⬅️", `list_page_${page - 1}`));
+  }
+  if (page < totalPages) {
+    buttons.push(Markup.button.callback("➡️", `list_page_${page + 1}`));
+  }
+
+  const keyboard = Markup.inlineKeyboard([
+    buttons,
+    [Markup.button.callback("Đóng", "close_list")]
+  ]);
+
+  return { text, keyboard };
+}
+
+// Lệnh /list
+bot.command("list", async (ctx) => {
+  const waitMsg = await ctx.reply("Đang lấy danh sách...");
+  const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
+
+  const { text, keyboard } = await renderListPage(botUsername, 1);
+  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+
+  await ctx.reply(text, {
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...(keyboard || {})
+  });
+});
+
+// Xử lý /start & Deep Link (Chỉ hỗ trợ start=list và start=get_12345)
 bot.command("start", async (ctx) => {
   const text = ctx.message.text.trim();
   const args = text.split(/\s+/);
   const payload = args[1]?.trim() || "";
 
-  // 1. Xử lý ?start=list
+  // 1. Chỉ chấp nhận ?start=list
   if (payload.toLowerCase() === "list") {
     const waitMsg = await ctx.reply("Đang lấy danh sách...");
     try {
-      const botUsername = ctx.botInfo.username;
+      const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
       const { text: listText, keyboard } = await renderListPage(botUsername, 1);
 
       try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
@@ -367,7 +423,7 @@ bot.command("start", async (ctx) => {
     return;
   }
 
-  // 2. Xử lý ?start=get_12345
+  // 2. Chấp nhận ?start=get_12345
   if (payload.toLowerCase().startsWith("get_")) {
     const rawId = payload.substring(4).trim();
     const msgId = Number(rawId);
@@ -383,7 +439,6 @@ bot.command("start", async (ctx) => {
       const allApks = await getAllApksFromChannelOptimized(false);
       let item = allApks.find((a) => Number(a.message_id) === msgId);
 
-      // Nếu không có trong cache, quét trực tiếp bằng GramJS
       if (!item) {
         const client = await getGramClient();
         const channelPeer = getParsedChannelPeer();
@@ -424,7 +479,7 @@ bot.command("start", async (ctx) => {
     return;
   }
 
-  // 3. Xử lý /start không có tham số
+  // 3. /start bình thường
   await ctx.reply("Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng.");
 });
 
@@ -445,67 +500,10 @@ bot.command("help", async (ctx) => {
   await ctx.reply(helpText);
 });
 
-// Hàm tạo danh sách dạng Text dùng cho pagination
-async function renderListPage(botUsername, page = 1) {
-  const allApks = await getAllApksFromChannelOptimized(false);
-  const totalItems = allApks.length;
-  const totalPages = Math.ceil(totalItems / PAGE_SIZE) || 1;
-
-  page = Math.max(1, Math.min(page, totalPages));
-
-  const startIndex = (page - 1) * PAGE_SIZE;
-  const pageItems = allApks.slice(startIndex, startIndex + PAGE_SIZE);
-
-  if (pageItems.length === 0) {
-    return { text: "Hiện chưa có file APK nào!", keyboard: null };
-  }
-
-  let text = `<b>Danh sách apk (Trang ${page}/${totalPages}):</b>\n\n`;
-
-  pageItems.forEach((item) => {
-    const deepLink = `https://t.me/${botUsername}?start=get_${item.message_id}`;
-    const itemText = `<code>${item.message_id}</code>. <a href="${deepLink}">${item.file_name}</a>\n`;
-
-    if ((text + itemText).length <= 3800) {
-      text += itemText;
-    }
-  });
-
-  const buttons = [];
-  if (page > 1) {
-    buttons.push(Markup.button.callback("⬅️", `list_page_${page - 1}`));
-  }
-  if (page < totalPages) {
-    buttons.push(Markup.button.callback("➡️", `list_page_${page + 1}`));
-  }
-
-  const keyboard = Markup.inlineKeyboard([
-    buttons,
-    [Markup.button.callback("Đóng", "close_list")]
-  ]);
-
-  return { text, keyboard };
-}
-
-// Lệnh /list
-bot.command("list", async (ctx) => {
-  const waitMsg = await ctx.reply("Đang lấy danh sách...");
-  const botUsername = ctx.botInfo.username;
-
-  const { text, keyboard } = await renderListPage(botUsername, 1);
-  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
-
-  await ctx.reply(text, {
-    parse_mode: "HTML",
-    disable_web_page_preview: true,
-    ...(keyboard || {})
-  });
-});
-
 // Xử lý chuyển trang qua Inline Button
 bot.action(/^list_page_(\d+)$/, async (ctx) => {
   const page = parseInt(ctx.match[1], 10);
-  const botUsername = ctx.botInfo.username;
+  const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
 
   await ctx.answerCbQuery();
   const { text, keyboard } = await renderListPage(botUsername, page);
@@ -729,6 +727,7 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
   try { await ctx.editMessageText("❌ Đã hủy thao tác lưu trữ."); } catch (e) {}
 });
 
+// Xử lý tin nhắn văn bản thông thường (Tìm kiếm)
 bot.on("text", async (ctx) => {
   const text = ctx.message.text.trim();
   if (text.startsWith("/")) return;
