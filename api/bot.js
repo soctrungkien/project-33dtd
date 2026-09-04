@@ -286,8 +286,8 @@ async function sendApkViaCopy(ctx, item) {
 
   const data = parseStandardApkName(item.file_name);
   let text = data && data.isValid 
-    ? `<b>Tên ứng dụng:</b> ${data.appName}\n<b>Phiên bản:</b> ${data.version}\n<b>Mods:</b> ${data.mods}\n`
-    : `<b>Tên file:</b> ${item.file_name}\n`;
+    ? `Tên ứng dụng: <code>${data.appName}</code>\nPhiên bản: <code>${data.version}</code>\nMods: <code>${data.mods}</code>\n`
+    : `Tên file: <code>${item.file_name}</code>\n`;
 
   if (item.sender) text += `Apk đc gửi bởi: ${item.sender}`;
 
