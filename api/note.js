@@ -322,7 +322,7 @@ export default async function handler(req, res) {
       if (isGroup) {
         await sendMessage(
           chatId,
-          "📝 <b>Cú pháp tạo Note trong nhóm:</b>\n\n• Nhập: <code>/newnote &lt;nội dung&gt;</code>\n• Hoặc <b>reply (trả lời)</b> lệnh <code>/newnote</code> vào tin nhắn có sẵn."
+          "📝 <b>Cú pháp tạo Note trong nhóm:</b>\n\n• Nhập: <code>/newnote &lt;nội dung&gt;</code>"
         );
       } else {
         await sendMessage(
