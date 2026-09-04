@@ -34,7 +34,7 @@ global.fileStoreCache = global.fileStoreCache || new Map();
 
 let clientInstance = null;
 let liveSweepCache = { data: [], lastFetch: 0 };
-const CACHE_TTL = 3 * 60 * 1000; 
+const CACHE_TTL = 3 * 60 * 1000;
 
 function logInfo(tag, message, data = "") {
   console.log(`[${new Date().toISOString()}] [${tag}] ${message}`, data ? JSON.stringify(data) : "");
@@ -273,14 +273,20 @@ function getSenderTag(ctx) {
   return `<a href="tg://user?id=${user.id}">${user.first_name || "Người dùng"}</a>`;
 }
 
-// Hàm gửi APK có xử lý tự động xóa cache nếu file bị xóa trên Telegram
+// Hàm gửi APK có xử lý lỗi thông minh
 async function sendApkViaCopy(ctx, item) {
   try {
     await ctx.telegram.copyMessage(ctx.chat.id, item.chat_id, item.message_id, { caption: "" });
   } catch (e) {
     logError("SEND", `Lỗi copyMessage ID ${item.message_id}`, e);
-    await removeApkFromCache(item.message_id);
-    await ctx.reply("❌ File APK này không còn tồn tại hoặc đã bị xoá!");
+
+    // Chỉ xóa khỏi Cache khi chắc chắn tin nhắn đã bị gỡ trên Telegram (Lỗi 400 Bad Request)
+    if (e.response && e.response.error_code === 400) {
+      await removeApkFromCache(item.message_id);
+      await ctx.reply("❌ File APK này không còn tồn tại hoặc đã bị xóa!");
+    } else {
+      await ctx.reply("❌ Hệ thống gián đoạn, không thể gửi file lúc này!");
+    }
     return false;
   }
 
@@ -333,81 +339,93 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
-// Xử lý Lệnh /start & Deep Link (?start=list, ?start=get_12345)
+// Xử lý /start & Deep Link (?start=list, ?start=get_12345)
 bot.command("start", async (ctx) => {
   const text = ctx.message.text.trim();
   const args = text.split(/\s+/);
+  const payload = args[1]?.trim() || "";
 
-  // /start list hoặc ?start=list
-  if (args.length > 1 && args[1].toLowerCase() === "list") {
+  // 1. Xử lý ?start=list
+  if (payload.toLowerCase() === "list") {
     const waitMsg = await ctx.reply("Đang lấy danh sách...");
-
     try {
       const botUsername = ctx.botInfo.username;
-      const { text, keyboard } = await renderListPage(botUsername, 1);
+      const { text: listText, keyboard } = await renderListPage(botUsername, 1);
 
-      try {
-        await ctx.deleteMessage(waitMsg.message_id);
-      } catch {}
+      try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
 
-      await ctx.reply(text, {
+      await ctx.reply(listText, {
         parse_mode: "HTML",
         disable_web_page_preview: true,
         ...(keyboard || {})
       });
     } catch (e) {
-      try {
-        await ctx.deleteMessage(waitMsg.message_id);
-      } catch {}
-
+      try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
       logError("START_LIST", "Lỗi hiển thị danh sách", e);
       await ctx.reply("❌ Không thể lấy danh sách APK!");
     }
-
     return;
   }
 
-  // /start get_12345
-  if (args.length > 1 && args[1].startsWith("get_")) {
-    const msgId = parseInt(args[1].replace("get_", ""));
+  // 2. Xử lý ?start=get_12345
+  if (payload.toLowerCase().startsWith("get_")) {
+    const rawId = payload.substring(4).trim();
+    const msgId = Number(rawId);
 
-    if (isNaN(msgId)) {
+    if (!Number.isSafeInteger(msgId) || msgId <= 0) {
       return ctx.reply("❌ ID tin nhắn không hợp lệ!");
     }
 
-    const waitMsg = await ctx.reply("🚀 Đang tải file...");
+    const waitMsg = await ctx.reply("🚀 Đang kiểm tra file...");
     await ctx.sendChatAction("upload_document");
 
-    const allApks = await getAllApksFromChannelOptimized(false);
-    const item = allApks.find(
-      (a) => Number(a.message_id) === msgId
-    );
-
     try {
-      await ctx.deleteMessage(waitMsg.message_id);
-    } catch {}
+      const allApks = await getAllApksFromChannelOptimized(false);
+      let item = allApks.find((a) => Number(a.message_id) === msgId);
 
-    if (item) {
-      await sendApkViaCopy(ctx, item);
-    } else {
-      // Không có trong cache thì thử lấy trực tiếp bằng message ID
-      const success = await sendApkViaCopy(ctx, {
-        chat_id: STORAGE_CHANNEL,
-        message_id: msgId,
-        file_name: `Message #${msgId}`
-      });
+      // Nếu không có trong cache, quét trực tiếp bằng GramJS
+      if (!item) {
+        const client = await getGramClient();
+        const channelPeer = getParsedChannelPeer();
 
-      if (!success) {
-        await ctx.reply("❌ Không tìm thấy dữ liệu APK này!");
+        if (client && channelPeer) {
+          const msgs = await client.getMessages(channelPeer, { ids: [msgId] }).catch(() => []);
+          const msg = Array.isArray(msgs) ? msgs[0] : null;
+
+          if (msg && msg.media && msg.media.document) {
+            const attr = msg.media.document.attributes?.find((a) => a.fileName);
+            const fileName = attr ? attr.fileName : "";
+
+            if (fileName.toLowerCase().endsWith(".apk")) {
+              item = {
+                message_id: msg.id,
+                file_name: fileName,
+                sender: msg.postAuthor || (msg.fromId?.userId ? `<a href="tg://user?id=${msg.fromId.userId}">Người dùng</a>` : ""),
+                chat_id: STORAGE_CHANNEL,
+              };
+            }
+          }
+        }
       }
-    }
 
+      try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+
+      if (!item) {
+        return ctx.reply("❌ File APK không tồn tại hoặc đã bị gỡ!");
+      }
+
+      await sendApkViaCopy(ctx, item);
+
+    } catch (e) {
+      try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+      logError("START_GET", `Lỗi lấy APK ID ${msgId}`, e);
+      return ctx.reply("❌ Đã xảy ra lỗi khi lấy file APK!");
+    }
     return;
   }
 
-  await ctx.reply(
-    "Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng."
-  );
+  // 3. Xử lý /start không có tham số
+  await ctx.reply("Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng.");
 });
 
 bot.command("help", async (ctx) => {
@@ -427,7 +445,7 @@ bot.command("help", async (ctx) => {
   await ctx.reply(helpText);
 });
 
-// Hàm tạo danh sách dạng Text duy nhất để dùng cho editMessageText
+// Hàm tạo danh sách dạng Text dùng cho pagination
 async function renderListPage(botUsername, page = 1) {
   const allApks = await getAllApksFromChannelOptimized(false);
   const totalItems = allApks.length;
