@@ -562,7 +562,7 @@ bot.action("cancel_delcache", async (ctx) => {
 bot.command("ping", async (ctx) => {
   const start = Date.now();
   await ctx.sendChatAction("typing");
-  await ctx.reply(`🏓 Pong!: ${Date.now() - start}ms`);
+  await ctx.reply(`🏓 Pong! ${Date.now() - start}ms`);
 });
 
 bot.command("apk", async (ctx) => {
