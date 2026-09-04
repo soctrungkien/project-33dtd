@@ -383,16 +383,37 @@ async function renderListPage(botUsername, page = 1) {
 // 1. CHỈ LỆNH /list HOẶC DEEP LINK ?start=list
 bot.command("list", async (ctx) => {
   const waitMsg = await ctx.reply("Đang lấy danh sách...");
-  const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
 
-  const { text, keyboard } = await renderListPage(botUsername, 1);
-  try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+  try {
+    const botUsername =
+      ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
 
-  await ctx.reply(text, {
-    parse_mode: "HTML",
-    disable_web_page_preview: true,
-    ...(keyboard || {})
-  });
+    const { text, keyboard } = await renderListPage(botUsername, 1);
+
+    // Xóa tin nhắn "Đang lấy danh sách..."
+    try {
+      await ctx.deleteMessage(waitMsg.message_id);
+    } catch {}
+
+    // Xóa tin nhắn /list của người dùng
+    try {
+      await ctx.deleteMessage(ctx.message.message_id);
+    } catch {}
+
+    // Hiện danh sách
+    await ctx.reply(text, {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...(keyboard || {})
+    });
+  } catch (e) {
+    try {
+      await ctx.deleteMessage(waitMsg.message_id);
+    } catch {}
+
+    logError("LIST", "Lỗi hiển thị danh sách", e);
+    await ctx.reply("❌ Không thể lấy danh sách APK!");
+  }
 });
 
 // 2. CHỈ XỬ LÝ /start DẠNG t.me/username?start=list HOẶC t.me/username?start=get_id
@@ -402,26 +423,43 @@ bot.command("start", async (ctx) => {
   const payload = args[1]?.trim() || "";
 
   // Xử lý t.me/username?start=list
-  if (payload.toLowerCase() === "list") {
-    const waitMsg = await ctx.reply("Đang lấy danh sách...");
+if (payload.toLowerCase() === "list") {
+  const waitMsg = await ctx.reply("Đang lấy danh sách...");
+
+  try {
+    const botUsername =
+      ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
+
+    const { text: listText, keyboard } =
+      await renderListPage(botUsername, 1);
+
+    // Xóa "Đang lấy danh sách..."
     try {
-      const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
-      const { text: listText, keyboard } = await renderListPage(botUsername, 1);
+      await ctx.deleteMessage(waitMsg.message_id);
+    } catch {}
 
-      try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+    // Xóa /start list
+    try {
+      await ctx.deleteMessage(ctx.message.message_id);
+    } catch {}
 
-      await ctx.reply(listText, {
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-        ...(keyboard || {})
-      });
-    } catch (e) {
-      try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
-      logError("START_LIST", "Lỗi hiển thị danh sách", e);
-      await ctx.reply("❌ Không thể lấy danh sách APK!");
-    }
-    return;
+    // Hiện danh sách
+    await ctx.reply(listText, {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...(keyboard || {})
+    });
+  } catch (e) {
+    try {
+      await ctx.deleteMessage(waitMsg.message_id);
+    } catch {}
+
+    logError("START_LIST", "Lỗi hiển thị danh sách", e);
+    await ctx.reply("❌ Không thể lấy danh sách APK!");
   }
+
+  return;
+}
 
   // Xử lý t.me/username?start=get_12345
   if (payload.toLowerCase().startsWith("get_")) {
