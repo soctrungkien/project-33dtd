@@ -197,7 +197,7 @@ export default async function handler(req, res) {
 
   const isWho = await isCommandForThisBot(text, "who");
   const isStart = await isCommandForThisBot(text, "start");
-  const isNotes = await isCommandForThisBot(text, "notes");
+  const isNotes = await isCommandForThisBot(text, "newnote");
   const isClone = await isCommandForThisBot(text, "clone");
 
   // Xử lý lệnh /who
@@ -294,8 +294,8 @@ export default async function handler(req, res) {
       const helpMessage =
         "📌 <b>Hướng dẫn sử dụng Bot Note</b>\n\n" +
         "1. <b>Tạo note mới:</b>\n" +
-        "   • Viết trực tiếp: <code>/notes &lt;nội dung&gt;</code>\n" +
-        "   • Hoặc <b>reply</b> lệnh /notes vào bất kỳ tin nhắn nào.\n" +
+        "   • Viết trực tiếp: <code>/newnote &lt;nội dung&gt;</code>\n" +
+        "   • Hoặc <b>reply</b> lệnh /newnote vào bất kỳ tin nhắn nào.\n" +
         `   • Giới hạn: Tối đa <b>${MAX_CHAR_LIMIT}</b> ký tự.\n\n` +
         "2. <b>Clone Note:</b>\n" +
         "   • Cú pháp: <code>/clone &lt;link_tele|id|raw_link&gt;</code>\n" +
@@ -322,7 +322,7 @@ export default async function handler(req, res) {
       if (isGroup) {
         await sendMessage(
           chatId,
-          "📝 <b>Cú pháp tạo Note trong nhóm:</b>\n\n• Nhập: <code>/notes &lt;nội dung&gt;</code>\n• Hoặc <b>reply (trả lời)</b> lệnh <code>/notes</code> vào tin nhắn có sẵn."
+          "📝 <b>Cú pháp tạo Note trong nhóm:</b>\n\n• Nhập: <code>/newnote &lt;nội dung&gt;</code>\n• Hoặc <b>reply (trả lời)</b> lệnh <code>/newnote</code> vào tin nhắn có sẵn."
         );
       } else {
         await sendMessage(
