@@ -310,9 +310,9 @@ export default async function handler(req, res) {
       await sendMessage(chatId, helpMessage);
     }
   }
-  // Xử lý /notes
+  // Xử lý /newnote
   else if (isNotes) {
-    let content = text.replace(/^\/notes(@\w+)?\s*/i, "").trim();
+    let content = text.replace(/^\/newnote(@\w+)?\s*/i, "").trim();
 
     if (!content && message.reply_to_message?.text) {
       content = message.reply_to_message.text;
