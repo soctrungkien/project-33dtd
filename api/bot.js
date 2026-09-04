@@ -337,7 +337,7 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
-// Hàm render danh sách APK
+// Hàm render trang /list
 async function renderListPage(botUsername, page = 1) {
   const validUsername = botUsername || bot.botInfo?.username || "";
   const allApks = await getAllApksFromChannelOptimized(false);
@@ -380,7 +380,7 @@ async function renderListPage(botUsername, page = 1) {
   return { text, keyboard };
 }
 
-// Lệnh /list
+// 1. CHỈ LỆNH /list HOẶC DEEP LINK ?start=list
 bot.command("list", async (ctx) => {
   const waitMsg = await ctx.reply("Đang lấy danh sách...");
   const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
@@ -395,13 +395,13 @@ bot.command("list", async (ctx) => {
   });
 });
 
-// Xử lý /start & Deep Link (Chỉ hỗ trợ start=list và start=get_12345)
+// 2. CHỈ XỬ LÝ /start DẠNG t.me/username?start=list HOẶC t.me/username?start=get_id
 bot.command("start", async (ctx) => {
   const text = ctx.message.text.trim();
   const args = text.split(/\s+/);
   const payload = args[1]?.trim() || "";
 
-  // 1. Chỉ chấp nhận ?start=list
+  // Xử lý t.me/username?start=list
   if (payload.toLowerCase() === "list") {
     const waitMsg = await ctx.reply("Đang lấy danh sách...");
     try {
@@ -423,7 +423,7 @@ bot.command("start", async (ctx) => {
     return;
   }
 
-  // 2. Chấp nhận ?start=get_12345
+  // Xử lý t.me/username?start=get_12345
   if (payload.toLowerCase().startsWith("get_")) {
     const rawId = payload.substring(4).trim();
     const msgId = Number(rawId);
@@ -479,7 +479,7 @@ bot.command("start", async (ctx) => {
     return;
   }
 
-  // 3. /start bình thường
+  // Lệnh /start bình thường không tham số
   await ctx.reply("Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng.");
 });
 
@@ -500,7 +500,7 @@ bot.command("help", async (ctx) => {
   await ctx.reply(helpText);
 });
 
-// Xử lý chuyển trang qua Inline Button
+// Chuyển trang qua nút bấm Inline
 bot.action(/^list_page_(\d+)$/, async (ctx) => {
   const page = parseInt(ctx.match[1], 10);
   const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
@@ -727,12 +727,14 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
   try { await ctx.editMessageText("❌ Đã hủy thao tác lưu trữ."); } catch (e) {}
 });
 
-// Xử lý tin nhắn văn bản thông thường (Tìm kiếm)
+// Xử lý tin nhắn văn bản thông thường (Search APK)
 bot.on("text", async (ctx) => {
   const text = ctx.message.text.trim();
   if (text.startsWith("/")) return;
   if (ctx.chat.type !== "private") return;
-
+    if (/^(https?:\/\/)?t\.me\//i.test(text) || text.toLowerCase() === "list") {
+    return ctx.reply("/list");
+    }
   const repliedMessage = ctx.message.reply_to_message;
   if (
     repliedMessage &&
