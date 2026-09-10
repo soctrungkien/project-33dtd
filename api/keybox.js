@@ -160,7 +160,7 @@ async function getYuriKeybox() {
     fetch(YURI_COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
   ]);
 
-  if (!fileRes.ok) throw new Error("Không thể tải file key Yuri");
+  if (!fileRes.ok) throw new Error("Không thể kết nối đến nguồn Yuri");
 
   const base64Text = await fileRes.text();
   const cleanBase64 = base64Text.replace(/\s+/g, '').trim();
@@ -197,7 +197,7 @@ async function getKaoriosKeybox() {
     fetch(KAORIOS_COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
   ]);
 
-  if (!fileRes.ok) throw new Error("Không thể tải file key Kaorios");
+  if (!fileRes.ok) throw new Error("Không thể kết nối đến nguồn Kaorios");
 
   const xmlText = await fileRes.text();
   const buffer = Buffer.from(xmlText, 'utf-8');
@@ -222,7 +222,7 @@ async function getKaoriosKeybox() {
 
 async function getEvokerKeybox() {
   const fileRes = await fetch(EVOKER_URL);
-  if (!fileRes.ok) throw new Error("Không thể tải file key Evoker");
+  if (!fileRes.ok) throw new Error("Không thể kết nối đến nguồn Evoker");
 
   const base64Text = await fileRes.text();
   const cleanBase64 = base64Text.replace(/\s+/g, '').trim();
@@ -246,17 +246,11 @@ async function getKowKeybox() {
     fetch(KOW_COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
   ]);
 
-  if (!fileRes.ok) throw new Error("Không thể tải file key KOW");
+  if (!fileRes.ok) throw new Error("Không thể kết nối đến nguồn KOW");
 
   const rawText = await fileRes.text();
-  
-  // 1. Lọc ký tự Hex chuẩn
   const cleanHex = rawText.replace(/[^0-9a-fA-F]/g, '');
-
-  // 2. Decode Hex sang Chuỗi Text (chứa Base64)
   const base64Text = Buffer.from(cleanHex, 'hex').toString('utf-8').trim();
-
-  // 3. Decode Base64 sang Buffer XML
   const buffer = Buffer.from(base64Text, 'base64');
   if (!buffer.length) throw new Error("File keybox KOW bị rỗng sau khi giải mã");
 
@@ -284,7 +278,7 @@ async function getHihiKeybox() {
     fetch(HIHI_COMMIT_API, { headers: { 'User-Agent': 'Telegram-Bot' } })
   ]);
 
-  if (!fileRes.ok) throw new Error("Không thể tải file key HihiKeybox");
+  if (!fileRes.ok) throw new Error("Không thể kết nối đến nguồn HihiKeybox");
 
   const base64Text = await fileRes.text();
   const cleanBase64 = base64Text.replace(/\s+/g, '').trim();
@@ -390,7 +384,15 @@ bot.action(/^get_keybox:(yuri|kaorios|evoker|kow|hihi):(\d+)$/, async (ctx) => {
     return ctx.answerCbQuery("눈⁠‸⁠눈 Đừng làm phiền người ta", { show_alert: true }).catch(() => {});
   }
 
-  await ctx.answerCbQuery("Đang xử lý tải file...").catch(() => {});
+  // 1. Phản hồi callback ngay lập tức
+  await ctx.answerCbQuery("⏳ Đang xử lý...").catch(() => {});
+
+  // 2. Thay đổi giao diện nút bấm ngay lập tức để CHỐNG NHẤN LẠI 2 LẦN
+  try {
+    await ctx.editMessageText("⏳ *Đang tải file keybox, vui lòng chờ...*", { parse_mode: 'Markdown' });
+  } catch (e) {
+    // Nếu tin nhắn bị xóa hoặc thay đổi trước đó thì bỏ qua
+  }
 
   try {
     await ctx.sendChatAction('upload_document');
@@ -417,6 +419,7 @@ bot.action(/^get_keybox:(yuri|kaorios|evoker|kow|hihi):(\d+)$/, async (ctx) => {
 
     const { buffer, updateDate, filename } = keyData;
 
+    // Gửi file
     await ctx.replyWithDocument(
       { source: buffer, filename },
       {
@@ -425,10 +428,12 @@ bot.action(/^get_keybox:(yuri|kaorios|evoker|kow|hihi):(\d+)$/, async (ctx) => {
       }
     );
 
-    await ctx.deleteMessage().catch(() => {});
   } catch (error) {
-    console.error(error);
-    await ctx.reply(`❌ Có lỗi xảy ra khi lấy file keybox.`);
+    console.error(`Lỗi tải keybox (${source}):`, error);
+    await ctx.reply(`❌ Có lỗi xảy ra khi lấy file keybox: ${error.message || 'Lỗi không xác định'}`);
+  } finally {
+    // 3. Luôn luôn xóa tin nhắn menu lựa chọn (dù thành công hay có lỗi)
+    await ctx.deleteMessage().catch(() => {});
   }
 });
 
