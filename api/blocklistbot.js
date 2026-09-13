@@ -39,37 +39,111 @@ const SOURCES = [
   "https://www.fanboy.co.nz/fanboy-cookiemonster.txt"
 ];
 
+
+/* =========================
+   TELEGRAM
+========================= */
+
 async function sendMessage(chatId, text) {
-  const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+  const r = await fetch(`${TELEGRAM_API}/sendMessage`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true
+    })
   });
-  return res.json();
+
+  return r.json();
 }
+
 
 async function editMessage(chatId, messageId, text) {
   await fetch(`${TELEGRAM_API}/editMessageText`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML', disable_web_page_preview: true })
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true
+    })
   });
 }
+
 
 async function sendDocument(chatId, contentText, fileName, caption) {
   const formData = new FormData();
-  formData.append('chat_id', chatId);
-  formData.append('document', new Blob([contentText], { type: 'text/plain' }), fileName);
-  formData.append('caption', caption);
-  formData.append('parse_mode', 'HTML');
 
-  await fetch(`${TELEGRAM_API}/sendDocument`, {
-    method: 'POST',
+  formData.append("chat_id", chatId);
+
+  formData.append(
+    "document",
+    new Blob([contentText], {
+      type: "text/plain"
+    }),
+    fileName
+  );
+
+  formData.append("caption", caption);
+  formData.append("parse_mode", "HTML");
+
+  const r = await fetch(`${TELEGRAM_API}/sendDocument`, {
+    method: "POST",
     body: formData
   });
+
+  return r.json();
 }
 
-async function uploadToPastefy(content) {
+
+/* =========================
+   DATE VIỆT NAM
+========================= */
+
+function getVietnamDate() {
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+}
+
+
+/*
+  Dùng cho tên file:
+  13-09-2026
+*/
+function getFileDate() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+
+  const day = parts.find(x => x.type === "day")?.value;
+  const month = parts.find(x => x.type === "month")?.value;
+  const year = parts.find(x => x.type === "year")?.value;
+
+  return `${day}-${month}-${year}`;
+}
+
+
+/* =========================
+   PASTEFY
+========================= */
+
+async function uploadToPastefy(content, createdAt) {
+
   const keys = (process.env.PASTEFY_API_KEYS || "")
     .split(",")
     .map(x => x.trim())
@@ -80,119 +154,353 @@ async function uploadToPastefy(content) {
     return null;
   }
 
-  const apiKey = keys[Math.floor(Math.random() * keys.length)];
+  /*
+    Thử lần lượt từng API key.
+    Nếu một key lỗi thì thử key tiếp theo.
+  */
+  for (let i = 0; i < keys.length; i++) {
 
-  try {
-    const res = await fetch("https://pastefy.app/api/v2/paste", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ title: "Blocklist Hosts", content })
-    });
+    const apiKey = keys[i];
 
-    const json = await res.json();
-    if (res.ok && json.success && json.paste?.id) {
-      return `https://pastefy.app/${json.paste.id}/raw`;
+    try {
+
+      console.log(
+        `📤 [PASTEFY] Đang thử API key ${i + 1}/${keys.length}`
+      );
+
+      const response = await fetch(
+        "https://pastefy.app/api/v2/paste",
+        {
+          method: "POST",
+
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+
+          body: JSON.stringify({
+            title: `Blocklist ${createdAt}`,
+            content
+          })
+        }
+      );
+
+      /*
+        QUAN TRỌNG:
+        Không dùng response.json() trực tiếp.
+
+        Pastefy đôi khi trả HTML:
+        <html>
+        ...
+      */
+
+      const responseText = await response.text();
+
+      console.log(
+        `📥 [PASTEFY] HTTP ${response.status} | ${responseText.length} bytes`
+      );
+
+      let json = null;
+
+      try {
+        json = JSON.parse(responseText);
+      } catch {
+
+        console.error(
+          `❌ [PASTEFY] Response không phải JSON:`,
+          responseText.slice(0, 500)
+        );
+
+        /*
+          Nếu server trả HTML / Cloudflare / proxy error
+          thì thử API key tiếp theo.
+        */
+        continue;
+      }
+
+      if (
+        response.ok &&
+        json?.success &&
+        json?.paste?.id
+      ) {
+
+        const pasteId = json.paste.id;
+
+        const rawUrl =
+          `https://pastefy.app/${pasteId}/raw`;
+
+        console.log(
+          `✅ [PASTEFY] Thành công: ${rawUrl}`
+        );
+
+        return rawUrl;
+      }
+
+      console.error(
+        `❌ [PASTEFY] API key ${i + 1} lỗi:`,
+        json
+      );
+
+    } catch (err) {
+
+      console.error(
+        `❌ [PASTEFY] Key ${i + 1} lỗi kết nối:`,
+        err.message
+      );
     }
-    console.error("❌ Lỗi API Pastefy:", json);
-  } catch (err) {
-    console.error("❌ Lỗi kết nối Pastefy:", err.message);
   }
+
+  console.error(
+    "❌ [PASTEFY] Tất cả API key đều thất bại."
+  );
+
   return null;
 }
 
+
+/* =========================
+   MAIN HANDLER
+========================= */
+
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(200).send('Bot đang hoạt động!');
+
+  if (req.method !== "POST") {
+    return res.status(200).send("Bot đang hoạt động!");
   }
 
   const update = req.body;
+
   if (!update || !update.message) {
-    return res.status(200).send('OK');
+    return res.status(200).send("OK");
   }
 
   const chatId = update.message.chat.id;
-  const text = update.message.text || '';
+  const text = update.message.text || "";
 
-  if (text.startsWith('/start') || text.startsWith('/blocklist')) {
-    console.log(`\n🚀 [BẮT ĐẦU] Tạo blocklist cho Chat ID: ${chatId}`);
+  if (
+    text.startsWith("/start") ||
+    text.startsWith("/blocklist")
+  ) {
 
-    // 1. Cập nhật trạng thái
-    const statusMsg = await sendMessage(chatId, `🔄 <b>Đang nạp dữ liệu:</b> Đang tải đa luồng ${SOURCES.length} nguồn blocklist...`);
+    console.log(
+      `\n🚀 [BẮT ĐẦU] Tạo blocklist cho Chat ID: ${chatId}`
+    );
+
+    const statusMsg = await sendMessage(
+      chatId,
+      `🔄 <b>Đang nạp dữ liệu:</b> Đang tải đa luồng ${SOURCES.length} nguồn blocklist...`
+    );
+
     const msgId = statusMsg.result?.message_id;
 
-    const createdAt = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    const createdAt = getVietnamDate();
+    const fileDate = getFileDate();
 
     try {
-      // 2. Tải đa luồng song song (Timeout 7 giây mỗi link)
-      const fetchPromises = SOURCES.map(async (url) => {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 7000);
 
-          const response = await fetch(url, { signal: controller.signal });
+      /* =========================
+         DOWNLOAD SOURCES
+      ========================= */
+
+      const fetchPromises = SOURCES.map(async (url) => {
+
+        try {
+
+          const controller = new AbortController();
+
+          const timeoutId = setTimeout(
+            () => controller.abort(),
+            7000
+          );
+
+          const response = await fetch(url, {
+            signal: controller.signal
+          });
+
           clearTimeout(timeoutId);
 
           if (!response.ok) {
-            console.warn(`⚠️ [LINK DIE/LỖI HTTP ${response.status}] ${url}`);
-            return { url, content: null, success: false };
+
+            console.warn(
+              `⚠️ [HTTP ${response.status}] ${url}`
+            );
+
+            return {
+              url,
+              content: null,
+              success: false
+            };
           }
 
           const textData = await response.text();
-          console.log(`✅ [TẢI THÀNH CÔNG] (${textData.length} bytes) - ${url}`);
-          return { url, content: textData, success: true };
+
+          console.log(
+            `✅ [TẢI OK] (${textData.length} bytes) ${url}`
+          );
+
+          return {
+            url,
+            content: textData,
+            success: true
+          };
 
         } catch (err) {
-          console.error(`❌ [BỎ QUA LINK DIE] ${url} | Lỗi: ${err.name === 'AbortError' ? 'Timeout 7s' : err.message}`);
-          return { url, content: null, success: false };
+
+          console.error(
+            `❌ [BỎ QUA] ${url} | ${
+              err.name === "AbortError"
+                ? "Timeout 7s"
+                : err.message
+            }`
+          );
+
+          return {
+            url,
+            content: null,
+            success: false
+          };
         }
       });
 
+
       const results = await Promise.all(fetchPromises);
 
-      // 3. Ghép file và thống kê kết quả
-      let mergedContent = `# Combined Blocklist\n# Generated on: ${createdAt} (ICT)\n# Total Sources Configured: ${SOURCES.length}\n\n`;
+
+      /* =========================
+         MERGE
+      ========================= */
+
+      /*
+        #hi nằm ở dòng đầu tiên.
+      */
+
+      let mergedContent =
+`#hi
+# Combined Blocklist
+# Generated on: ${createdAt} (ICT)
+# Total Sources Configured: ${SOURCES.length}
+
+`;
+
       let successCount = 0;
       let failCount = 0;
 
-      results.forEach((item) => {
-        if (item.success && item.content) {
-          mergedContent += `# --- Source: ${item.url} ---\n${item.content}\n\n`;
+
+      results.forEach(item => {
+
+        if (
+          item.success &&
+          item.content
+        ) {
+
+          mergedContent +=
+`\n# --- Source: ${item.url} ---\n${item.content}\n`;
+
           successCount++;
+
         } else {
+
           failCount++;
         }
       });
 
-      console.log(`📊 [HOÀN TẤT TẢI] Thành công: ${successCount}/${SOURCES.length} | Thất bại: ${failCount}`);
 
-      // 4. Trạng thái: Uploading
+      console.log(
+        `📊 [HOÀN TẤT] Thành công: ${successCount}/${SOURCES.length} | Thất bại: ${failCount}`
+      );
+
+
+      /* =========================
+         PASTEFY
+      ========================= */
+
       if (msgId) {
-        await editMessage(chatId, msgId, `📤 <b>Đang xử lý:</b> Đã tải ${successCount}/${SOURCES.length} nguồn. Đang đẩy lên Pastefy & gửi Telegram...`);
+
+        await editMessage(
+          chatId,
+          msgId,
+          `📤 <b>Đang xử lý:</b> Đã tải ${successCount}/${SOURCES.length} nguồn. Đang đẩy lên Pastefy...`
+        );
       }
 
-      // Tạo link raw
-      const rawUrl = await uploadToPastefy(mergedContent);
 
-      // 5. Gửi file & link raw cho người dùng
-      const linkText = rawUrl ? `<a href="${rawUrl}">${rawUrl}</a>` : '<i>Không thể tạo (Lỗi Pastefy hoặc thiếu API Key)</i>';
-      const caption = `✅ <b>Hoàn tất tạo Blocklist!</b>\n⏰ <b>Thời gian tạo:</b> <code>${createdAt}</code>\n🔗 <b>Link Raw:</b> ${linkText}`;
+      const rawUrl = await uploadToPastefy(
+        mergedContent,
+        createdAt
+      );
 
-      await sendDocument(chatId, mergedContent, 'blocklist.txt', caption);
+
+      /* =========================
+         FILE NAME
+      ========================= */
+
+      const fileName =
+        `blocklist-${fileDate}.txt`;
+
+
+      const linkText = rawUrl
+        ? `<a href="${rawUrl}">${rawUrl}</a>`
+        : `<i>Không thể tạo Pastefy.</i>`;
+
+
+      const caption =
+`✅ <b>Hoàn tất tạo Blocklist!</b>
+⏰ <b>Ngày tạo:</b> <code>${createdAt}</code>
+📦 <b>Nguồn:</b> <code>${successCount}/${SOURCES.length}</code>
+📄 <b>File:</b> <code>${fileName}</code>
+🔗 <b>Link Raw:</b> ${linkText}`;
+
+
+      /* =========================
+         SEND TELEGRAM FILE
+      ========================= */
+
+      const telegramResult = await sendDocument(
+        chatId,
+        mergedContent,
+        fileName,
+        caption
+      );
+
+
+      if (!telegramResult.ok) {
+
+        console.error(
+          "❌ Telegram sendDocument:",
+          telegramResult
+        );
+      }
+
 
       if (msgId) {
-        await editMessage(chatId, msgId, '🎉 <b>Thành công!</b> File blocklist và link raw đã được gửi bên dưới.');
+
+        await editMessage(
+          chatId,
+          msgId,
+          rawUrl
+            ? "🎉 <b>Thành công!</b> File blocklist và link Raw đã được gửi bên dưới."
+            : "⚠️ <b>Đã tạo file!</b> Nhưng Pastefy không phản hồi hợp lệ."
+        );
       }
 
     } catch (err) {
-      console.error('💥 [LỖI HỆ THỐNG]:', err);
+
+      console.error(
+        "💥 [LỖI HỆ THỐNG]:",
+        err
+      );
+
       if (msgId) {
-        await editMessage(chatId, msgId, '❌ <b>Lỗi:</b> Có lỗi xảy ra trong quá trình xử lý blocklist.');
+
+        await editMessage(
+          chatId,
+          msgId,
+          `❌ <b>Lỗi:</b> ${String(err.message).slice(0, 500)}`
+        );
       }
     }
   }
 
-  return res.status(200).send('OK');
+  return res.status(200).send("OK");
 }
