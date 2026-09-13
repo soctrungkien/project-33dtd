@@ -1,8 +1,6 @@
 const BOT_TOKEN = process.env.BOT_TOKEN_BLOCKLIST;
 
-const TELEGRAM_API =
-  `https://api.telegram.org/bot${BOT_TOKEN}`;
-
+const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 /* =========================================================
    AUTO GET BOT USERNAME
@@ -26,118 +24,47 @@ async function getBotUsername() {
   return null;
 }
 
-
 /* =========================================================
    BLOCKLIST SOURCES
 ========================================================= */
 
 const SOURCES = [
-  // AdAway official hosts
   "https://adaway.org/hosts.txt",
-
-  // Adblock Warning Removal List
   "https://easylist-downloads.adblockplus.org/antiadblockfilters.txt",
-
-  // EasyList
   "https://easylist-downloads.adblockplus.org/easylist.txt",
-
-  // Fanboy's Social Blocking List
   "https://easylist-downloads.adblockplus.org/fanboy-social.txt",
-
-  // EasyPrivacy
   "https://easylist.to/easylist/easyprivacy.txt",
-
-  // Fanboy's Anti-thirdparty Fonts
   "https://fanboy.co.nz/fanboy-antifonts.txt",
-
-  // Bộ lọc quảng cáo hữu ích
   "https://filters.adtidy.org/android/filters/10_optimized.txt",
-
-  // Bộ lọc quảng cáo di động
   "https://filters.adtidy.org/android/filters/11_optimized.txt",
-
-  // Bộ lọc phiền toái
   "https://filters.adtidy.org/android/filters/14_optimized.txt",
-
-  // Bộ lọc tên miền đơn giản
   "https://filters.adtidy.org/android/filters/15_optimized.txt",
-
-  // Bộ Lọc URL Theo Dõi Của AdGuard
   "https://filters.adtidy.org/android/filters/17_optimized.txt",
-
-  // Bộ lọc Thông báo Cookie AdGuard
   "https://filters.adtidy.org/android/filters/18_optimized.txt",
-
-  // Bộ lọc Quảng cáo AdGuard
   "https://filters.adtidy.org/android/filters/19_optimized.txt",
-
-  // Bộ lọc AdGuard Mobile App Banners
   "https://filters.adtidy.org/android/filters/20_optimized.txt",
-
-  // Bộ lọc Những phiền toái khác của AdGuard
   "https://filters.adtidy.org/android/filters/21_optimized.txt",
-
-  // Bộ lọc Tiện ích con AdGuard
   "https://filters.adtidy.org/android/filters/22_optimized.txt",
-
-  // AdGuard Mail Tracking Protection filter
   "https://filters.adtidy.org/android/filters/25_optimized.txt",
-
-  // Bộ lọc gián điệp
   "https://filters.adtidy.org/android/filters/3_optimized.txt",
-
-  // Bộ lọc phương tiện mạng xã hội
   "https://filters.adtidy.org/android/filters/4_optimized.txt",
-
-  // Bộ lọc thử nghiệm
   "https://filters.adtidy.org/android/filters/5_optimized.txt",
-
-  // Chibi Block
   "https://gitlab.com/andryou/block/raw/master/chibi",
-
-  // Phishing URL Blocklist
   "https://malware-filter.gitlab.io/malware-filter/phishing-filter-ag.txt",
-
-  // Peter Lowe's Blocklist
   "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&mimetype=plaintext",
-
-  // Pete Lowe blocklist hosts
   "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
-
-  // Dandelion Sprout's Anti-Malware List
   "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareAdGuard.txt",
-
-  // Legitimate URL Shortener
   "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/LegitimateURLShortener.txt",
-
-  // Web Annoyances Ultralist
   "https://raw.githubusercontent.com/LanikSJ/webannoyances/master/ultralist.txt",
-
-  // AdAway official hosts
   "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-
-  // hicloud
   "https://raw.githubusercontent.com/deep-bhatt/huawei-block-list/refs/heads/master/huawei-block-host.txt",
-
-  // Scam Blocklist by DurableNapkin
   "https://raw.githubusercontent.com/durablenapkin/scamblocklist/master/adguard.txt",
-
-  // Mobile Hosts AdGuardDNS
   "https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardDNS.txt",
-
-  // uBlock Origin - Badware risks
   "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt",
-
-  // Fanboy's Annoyances
   "https://secure.fanboy.co.nz/fanboy-annoyance_ubo.txt",
-
-  // Fanboy's Anti-Facebook List
   "https://www.fanboy.co.nz/fanboy-antifacebook.txt",
-
-  // EasyList Cookie List
   "https://www.fanboy.co.nz/fanboy-cookiemonster.txt"
 ];
-
 
 /* =========================================================
    TELEGRAM
@@ -145,215 +72,123 @@ const SOURCES = [
 
 async function sendMessage(chatId, text) {
   try {
-    const response = await fetch(
-      `${TELEGRAM_API}/sendMessage`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text,
-          parse_mode: "HTML",
-          disable_web_page_preview: true
-        })
-      }
-    );
-
+    const response = await fetch(`${TELEGRAM_API}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true
+      })
+    });
     return await response.json();
   } catch (err) {
-    console.error(
-      "❌ Telegram sendMessage:",
-      err.message
-    );
-
-    return {
-      ok: false,
-      description: err.message
-    };
+    console.error("❌ Telegram sendMessage:", err.message);
+    return { ok: false, description: err.message };
   }
 }
 
-
-async function editMessage(
-  chatId,
-  messageId,
-  text
-) {
+async function editMessage(chatId, messageId, text) {
   try {
-    const response = await fetch(
-      `${TELEGRAM_API}/editMessageText`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          message_id: messageId,
-          text,
-          parse_mode: "HTML",
-          disable_web_page_preview: true
-        })
-      }
-    );
-
+    const response = await fetch(`${TELEGRAM_API}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true
+      })
+    });
     return await response.json();
   } catch (err) {
-    console.error(
-      "❌ Telegram editMessage:",
-      err.message
-    );
-
-    return {
-      ok: false,
-      description: err.message
-    };
+    console.error("❌ Telegram editMessage:", err.message);
+    return { ok: false, description: err.message };
   }
 }
 
 async function deleteMessage(chatId, messageId) {
   try {
-    const response = await fetch(
-      `${TELEGRAM_API}/deleteMessage`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          message_id: messageId
-        })
-      }
-    );
-
+    const response = await fetch(`${TELEGRAM_API}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId
+      })
+    });
     return await response.json();
   } catch (err) {
-    console.error(
-      "❌ Telegram deleteMessage:",
-      err.message
-    );
-
-    return {
-      ok: false,
-      description: err.message
-    };
+    console.error("❌ Telegram deleteMessage:", err.message);
+    return { ok: false, description: err.message };
   }
 }
 
-async function sendDocument(
-  chatId,
-  contentText,
-  fileName,
-  caption
-) {
+async function sendDocument(chatId, contentText, fileName, caption) {
   try {
     const formData = new FormData();
-
-    formData.append(
-      "chat_id",
-      String(chatId)
-    );
-
+    formData.append("chat_id", String(chatId));
     formData.append(
       "document",
-      new Blob(
-        [contentText],
-        {
-          type: "text/plain; charset=utf-8"
-        }
-      ),
+      new Blob([contentText], { type: "text/plain; charset=utf-8" }),
       fileName
     );
+    formData.append("caption", caption);
+    formData.append("parse_mode", "HTML");
 
-    formData.append(
-      "caption",
-      caption
-    );
-
-    formData.append(
-      "parse_mode",
-      "HTML"
-    );
-
-    const response = await fetch(
-      `${TELEGRAM_API}/sendDocument`,
-      {
-        method: "POST",
-        body: formData
-      }
-    );
+    const response = await fetch(`${TELEGRAM_API}/sendDocument`, {
+      method: "POST",
+      body: formData
+    });
 
     const text = await response.text();
-
     try {
       return JSON.parse(text);
     } catch {
       return {
         ok: false,
-        description:
-          `Telegram trả về dữ liệu không hợp lệ: ${text.slice(0, 300)}`
+        description: `Telegram trả về dữ liệu không hợp lệ: ${text.slice(0, 300)}`
       };
     }
   } catch (err) {
-    console.error(
-      "❌ Telegram sendDocument:",
-      err.message
-    );
-
-    return {
-      ok: false,
-      description: err.message
-    };
+    console.error("❌ Telegram sendDocument:", err.message);
+    return { ok: false, description: err.message };
   }
 }
-
 
 /* =========================================================
    VIETNAM TIME
 ========================================================= */
 
 function getVietnamDate() {
-  return new Intl.DateTimeFormat(
-    "vi-VN",
-    {
-      timeZone: "Asia/Ho_Chi_Minh",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hourCycle: "h23"
-    }
-  ).format(new Date());
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).format(new Date());
 }
-
 
 function getFileDate() {
   const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(now);
 
-  const parts =
-    new Intl.DateTimeFormat(
-      "en-GB",
-      {
-        timeZone: "Asia/Ho_Chi_Minh",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hourCycle: "h23"
-      }
-    ).formatToParts(now);
-
-  const get = type =>
-    parts.find(
-      item => item.type === type
-    )?.value;
+  const get = type => parts.find(item => item.type === type)?.value;
 
   const day = get("day");
   const month = get("month");
@@ -361,23 +196,10 @@ function getFileDate() {
   const hour = get("hour");
   const minute = get("minute");
   const second = get("second");
+  const milliseconds = String(now.getMilliseconds()).padStart(3, "0");
 
-  const milliseconds =
-    String(
-      now.getMilliseconds()
-    ).padStart(3, "0");
-
-  return [
-    day,
-    month,
-    year,
-    hour,
-    minute,
-    second,
-    milliseconds
-  ].join("-");
+  return [day, month, year, hour, minute, second, milliseconds].join("-");
 }
-
 
 /* =========================================================
    DOWNLOAD SOURCE
@@ -386,84 +208,40 @@ function getFileDate() {
 async function fetchSource(url) {
   try {
     const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 7000);
 
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      7000
-    );
-
-    const response = await fetch(
-      url,
-      {
-        signal: controller.signal,
-        headers: {
-          "User-Agent": "BlocklistBot/1.0"
-        }
-      }
-    );
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { "User-Agent": "BlocklistBot/1.0" }
+    });
 
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.warn(
-        `⚠️ [HTTP ${response.status}] ${url}`
-      );
-      return {
-        url,
-        content: null,
-        success: false
-      };
+      console.warn(`⚠️ [HTTP ${response.status}] ${url}`);
+      return { url, content: null, success: false };
     }
 
     const content = await response.text();
-
     if (!content.trim()) {
-      console.warn(
-        `⚠️ [EMPTY] ${url}`
-      );
-      return {
-        url,
-        content: null,
-        success: false
-      };
+      console.warn(`⚠️ [EMPTY] ${url}`);
+      return { url, content: null, success: false };
     }
 
-    console.log(
-      `✅ [TẢI OK] ${content.length} bytes - ${url}`
-    );
-
-    return {
-      url,
-      content,
-      success: true
-    };
+    console.log(`✅ [TẢI OK] ${content.length} bytes - ${url}`);
+    return { url, content, success: true };
   } catch (err) {
-    const reason =
-      err.name === "AbortError"
-        ? "Timeout 7s"
-        : err.message;
-
-    console.error(
-      `❌ [BỎ QUA] ${url} | ${reason}`
-    );
-
-    return {
-      url,
-      content: null,
-      success: false
-    };
+    const reason = err.name === "AbortError" ? "Timeout 7s" : err.message;
+    console.error(`❌ [BỎ QUA] ${url} | ${reason}`);
+    return { url, content: null, success: false };
   }
 }
-
 
 /* =========================================================
    CREATE BLOCKLIST
 ========================================================= */
 
-async function createBlocklist(
-  chatId,
-  msgId
-) {
+async function createBlocklist(chatId, msgId) {
   const createdAt = getVietnamDate();
   const fileDate = getFileDate();
 
@@ -471,32 +249,19 @@ async function createBlocklist(
   let successCount = 0;
   let failCount = 0;
 
-  console.log(
-    `🚀 [DOWNLOAD] ${SOURCES.length} nguồn`
-  );
-
-  const results = await Promise.all(
-    SOURCES.map(
-      url => fetchSource(url)
-    )
-  );
+  console.log(`🚀 [DOWNLOAD] ${SOURCES.length} nguồn`);
+  const results = await Promise.all(SOURCES.map(url => fetchSource(url)));
 
   for (const item of results) {
-    if (
-      item.success &&
-      item.content
-    ) {
-      mergedContent +=
-`\n# --- Source: ${item.url} ---\n${item.content}\n`;
+    if (item.success && item.content) {
+      mergedContent += `\n# --- Source: ${item.url} ---\n${item.content}\n`;
       successCount++;
     } else {
       failCount++;
     }
   }
 
-  console.log(
-    `📊 [RESULT] ${successCount}/${SOURCES.length} OK | ${failCount} lỗi`
-  );
+  console.log(`📊 [RESULT] ${successCount}/${SOURCES.length} OK | ${failCount} lỗi`);
 
   if (msgId) {
     await editMessage(
@@ -507,14 +272,7 @@ async function createBlocklist(
   }
 
   const fileName = `blocklist-${fileDate}.txt`;
-
-  const caption =
-`✅ <b>Hoàn tất tạo Blocklist!</b>
-
-⏰ <b>Thời gian:</b>
-<code>${createdAt}</code>
-📄 <b>File:</b>
-<code>${fileName}</code>`;
+  const caption = `✅ <b>Hoàn tất tạo Blocklist!</b>\n\n⏰ <b>Thời gian:</b>\n<code>${createdAt}</code>\n📄 <b>File:</b>\n<code>${fileName}</code>`;
 
   const telegramResult = await sendDocument(
     chatId,
@@ -524,86 +282,48 @@ async function createBlocklist(
   );
 
   if (!telegramResult.ok) {
-    console.error(
-      "❌ [TELEGRAM]",
-      telegramResult
-    );
-
-    throw new Error(
-      telegramResult.description ||
-      "Không thể gửi file Telegram"
-    );
+    console.error("❌ [TELEGRAM]", telegramResult);
+    throw new Error(telegramResult.description || "Không thể gửi file Telegram");
   }
 
   if (msgId) {
-      await deleteMessage(chatId, msgId);
-}
-
+    await deleteMessage(chatId, msgId);
+  }
+} // <--- DẤU ĐÓNG NGOẶC CỦA createBlocklist ĐÃ ĐƯỢC BỔ SUNG TẠI ĐÂY
 
 /* =========================================================
    WEBHOOK
 ========================================================= */
 
-module.exports = async function handler(
-  req,
-  res
-) {
+module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
-    return res
-      .status(200)
-      .send(
-        "Blocklist Bot đang hoạt động!"
-      );
+    return res.status(200).send("Blocklist Bot đang hoạt động!");
   }
 
   const update = req.body;
-
-  if (
-    !update ||
-    !update.message
-  ) {
-    return res
-      .status(200)
-      .send("OK");
+  if (!update || !update.message) {
+    return res.status(200).send("OK");
   }
 
   const chatId = update.message.chat.id;
   const text = (update.message.text || "").trim();
 
-  // Tự động lấy Username Bot qua API Telegram
   const botUsername = await getBotUsername();
   const usernamePattern = botUsername ? `@${botUsername}` : "(@\\w+)?";
 
   const isStartCmd = new RegExp(`^\\/start${usernamePattern}(\\s+|$)`, "i").test(text);
   const isCreateCmd = new RegExp(`^\\/create${usernamePattern}(\\s+|$)`, "i").test(text);
 
-  /* =======================================================
-     /start
-  ======================================================= */
-
   if (isStartCmd) {
     await sendMessage(
       chatId,
-`👋 <b>Xin chào!</b>
-Bot dùng để tạo blocklist.
-📦 <b>Tạo blocklist:</b>
-/create`
+      `👋 <b>Xin chào!</b>\nBot dùng để tạo blocklist.\n📦 <b>Tạo blocklist:</b>\n/create`
     );
-
-    return res
-      .status(200)
-      .send("OK");
+    return res.status(200).send("OK");
   }
 
-
-  /* =======================================================
-     /create
-  ======================================================= */
-
   if (isCreateCmd) {
-    console.log(
-      `\n🚀 [CREATE] Chat ID: ${chatId}`
-    );
+    console.log(`\n🚀 [CREATE] Chat ID: ${chatId}`);
 
     const statusMsg = await sendMessage(
       chatId,
@@ -613,16 +333,9 @@ Bot dùng để tạo blocklist.
     const msgId = statusMsg.result?.message_id;
 
     try {
-      await createBlocklist(
-        chatId,
-        msgId
-      );
+      await createBlocklist(chatId, msgId);
     } catch (err) {
-      console.error(
-        "💥 [CREATE ERROR]",
-        err
-      );
-
+      console.error("💥 [CREATE ERROR]", err);
       if (msgId) {
         await editMessage(
           chatId,
@@ -632,17 +345,8 @@ Bot dùng để tạo blocklist.
       }
     }
 
-    return res
-      .status(200)
-      .send("OK");
+    return res.status(200).send("OK");
   }
 
-
-  /* =======================================================
-     UNKNOWN COMMAND
-  ======================================================= */
-
-  return res
-    .status(200)
-    .send("OK");
-}
+  return res.status(200).send("OK");
+};
