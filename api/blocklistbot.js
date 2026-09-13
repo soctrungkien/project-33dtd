@@ -242,16 +242,12 @@ async function fetchSource(url) {
 function isValidDomain(domain) {
   if (!domain) return false;
   domain = domain.replace(/\.+$/, "").trim();
-  if (
+/*  if (
     domain === "localhost" ||
-    domain === "localhost.localdomain" ||
-    domain === "broadcasthost" ||
-    domain === "local" ||
-    domain === "127.0.0.1" ||
-    domain === "::1"
+    domain === "localhost"
   ) {
     return false;
-  }
+  }*/
   // Kiểm tra tên miền hợp lệ cơ bản
   const domainRegex = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
   return domainRegex.test(domain);
