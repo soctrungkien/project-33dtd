@@ -32,7 +32,8 @@ const SOURCES = [
   "https://gitlab.com/andryou/block/raw/master/chibi",
   "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
   "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-  "https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardDNS.txt"
+  "https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardDNS.txt",
+  "https://raw.githubusercontent.com/Turtlecute33/adblocktest/refs/heads/master/src/d3host.txt"
 ];
 
 /* =========================================================
