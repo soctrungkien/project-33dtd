@@ -1,5 +1,4 @@
 const BOT_TOKEN = process.env.BOT_TOKEN_BLOCKLIST;
-
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 /* =========================================================
@@ -196,9 +195,8 @@ function getFileDate() {
   const hour = get("hour");
   const minute = get("minute");
   const second = get("second");
-  const milliseconds = String(now.getMilliseconds()).padStart(3, "0");
 
-  return [day, month, year, hour, minute, second, milliseconds].join("-");
+  return [day, month, year, hour, minute, second].join("-");
 }
 
 /* =========================================================
@@ -238,6 +236,96 @@ async function fetchSource(url) {
 }
 
 /* =========================================================
+   BLOCKLIST CLEANER & PARSER (ADAWAY STYLE)
+========================================================= */
+
+function isValidDomain(domain) {
+  if (!domain) return false;
+  domain = domain.replace(/\.+$/, "").trim();
+  if (
+    domain === "localhost" ||
+    domain === "localhost.localdomain" ||
+    domain === "broadcasthost" ||
+    domain === "local" ||
+    domain === "127.0.0.1" ||
+    domain === "::1"
+  ) {
+    return false;
+  }
+  // Kiểm tra tên miền hợp lệ cơ bản
+  const domainRegex = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+  return domainRegex.test(domain);
+}
+
+function extractDomainFromLine(line) {
+  line = line.trim();
+
+  // Bỏ qua dòng trống, comment (#, !), rule ẩn phần tử HTML (##)
+  if (
+    !line ||
+    line.startsWith("#") ||
+    line.startsWith("!") ||
+    line.startsWith("[") ||
+    line.includes("##") ||
+    line.includes("#@#")
+  ) {
+    return null;
+  }
+
+  // Cắt bỏ phần comment inline phía sau dòng nếu có
+  const hashIdx = line.indexOf("#");
+  if (hashIdx !== -1) line = line.slice(0, hashIdx).trim();
+  const exclIdx = line.indexOf("!");
+  if (exclIdx !== -1) line = line.slice(0, exclIdx).trim();
+
+  if (!line) return null;
+
+  // 1. Dạng AdBlock Plus / uBlock: ||example.com^
+  if (line.startsWith("||")) {
+    let domain = line.slice(2);
+    const endIdx = domain.search(/[\^\/\$\:]/);
+    if (endIdx !== -1) {
+      domain = domain.slice(0, endIdx);
+    }
+    return isValidDomain(domain) ? domain.toLowerCase() : null;
+  }
+
+  // 2. Dạng Hosts File: 127.0.0.1 domain.com hoặc 0.0.0.0 domain.com
+  const parts = line.split(/\s+/);
+  if (parts.length >= 2) {
+    const ip = parts[0];
+    const domain = parts[1];
+    if ((ip === "127.0.0.1" || ip === "0.0.0.0" || ip === "::1") && isValidDomain(domain)) {
+      return domain.toLowerCase();
+    }
+  }
+
+  // 3. Dạng Domain thuần: example.com
+  if (parts.length === 1 && isValidDomain(parts[0])) {
+    return parts[0].toLowerCase();
+  }
+
+  return null;
+}
+
+function processAndCleanSources(rawContents) {
+  const uniqueDomains = new Set();
+
+  for (const content of rawContents) {
+    if (!content) continue;
+    const lines = content.split(/\r?\n/);
+    for (const line of lines) {
+      const domain = extractDomainFromLine(line);
+      if (domain) {
+        uniqueDomains.add(domain);
+      }
+    }
+  }
+
+  return uniqueDomains;
+}
+
+/* =========================================================
    CREATE BLOCKLIST
 ========================================================= */
 
@@ -245,34 +333,57 @@ async function createBlocklist(chatId, msgId) {
   const createdAt = getVietnamDate();
   const fileDate = getFileDate();
 
-  let mergedContent = "";
-  let successCount = 0;
-  let failCount = 0;
-
   console.log(`🚀 [DOWNLOAD] ${SOURCES.length} nguồn`);
   const results = await Promise.all(SOURCES.map(url => fetchSource(url)));
 
+  let successCount = 0;
+  let failCount = 0;
+  const rawContents = [];
+
   for (const item of results) {
     if (item.success && item.content) {
-      mergedContent += `\n# --- Source: ${item.url} ---\n${item.content}\n`;
+      rawContents.push(item.content);
       successCount++;
     } else {
       failCount++;
     }
   }
 
-  console.log(`📊 [RESULT] ${successCount}/${SOURCES.length} OK | ${failCount} lỗi`);
+  console.log(`📊 [DOWNLOAD RESULT] ${successCount}/${SOURCES.length} OK | ${failCount} lỗi`);
 
   if (msgId) {
     await editMessage(
       chatId,
       msgId,
-      `📦 <b>Đã tải xong!</b>\n📤 <b>Đang gửi file...</b>`
+      `🔄 <b>Đang lọc bỏ trùng lặp và làm sạch Hosts...</b>`
+    );
+  }
+
+  // Xử lý làm sạch và lọc trùng bằng Set
+  const uniqueDomains = processAndCleanSources(rawContents);
+  const totalDomains = uniqueDomains.size;
+
+  console.log(`✨ [CLEAN RESULT] Thu được ${totalDomains} domain duy nhất.`);
+
+  // Tạo nội dung file Hosts chuẩn AdAway
+  let mergedContent = `# Custom Cleaned Blocklist\n`;
+  mergedContent += `# Created: ${createdAt}\n`;
+  mergedContent += `# Total Unique Domains: ${totalDomains.toLocaleString("vi-VN")}\n\n`;
+
+  for (const domain of uniqueDomains) {
+    mergedContent += `0.0.0.0 ${domain}\n`;
+  }
+
+  if (msgId) {
+    await editMessage(
+      chatId,
+      msgId,
+      `📦 <b>Đã xử lý xong ${totalDomains.toLocaleString("vi-VN")} domain!</b>\n📤 <b>Đang gửi file...</b>`
     );
   }
 
   const fileName = `blocklist-${fileDate}.txt`;
-  const caption = `✅ <b>Hoàn tất tạo Blocklist!</b>\n\n⏰ <b>Thời gian:</b>\n<code>${createdAt}</code>\n📄 <b>File:</b>\n<code>${fileName}</code>`;
+  const caption = `✅ <b>Hoàn tất tạo Blocklist!</b>\n\n⏰ <b>Thời gian:</b>\n<code>${createdAt}</code>\n🎯 <b>Tổng Domain sạch:</b> <code>${totalDomains.toLocaleString("vi-VN")}</code>\n📄 <b>File:</b>\n<code>${fileName}</code>`;
 
   const telegramResult = await sendDocument(
     chatId,
@@ -308,7 +419,6 @@ module.exports = async function handler(req, res) {
   const chatId = update.message.chat.id;
   const text = (update.message.text || "").trim();
 
-  // Đã sửa: Thêm ngoặc đơn () và dấu ? để phần @username là TÙY CHỌN
   const botUsername = await getBotUsername();
   const usernamePattern = botUsername ? `(@${botUsername})?` : "(@\\w+)?";
 
@@ -328,7 +438,7 @@ module.exports = async function handler(req, res) {
 
     const statusMsg = await sendMessage(
       chatId,
-      `🔄 <b>Đang tạo Blocklist...</b>\n⏳ Vui lòng chờ.`
+      `🔄 <b>Đang tải các danh sách blocklist...</b>\n⏳ Vui lòng chờ.`
     );
 
     const msgId = statusMsg.result?.message_id;
