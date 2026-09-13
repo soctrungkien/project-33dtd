@@ -5,6 +5,29 @@ const TELEGRAM_API =
 
 
 /* =========================================================
+   AUTO GET BOT USERNAME
+========================================================= */
+
+let cachedBotUsername = null;
+
+async function getBotUsername() {
+  if (cachedBotUsername) return cachedBotUsername;
+
+  try {
+    const res = await fetch(`${TELEGRAM_API}/getMe`);
+    const data = await res.json();
+    if (data.ok && data.result?.username) {
+      cachedBotUsername = data.result.username;
+      return cachedBotUsername;
+    }
+  } catch (err) {
+    console.error("❌ Lỗi lấy bot username:", err.message);
+  }
+  return null;
+}
+
+
+/* =========================================================
    BLOCKLIST SOURCES
 ========================================================= */
 
@@ -122,16 +145,13 @@ const SOURCES = [
 
 async function sendMessage(chatId, text) {
   try {
-
     const response = await fetch(
       `${TELEGRAM_API}/sendMessage`,
       {
         method: "POST",
-
         headers: {
           "Content-Type": "application/json"
         },
-
         body: JSON.stringify({
           chat_id: chatId,
           text,
@@ -142,9 +162,7 @@ async function sendMessage(chatId, text) {
     );
 
     return await response.json();
-
   } catch (err) {
-
     console.error(
       "❌ Telegram sendMessage:",
       err.message
@@ -164,16 +182,13 @@ async function editMessage(
   text
 ) {
   try {
-
     const response = await fetch(
       `${TELEGRAM_API}/editMessageText`,
       {
         method: "POST",
-
         headers: {
           "Content-Type": "application/json"
         },
-
         body: JSON.stringify({
           chat_id: chatId,
           message_id: messageId,
@@ -185,9 +200,7 @@ async function editMessage(
     );
 
     return await response.json();
-
   } catch (err) {
-
     console.error(
       "❌ Telegram editMessage:",
       err.message
@@ -208,7 +221,6 @@ async function sendDocument(
   caption
 ) {
   try {
-
     const formData = new FormData();
 
     formData.append(
@@ -218,14 +230,12 @@ async function sendDocument(
 
     formData.append(
       "document",
-
       new Blob(
         [contentText],
         {
           type: "text/plain; charset=utf-8"
         }
       ),
-
       fileName
     );
 
@@ -239,7 +249,6 @@ async function sendDocument(
       "HTML"
     );
 
-
     const response = await fetch(
       `${TELEGRAM_API}/sendDocument`,
       {
@@ -248,24 +257,18 @@ async function sendDocument(
       }
     );
 
-
-    const text =
-      await response.text();
-
+    const text = await response.text();
 
     try {
       return JSON.parse(text);
     } catch {
-
       return {
         ok: false,
         description:
           `Telegram trả về dữ liệu không hợp lệ: ${text.slice(0, 300)}`
       };
     }
-
   } catch (err) {
-
     console.error(
       "❌ Telegram sendDocument:",
       err.message
@@ -283,42 +286,24 @@ async function sendDocument(
    VIETNAM TIME
 ========================================================= */
 
-/*
-  Hiển thị:
-  13/09/2026, 19:30:45
-*/
-
 function getVietnamDate() {
-
   return new Intl.DateTimeFormat(
     "vi-VN",
     {
       timeZone: "Asia/Ho_Chi_Minh",
-
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
-
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-
       hourCycle: "h23"
     }
   ).format(new Date());
 }
 
 
-/*
-  Tên file:
-
-  blocklist-13-09-2026-19-30-45-427.txt
-
-  DD-MM-YYYY-HH-mm-ss-SSS
-*/
-
 function getFileDate() {
-
   const now = new Date();
 
   const parts =
@@ -326,55 +311,32 @@ function getFileDate() {
       "en-GB",
       {
         timeZone: "Asia/Ho_Chi_Minh",
-
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
-
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
-
         hourCycle: "h23"
       }
     ).formatToParts(now);
-
 
   const get = type =>
     parts.find(
       item => item.type === type
     )?.value;
 
-
-  const day =
-    get("day");
-
-  const month =
-    get("month");
-
-  const year =
-    get("year");
-
-  const hour =
-    get("hour");
-
-  const minute =
-    get("minute");
-
-  const second =
-    get("second");
-
-
-  /*
-    getMilliseconds() là milliseconds
-    của cùng thời điểm Date.now().
-  */
+  const day = get("day");
+  const month = get("month");
+  const year = get("year");
+  const hour = get("hour");
+  const minute = get("minute");
+  const second = get("second");
 
   const milliseconds =
     String(
       now.getMilliseconds()
     ).padStart(3, "0");
-
 
   return [
     day,
@@ -393,43 +355,30 @@ function getFileDate() {
 ========================================================= */
 
 async function fetchSource(url) {
-
   try {
+    const controller = new AbortController();
 
-    const controller =
-      new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      7000
+    );
 
-
-    const timeoutId =
-      setTimeout(
-        () => controller.abort(),
-        7000
-      );
-
-
-    const response =
-      await fetch(
-        url,
-        {
-          signal: controller.signal,
-
-          headers: {
-            "User-Agent":
-              "BlocklistBot/1.0"
-          }
+    const response = await fetch(
+      url,
+      {
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "BlocklistBot/1.0"
         }
-      );
-
+      }
+    );
 
     clearTimeout(timeoutId);
 
-
     if (!response.ok) {
-
       console.warn(
         `⚠️ [HTTP ${response.status}] ${url}`
       );
-
       return {
         url,
         content: null,
@@ -437,49 +386,37 @@ async function fetchSource(url) {
       };
     }
 
-
-    const content =
-      await response.text();
-
+    const content = await response.text();
 
     if (!content.trim()) {
-
       console.warn(
         `⚠️ [EMPTY] ${url}`
       );
-
       return {
         url,
         content: null,
         success: false
       };
     }
-
 
     console.log(
       `✅ [TẢI OK] ${content.length} bytes - ${url}`
     );
-
 
     return {
       url,
       content,
       success: true
     };
-
-
   } catch (err) {
-
     const reason =
       err.name === "AbortError"
         ? "Timeout 7s"
         : err.message;
 
-
     console.error(
       `❌ [BỎ QUA] ${url} | ${reason}`
     );
-
 
     return {
       url,
@@ -498,94 +435,49 @@ async function createBlocklist(
   chatId,
   msgId
 ) {
+  const createdAt = getVietnamDate();
+  const fileDate = getFileDate();
 
-  const createdAt =
-    getVietnamDate();
-
-
-  const fileDate =
-    getFileDate();
-
-  let mergedContent =
-``;
-
-
+  let mergedContent = "";
   let successCount = 0;
   let failCount = 0;
-
-
-  /* =======================================================
-     DOWNLOAD SONG SONG
-  ======================================================= */
 
   console.log(
     `🚀 [DOWNLOAD] ${SOURCES.length} nguồn`
   );
 
-
-  const results =
-    await Promise.all(
-      SOURCES.map(
-        url => fetchSource(url)
-      )
-    );
-
-
-  /* =======================================================
-     MERGE
-  ======================================================= */
+  const results = await Promise.all(
+    SOURCES.map(
+      url => fetchSource(url)
+    )
+  );
 
   for (const item of results) {
-
     if (
       item.success &&
       item.content
     ) {
-
       mergedContent +=
 `\n# --- Source: ${item.url} ---\n${item.content}\n`;
-
       successCount++;
-
     } else {
-
       failCount++;
     }
   }
-
 
   console.log(
     `📊 [RESULT] ${successCount}/${SOURCES.length} OK | ${failCount} lỗi`
   );
 
-
-  /* =======================================================
-     UPDATE STATUS
-  ======================================================= */
-
   if (msgId) {
-
     await editMessage(
       chatId,
       msgId,
-
-      `📦 <b>Đã tải xong!</b>
-📤 <b>Đang gửi file...</b>`
+      `📦 <b>Đã tải xong!</b>\n📤 <b>Đang gửi file...</b>`
     );
   }
 
-
-  /* =======================================================
-     FILE NAME
-  ======================================================= */
-
-  const fileName =
-    `blocklist-${fileDate}.txt`;
-
-
-  /* =======================================================
-     CAPTION
-  ======================================================= */
+  const fileName = `blocklist-${fileDate}.txt`;
 
   const caption =
 `✅ <b>Hoàn tất tạo Blocklist!</b>
@@ -595,27 +487,18 @@ async function createBlocklist(
 📄 <b>File:</b>
 <code>${fileName}</code>`;
 
-
-  /* =======================================================
-     SEND FILE
-  ======================================================= */
-
-  const telegramResult =
-    await sendDocument(
-      chatId,
-      mergedContent,
-      fileName,
-      caption
-    );
-
+  const telegramResult = await sendDocument(
+    chatId,
+    mergedContent,
+    fileName,
+    caption
+  );
 
   if (!telegramResult.ok) {
-
     console.error(
       "❌ [TELEGRAM]",
       telegramResult
     );
-
 
     throw new Error(
       telegramResult.description ||
@@ -623,21 +506,13 @@ async function createBlocklist(
     );
   }
 
-
-  /* =======================================================
-     SUCCESS
-  ======================================================= */
-
   if (msgId) {
-
     await editMessage(
       chatId,
       msgId,
-
       `🎉 <b>Thành công!</b>`
     );
   }
-
 
   console.log(
     `🎉 [CREATE OK] ${fileName}`
@@ -653,14 +528,7 @@ export default async function handler(
   req,
   res
 ) {
-
-  /*
-    GET:
-    kiểm tra bot còn hoạt động.
-  */
-
   if (req.method !== "POST") {
-
     return res
       .status(200)
       .send(
@@ -668,52 +536,39 @@ export default async function handler(
       );
   }
 
-
-  const update =
-    req.body;
-
-
-  /*
-    Không có message.
-  */
+  const update = req.body;
 
   if (
     !update ||
     !update.message
   ) {
-
     return res
       .status(200)
       .send("OK");
   }
 
+  const chatId = update.message.chat.id;
+  const text = (update.message.text || "").trim();
 
-  const chatId =
-    update.message.chat.id;
+  // Tự động lấy Username Bot qua API Telegram
+  const botUsername = await getBotUsername();
+  const usernamePattern = botUsername ? `@${botUsername}` : "(@\\w+)?";
 
-
-  const text =
-    update.message.text || "";
-
+  const isStartCmd = new RegExp(`^\\/start${usernamePattern}(\\s+|$)`, "i").test(text);
+  const isCreateCmd = new RegExp(`^\\/create${usernamePattern}(\\s+|$)`, "i").test(text);
 
   /* =======================================================
      /start
   ======================================================= */
 
-  if (
-    text === "/start" ||
-    text.startsWith("/start ")
-  ) {
-
+  if (isStartCmd) {
     await sendMessage(
       chatId,
-
 `👋 <b>Xin chào!</b>
 Bot dùng để tạo blocklist.
 📦 <b>Tạo blocklist:</b>
 /create`
     );
-
 
     return res
       .status(200)
@@ -725,59 +580,37 @@ Bot dùng để tạo blocklist.
      /create
   ======================================================= */
 
-  if (
-    text === "/create" ||
-    text.startsWith("/create ")
-  ) {
-
+  if (isCreateCmd) {
     console.log(
       `\n🚀 [CREATE] Chat ID: ${chatId}`
     );
 
+    const statusMsg = await sendMessage(
+      chatId,
+      `🔄 <b>Đang tạo Blocklist...</b>\n⏳ Vui lòng chờ.`
+    );
 
-    const statusMsg =
-      await sendMessage(
-        chatId,
-
-        `🔄 <b>Đang tạo Blocklist...</b>
-⏳ Vui lòng chờ.`
-      );
-
-
-    const msgId =
-      statusMsg.result?.message_id;
-
+    const msgId = statusMsg.result?.message_id;
 
     try {
-
       await createBlocklist(
         chatId,
         msgId
       );
-
     } catch (err) {
-
       console.error(
         "💥 [CREATE ERROR]",
         err
       );
 
-
       if (msgId) {
-
         await editMessage(
           chatId,
           msgId,
-
-          `❌ <b>Tạo Blocklist thất bại!</b>
-
-<code>${String(
-            err.message
-          ).slice(0, 800)}</code>`
+          `❌ <b>Tạo Blocklist thất bại!</b>\n\n<code>${String(err.message).slice(0, 800)}</code>`
         );
       }
     }
-
 
     return res
       .status(200)
