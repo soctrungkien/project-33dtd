@@ -213,6 +213,35 @@ async function editMessage(
   }
 }
 
+async function deleteMessage(chatId, messageId) {
+  try {
+    const response = await fetch(
+      `${TELEGRAM_API}/deleteMessage`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId
+        })
+      }
+    );
+
+    return await response.json();
+  } catch (err) {
+    console.error(
+      "❌ Telegram deleteMessage:",
+      err.message
+    );
+
+    return {
+      ok: false,
+      description: err.message
+    };
+  }
+}
 
 async function sendDocument(
   chatId,
@@ -507,18 +536,7 @@ async function createBlocklist(
   }
 
   if (msgId) {
-await editMessage(
-  chatId,
-  msgId,
-  `🎉 <b>Thành công!</b>`
-);
-
-await ctx.telegram.deleteMessage(chatId, msgId).catch(() => {});
-  }
-
-  console.log(
-    `🎉 [CREATE OK] ${fileName}`
-  );
+      await deleteMessage(chatId, msgId);
 }
 
 
