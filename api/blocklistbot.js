@@ -544,7 +544,7 @@ async function createBlocklist(
    WEBHOOK
 ========================================================= */
 
-export default async function handler(
+module.exports = async function handler(
   req,
   res
 ) {
