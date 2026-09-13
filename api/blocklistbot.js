@@ -507,11 +507,13 @@ async function createBlocklist(
   }
 
   if (msgId) {
-    await editMessage(
-      chatId,
-      msgId,
-      `🎉 <b>Thành công!</b>`
-    );
+await editMessage(
+  chatId,
+  msgId,
+  `🎉 <b>Thành công!</b>`
+);
+
+await ctx.telegram.deleteMessage(chatId, msgId).catch(() => {});
   }
 
   console.log(
