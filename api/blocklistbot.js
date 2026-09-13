@@ -30,13 +30,9 @@ async function getBotUsername() {
 const SOURCES = [
   "https://adaway.org/hosts.txt",
   "https://gitlab.com/andryou/block/raw/master/chibi",
-  "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&mimetype=plaintext",
   "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
   "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-  "https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardDNS.txt",
-  "https://secure.fanboy.co.nz/fanboy-annoyance_ubo.txt",
-  "https://www.fanboy.co.nz/fanboy-antifacebook.txt",
-  "https://www.fanboy.co.nz/fanboy-cookiemonster.txt"
+  "https://raw.githubusercontent.com/r-a-y/mobile-hosts/master/AdguardDNS.txt"
 ];
 
 /* =========================================================
