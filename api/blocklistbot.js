@@ -570,7 +570,7 @@ async function createBlocklist(
       msgId,
 
       `📦 <b>Đã tải xong!</b>
-  📤 <b>Đang gửi file...</b>`
+📤 <b>Đang gửi file...</b>`
     );
   }
 
