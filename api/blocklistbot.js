@@ -362,9 +362,9 @@ async function createBlocklist(chatId, msgId) {
   console.log(`✨ [CLEAN RESULT] Thu được ${totalDomains} domain duy nhất.`);
 
   // Tạo nội dung file Hosts chuẩn AdAway
-  let mergedContent = `# Custom Cleaned Blocklist\n`;
+  let mergedContent = `# Hihi (realknoname)\n`;
   mergedContent += `# Created: ${createdAt}\n`;
-  mergedContent += `# Total Unique Domains: ${totalDomains.toLocaleString("vi-VN")}\n\n`;
+  mergedContent += `# Total Domains: ${totalDomains.toLocaleString("vi-VN")}\n\n`;
 
   for (const domain of uniqueDomains) {
     mergedContent += `0.0.0.0 ${domain}\n`;
