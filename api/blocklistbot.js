@@ -506,18 +506,8 @@ async function createBlocklist(
   const fileDate =
     getFileDate();
 
-
-  /*
-    #hi luôn nằm ở dòng đầu tiên.
-  */
-
   let mergedContent =
-`#hi
-# Combined Blocklist
-# Generated on: ${createdAt} (ICT)
-# Total Sources Configured: ${SOURCES.length}
-
-`;
+``;
 
 
   let successCount = 0;
@@ -580,11 +570,7 @@ async function createBlocklist(
       msgId,
 
       `📦 <b>Đã tải xong!</b>
-
-✅ Thành công: <code>${successCount}</code>
-❌ Thất bại: <code>${failCount}</code>
-
-📤 <b>Đang gửi file...</b>`
+  📤 <b>Đang gửi file...</b>`
     );
   }
 
@@ -606,13 +592,6 @@ async function createBlocklist(
 
 ⏰ <b>Thời gian:</b>
 <code>${createdAt}</code>
-
-📦 <b>Nguồn:</b>
-<code>${successCount}/${SOURCES.length}</code>
-
-❌ <b>Nguồn lỗi:</b>
-<code>${failCount}</code>
-
 📄 <b>File:</b>
 <code>${fileName}</code>`;
 
@@ -655,13 +634,7 @@ async function createBlocklist(
       chatId,
       msgId,
 
-      `🎉 <b>Thành công!</b>
-
-📄 <code>${fileName}</code>
-
-📦 ${successCount}/${SOURCES.length} nguồn đã được tải.
-
-File blocklist đã được gửi bên dưới.`
+      `🎉 <b>Thành công!</b>`
     );
   }
 
@@ -736,15 +709,9 @@ export default async function handler(
       chatId,
 
 `👋 <b>Xin chào!</b>
-
-🤖 <b>Blocklist Bot</b>
-
-Bot dùng để tổng hợp các nguồn blocklist.
-
+Bot dùng để tạo blocklist.
 📦 <b>Tạo blocklist:</b>
-<code>/create</code>
-
-⚡ Các nguồn sẽ được tải song song và gửi trực tiếp dưới dạng file.`
+/create`
     );
 
 
@@ -772,10 +739,7 @@ Bot dùng để tổng hợp các nguồn blocklist.
       await sendMessage(
         chatId,
 
-        `🔄 <b>Bắt đầu tạo Blocklist...</b>
-
-📡 Đang tải song song <code>${SOURCES.length}</code> nguồn...
-
+        `🔄 <b>Đang tạo Blocklist...</b>
 ⏳ Vui lòng chờ.`
       );
 
