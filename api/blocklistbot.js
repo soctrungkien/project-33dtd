@@ -277,14 +277,23 @@ function extractDomainFromLine(line) {
   if (!line) return null;
 
   // 1. Dạng AdBlock Plus / uBlock: ||example.com^
-  if (line.startsWith("||")) {
-    let domain = line.slice(2);
-    const endIdx = domain.search(/[\^\/\$\:]/);
-    if (endIdx !== -1) {
-      domain = domain.slice(0, endIdx);
-    }
-    return isValidDomain(domain) ? domain.toLowerCase() : null;
+if (line.startsWith("||")) {
+  let domain = line.slice(2);
+
+  // Có path => bỏ hoàn toàn
+  if (/[\/]/.test(domain)) {
+    return null;
   }
+
+  const endIdx = domain.search(/[\^\$\:]/);
+  if (endIdx !== -1) {
+    domain = domain.slice(0, endIdx);
+  }
+
+  return isValidDomain(domain)
+    ? domain.toLowerCase()
+    : null;
+}
 
   // 2. Dạng Hosts File: 127.0.0.1 domain.com hoặc 0.0.0.0 domain.com
   const parts = line.split(/\s+/);
