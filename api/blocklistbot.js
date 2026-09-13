@@ -351,7 +351,7 @@ async function createBlocklist(chatId, msgId) {
     await editMessage(
       chatId,
       msgId,
-      `🔄 <b>Đang lọc bỏ trùng lặp và làm sạch Hosts...</b>`
+      `🔄 <b>Đang lọc bỏ và làm sạch...</b>`
     );
   }
 
