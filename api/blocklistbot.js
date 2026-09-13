@@ -289,7 +289,7 @@ async function createBlocklist(chatId, msgId) {
   if (msgId) {
     await deleteMessage(chatId, msgId);
   }
-} // <--- DẤU ĐÓNG NGOẶC CỦA createBlocklist ĐÃ ĐƯỢC BỔ SUNG TẠI ĐÂY
+}
 
 /* =========================================================
    WEBHOOK
@@ -308,8 +308,9 @@ module.exports = async function handler(req, res) {
   const chatId = update.message.chat.id;
   const text = (update.message.text || "").trim();
 
+  // Đã sửa: Thêm ngoặc đơn () và dấu ? để phần @username là TÙY CHỌN
   const botUsername = await getBotUsername();
-  const usernamePattern = botUsername ? `@${botUsername}` : "(@\\w+)?";
+  const usernamePattern = botUsername ? `(@${botUsername})?` : "(@\\w+)?";
 
   const isStartCmd = new RegExp(`^\\/start${usernamePattern}(\\s+|$)`, "i").test(text);
   const isCreateCmd = new RegExp(`^\\/create${usernamePattern}(\\s+|$)`, "i").test(text);
