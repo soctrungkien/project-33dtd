@@ -6,6 +6,7 @@
     "axios": "^1.6.0",
     "pem": "^1.14.8",
     "asn1.js": "^5.4.1",
+    "@google/generative-ai": "^0.21.0",
     "@peculiar/x509": "^1.9.0"
   }
 }
