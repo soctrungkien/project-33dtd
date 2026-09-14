@@ -100,13 +100,14 @@ async function clearChatMemory(chatId) {
   }
 }
 
-async function sendMessage(chatId, text, messageId = null) {
+// Cập nhật hàm sendMessage nhận tham số parseMode
+async function sendMessage(chatId, text, messageId = null, parseMode = "HTML") {
   return new Promise((resolve, reject) => {
     const method = messageId ? "editMessageText" : "sendMessage";
     const payload = {
       chat_id: chatId,
       text: text,
-      parse_mode: "HTML",
+      parse_mode: parseMode,
     };
     if (messageId) payload.message_id = messageId;
 
@@ -160,108 +161,52 @@ async function streamGeminiResponse(chatId, userMessage) {
     });
 
     const formattedHistory = buildConversationHistory(historyMessages);
-    const chat = model.startChat({
-      history: formattedHistory,
-    });
+    const chat = model.startChat({ history: formattedHistory });
 
-    let messageId = await sendMessage(chatId, "Thinking...");
+    // Tin nhắn tạm thời dùng HTML
+    let messageId = await sendMessage(chatId, "Thinking...", null, "HTML");
     let fullResponse = "";
-    let lastSentText = "Thinking...";
     let updateCounter = 0;
 
     const result = await chat.sendMessageStream(userMessage);
 
     for await (const chunk of result.stream) {
       const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) {
+        fullResponse += text;
 
-      if (!text) continue;
-
-      fullResponse += text;
-
-      // Chỉ update mỗi 3 chunk
-      if (updateCounter++ % 3 === 0) {
-        const newText = fullResponse || "Thinking...";
-
-        // QUAN TRỌNG:
-        // Không gửi nếu nội dung không thay đổi
-        if (newText === lastSentText) {
-          continue;
-        }
-
-        try {
-          const editedMessageId = await sendMessage(
-            chatId,
-            newText,
-            messageId
-          );
-
-          if (editedMessageId) {
-            messageId = editedMessageId;
+        if (updateCounter++ % 3 === 0) {
+          try {
+            // Cập nhật câu trả lời từ AI theo định dạng Markdown
+            messageId = await sendMessage(
+              chatId,
+              fullResponse || "Thinking...",
+              messageId,
+              "Markdown"
+            );
+          } catch (e) {
+            console.error("Lỗi cập nhật stream:", e.message);
           }
-
-          lastSentText = newText;
-        } catch (e) {
-          // Telegram báo message không đổi thì bỏ qua
-          if (
-            e.message?.includes("message is not modified")
-          ) {
-            continue;
-          }
-
-          console.error("Lỗi cập nhật stream:", e.message);
         }
       }
     }
 
-    // Gửi/edit phần cuối cùng nếu khác nội dung hiện tại
-    if (fullResponse && fullResponse !== lastSentText) {
-      try {
-        const editedMessageId = await sendMessage(
-          chatId,
-          fullResponse,
-          messageId
-        );
-
-        if (editedMessageId) {
-          messageId = editedMessageId;
-        }
-
-        lastSentText = fullResponse;
-      } catch (e) {
-        if (!e.message?.includes("message is not modified")) {
-          console.error("Lỗi hoàn tất response:", e.message);
-        }
-      }
-    }
-
-    // Lưu memory
     if (fullResponse) {
-      historyMessages.push({
-        role: "user",
-        content: userMessage,
-      });
+      // Gửi tin nhắn hoàn thiện cuối cùng bằng Markdown
+      await sendMessage(chatId, fullResponse, messageId, "Markdown");
 
-      historyMessages.push({
-        role: "model",
-        content: fullResponse,
-      });
-
+      historyMessages.push({ role: "user", content: userMessage });
+      historyMessages.push({ role: "model", content: fullResponse });
       await saveChatMemory(chatId, historyMessages);
     }
   } catch (error) {
     console.error("Lỗi xử lý Gemini:", error);
-
-    try {
-      await sendMessage(
-        chatId,
-        `❌ <b>Đã xảy ra lỗi.</b> Không thể tạo câu trả lời.`
-      );
-    } catch (telegramError) {
-      console.error(
-        "Lỗi gửi thông báo Telegram:",
-        telegramError.message
-      );
-    }
+    await sendMessage(
+      chatId,
+      `❌ <b>Đã xảy ra lỗi.</b> Không thể tạo câu trả lời.`,
+      null,
+      "HTML"
+    );
   }
 }
 
@@ -275,22 +220,24 @@ async function handleUpdate(update) {
   // Tự động fetch Username bot
   const botUsername = await getBotUsername();
 
-  // Kiểm tra lệnh /start
+  // Kiểm tra lệnh /start (Giữ HTML)
   if (isCommand(text, "/start", botUsername)) {
     await sendMessage(
       chatId,
       "👋 <b>Xin chào!</b>\n\nTôi là trợ lý AI thông minh.\n\n" +
       "💬 <b>Hướng dẫn:</b>\n" +
       "- Nhắn tin trực tiếp hoặc nhắn trong nhóm để trò chuyện.\n" +
-      "- /clearmy : Xóa bộ nhớ cuộc trò chuyện hiện tại."
+      "- /clearmy : Xóa bộ nhớ cuộc trò chuyện hiện tại.",
+      null,
+      "HTML"
     );
     return;
   }
 
-  // Kiểm tra lệnh /clearmy
+  // Kiểm tra lệnh /clearmy (Giữ HTML)
   if (isCommand(text, "/clearmy", botUsername)) {
     await clearChatMemory(chatId);
-    await sendMessage(chatId, "✅ <b>Đã xóa lịch sử trò chuyện của đoạn chat này!</b>");
+    await sendMessage(chatId, "✅ <b>Đã xóa lịch sử trò chuyện của đoạn chat này!</b>", null, "HTML");
     return;
   }
 
