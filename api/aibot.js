@@ -155,7 +155,7 @@ async function streamGeminiResponse(chatId, userMessage) {
     const historyMessages = await getChatMemory(chatId);
 
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash-lite",
+      model: "gemini-3.5-flash-lite",
       systemInstruction: CUSTOM_PERSONALITY,
     });
 
