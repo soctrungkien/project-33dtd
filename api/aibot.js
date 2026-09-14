@@ -160,46 +160,108 @@ async function streamGeminiResponse(chatId, userMessage) {
     });
 
     const formattedHistory = buildConversationHistory(historyMessages);
-    const chat = model.startChat({ history: formattedHistory });
+    const chat = model.startChat({
+      history: formattedHistory,
+    });
 
     let messageId = await sendMessage(chatId, "Thinking...");
     let fullResponse = "";
+    let lastSentText = "Thinking...";
     let updateCounter = 0;
 
     const result = await chat.sendMessageStream(userMessage);
 
     for await (const chunk of result.stream) {
       const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) {
-        fullResponse += text;
 
-        if (updateCounter++ % 3 === 0) {
-          try {
-            messageId = await sendMessage(
-              chatId,
-              fullResponse ||  "Thinking...",
-              messageId
-            );
-          } catch (e) {
-            console.error("Lỗi cập nhật stream:", e.message);
+      if (!text) continue;
+
+      fullResponse += text;
+
+      // Chỉ update mỗi 3 chunk
+      if (updateCounter++ % 3 === 0) {
+        const newText = fullResponse || "Thinking...";
+
+        // QUAN TRỌNG:
+        // Không gửi nếu nội dung không thay đổi
+        if (newText === lastSentText) {
+          continue;
+        }
+
+        try {
+          const editedMessageId = await sendMessage(
+            chatId,
+            newText,
+            messageId
+          );
+
+          if (editedMessageId) {
+            messageId = editedMessageId;
           }
+
+          lastSentText = newText;
+        } catch (e) {
+          // Telegram báo message không đổi thì bỏ qua
+          if (
+            e.message?.includes("message is not modified")
+          ) {
+            continue;
+          }
+
+          console.error("Lỗi cập nhật stream:", e.message);
         }
       }
     }
 
-    if (fullResponse) {
-      await sendMessage(chatId, fullResponse, messageId);
+    // Gửi/edit phần cuối cùng nếu khác nội dung hiện tại
+    if (fullResponse && fullResponse !== lastSentText) {
+      try {
+        const editedMessageId = await sendMessage(
+          chatId,
+          fullResponse,
+          messageId
+        );
 
-      historyMessages.push({ role: "user", content: userMessage });
-      historyMessages.push({ role: "model", content: fullResponse });
+        if (editedMessageId) {
+          messageId = editedMessageId;
+        }
+
+        lastSentText = fullResponse;
+      } catch (e) {
+        if (!e.message?.includes("message is not modified")) {
+          console.error("Lỗi hoàn tất response:", e.message);
+        }
+      }
+    }
+
+    // Lưu memory
+    if (fullResponse) {
+      historyMessages.push({
+        role: "user",
+        content: userMessage,
+      });
+
+      historyMessages.push({
+        role: "model",
+        content: fullResponse,
+      });
+
       await saveChatMemory(chatId, historyMessages);
     }
   } catch (error) {
     console.error("Lỗi xử lý Gemini:", error);
-    await sendMessage(
-      chatId,
-      `❌ <b>Đã xảy ra lỗi.</b> Không thể tạo câu trả lời.`
-    );
+
+    try {
+      await sendMessage(
+        chatId,
+        `❌ <b>Đã xảy ra lỗi.</b> Không thể tạo câu trả lời.`
+      );
+    } catch (telegramError) {
+      console.error(
+        "Lỗi gửi thông báo Telegram:",
+        telegramError.message
+      );
+    }
   }
 }
 
