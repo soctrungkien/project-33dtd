@@ -53,10 +53,10 @@ function isCommand(text, commandName, botUsername) {
   return false;
 }
 
-// Bổ sung Action hiển thị trạng thái "Đang nhập..." trên thanh tiêu đề Telegram
-async function sendTypingAction(chatId) {
+// Hiển thị trạng thái "typing..." trực tiếp trên thanh tiêu đề của Telegram
+async function sendChatAction(chatId, action = "typing") {
   return new Promise((resolve) => {
-    const data = JSON.stringify({ chat_id: chatId, action: "typing" });
+    const data = JSON.stringify({ chat_id: chatId, action });
     const req = https.request(
       `${TELEGRAM_API_URL}/sendChatAction`,
       {
@@ -121,7 +121,7 @@ async function clearChatMemory(chatId) {
   }
 }
 
-async function sendMessageRaw(chatId, text, messageId = null, parseMode = null) {
+async function sendMessageRaw(chatId, text, messageId = null, parseMode = "Markdown") {
   return new Promise((resolve, reject) => {
     const method = messageId ? "editMessageText" : "sendMessage";
     const payload = {
@@ -148,7 +148,7 @@ async function sendMessageRaw(chatId, text, messageId = null, parseMode = null) 
           try {
             const response = JSON.parse(body);
             if (response.ok) {
-              resolve(response.result?.message_id);
+              resolve(response.result?.message_id || messageId);
             } else {
               reject(new Error(`Lỗi Telegram: ${response.description}`));
             }
@@ -164,13 +164,12 @@ async function sendMessageRaw(chatId, text, messageId = null, parseMode = null) 
   });
 }
 
-// Bổ sung cơ chế tự động Fallback Plain Text nếu parse Markdown thất bại
-async function sendMessage(chatId, text, messageId = null, parseMode = "HTML") {
+// Tự động xử lý Markdown full tin nhắn và fallback về Plain Text nếu stream chưa đóng thẻ MD
+async function sendOrUpdateMessage(chatId, text, messageId = null, parseMode = "Markdown") {
   try {
     return await sendMessageRaw(chatId, text, messageId, parseMode);
   } catch (error) {
     if (parseMode && error.message.includes("can't parse entities")) {
-      // Gửi lại dưới dạng Plain Text không parse_mode để tránh crash stream
       return await sendMessageRaw(chatId, text, messageId, null);
     }
     throw error;
@@ -186,8 +185,8 @@ function buildConversationHistory(messages) {
 
 async function streamGeminiResponse(chatId, userMessage) {
   try {
-    // Kích hoạt icon "typing..." chuẩn của Telegram
-    sendTypingAction(chatId).catch(() => {});
+    // Chỉ kích hoạt Status "typing..." trên thanh tiêu đề Telegram (không gửi tin nhắn phụ)
+    sendChatAction(chatId, "typing").catch(() => {});
 
     const historyMessages = await getChatMemory(chatId);
 
@@ -199,10 +198,10 @@ async function streamGeminiResponse(chatId, userMessage) {
     const formattedHistory = buildConversationHistory(historyMessages);
     const chat = model.startChat({ history: formattedHistory });
 
-    // Thay thế "Thinking..." thành "Đang nhập..."
-    let messageId = await sendMessage(chatId, "<i>Đang nhập...</i>", null, "HTML");
+    let messageId = null;
     let fullResponse = "";
-    let updateCounter = 0;
+    let lastUpdateTime = Date.now();
+    const STREAM_INTERVAL_MS = 1200; // Throttle 1.2s tránh lỗi 429 Too Many Requests từ Telegram
 
     const result = await chat.sendMessageStream(userMessage);
 
@@ -210,24 +209,26 @@ async function streamGeminiResponse(chatId, userMessage) {
       const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
       if (text) {
         fullResponse += text;
+        const now = Date.now();
 
-        if (updateCounter++ % 3 === 0) {
-          try {
-            messageId = await sendMessage(
-              chatId,
-              fullResponse,
-              messageId,
-              "Markdown"
-            );
-          } catch (e) {
-            console.error("Lỗi cập nhật stream:", e.message);
-          }
+        // Tạo tin nhắn đầu tiên ngay khi có chữ, hoặc edit định kỳ theo thời gian
+        if (!messageId && fullResponse.trim().length > 0) {
+          messageId = await sendOrUpdateMessage(chatId, fullResponse, null, "Markdown");
+          lastUpdateTime = now;
+        } else if (messageId && now - lastUpdateTime >= STREAM_INTERVAL_MS) {
+          await sendOrUpdateMessage(chatId, fullResponse, messageId, "Markdown");
+          lastUpdateTime = now;
         }
       }
     }
 
+    // Cập nhật chốt bản hoàn chỉnh cuối cùng với full Markdown
     if (fullResponse) {
-      await sendMessage(chatId, fullResponse, messageId, "Markdown");
+      if (messageId) {
+        await sendOrUpdateMessage(chatId, fullResponse, messageId, "Markdown");
+      } else {
+        await sendOrUpdateMessage(chatId, fullResponse, null, "Markdown");
+      }
 
       historyMessages.push({ role: "user", content: userMessage });
       historyMessages.push({ role: "model", content: fullResponse });
@@ -235,11 +236,11 @@ async function streamGeminiResponse(chatId, userMessage) {
     }
   } catch (error) {
     console.error("Lỗi xử lý Gemini:", error);
-    await sendMessage(
+    await sendOrUpdateMessage(
       chatId,
-      `❌ <b>Đã xảy ra lỗi.</b> Không thể tạo câu trả lời.`,
+      `❌ *Đã xảy ra lỗi.* Không thể tạo câu trả lời.`,
       null,
-      "HTML"
+      "Markdown"
     );
   }
 }
@@ -254,21 +255,26 @@ async function handleUpdate(update) {
   const botUsername = await getBotUsername();
 
   if (isCommand(text, "/start", botUsername)) {
-    await sendMessage(
+    await sendOrUpdateMessage(
       chatId,
-      "👋 <b>Xin chào!</b>\n\nTôi là trợ lý AI thông minh.\n\n" +
-      "💬 <b>Hướng dẫn:</b>\n" +
+      "👋 *Xin chào!*\n\nTôi là trợ lý AI thông minh.\n\n" +
+      "💬 *Hướng dẫn:*\n" +
       "- Nhắn tin trực tiếp hoặc nhắn trong nhóm để trò chuyện.\n" +
       "- /clearmy : Xóa bộ nhớ cuộc trò chuyện hiện tại.",
       null,
-      "HTML"
+      "Markdown"
     );
     return;
   }
 
   if (isCommand(text, "/clearmy", botUsername)) {
     await clearChatMemory(chatId);
-    await sendMessage(chatId, "✅ <b>Đã xóa lịch sử trò chuyện của đoạn chat me!</b>", null, "HTML");
+    await sendOrUpdateMessage(
+      chatId, 
+      "✅ *Đã xóa lịch sử trò chuyện của đoạn chat này!*", 
+      null, 
+      "Markdown"
+    );
     return;
   }
 
