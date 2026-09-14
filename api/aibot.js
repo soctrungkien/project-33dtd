@@ -12,15 +12,15 @@ const redis = new Redis(process.env.REDIS_URL, {
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN_AI;
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
-const RAM_TTL_MS = 1 * 60 * 1000;  // 1 phút RAM
-const REDIS_TTL_SEC = 10 * 60;     // 10 phút Redis
+const RAM_TTL_MS = 1 * 60 * 1000;
+const REDIS_TTL_SEC = 10 * 60;
 const MAX_MESSAGES = 20;
 
 const CUSTOM_PERSONALITY = process.env.BOT_PERSONALITY_AI || 
   "Hãy nói setup BOT_PERSONALITY đi";
 
 const ramCache = new Map();
-let cachedBotUsername = null; // Cache username bot trong RAM serverless
+let cachedBotUsername = null;
 
 async function getBotUsername() {
   if (cachedBotUsername) return cachedBotUsername;
@@ -51,6 +51,27 @@ function isCommand(text, commandName, botUsername) {
   if (firstWord === commandName) return true;
   if (botUsername && firstWord === `${commandName}@${botUsername}`) return true;
   return false;
+}
+
+// Bổ sung Action hiển thị trạng thái "Đang nhập..." trên thanh tiêu đề Telegram
+async function sendTypingAction(chatId) {
+  return new Promise((resolve) => {
+    const data = JSON.stringify({ chat_id: chatId, action: "typing" });
+    const req = https.request(
+      `${TELEGRAM_API_URL}/sendChatAction`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(data),
+        },
+      },
+      (res) => resolve()
+    );
+    req.on("error", () => resolve());
+    req.write(data);
+    req.end();
+  });
 }
 
 async function getChatMemory(chatId) {
@@ -100,15 +121,14 @@ async function clearChatMemory(chatId) {
   }
 }
 
-// Cập nhật hàm sendMessage nhận tham số parseMode
-async function sendMessage(chatId, text, messageId = null, parseMode = "HTML") {
+async function sendMessageRaw(chatId, text, messageId = null, parseMode = null) {
   return new Promise((resolve, reject) => {
     const method = messageId ? "editMessageText" : "sendMessage";
     const payload = {
       chat_id: chatId,
       text: text,
-      parse_mode: parseMode,
     };
+    if (parseMode) payload.parse_mode = parseMode;
     if (messageId) payload.message_id = messageId;
 
     const data = JSON.stringify(payload);
@@ -144,6 +164,19 @@ async function sendMessage(chatId, text, messageId = null, parseMode = "HTML") {
   });
 }
 
+// Bổ sung cơ chế tự động Fallback Plain Text nếu parse Markdown thất bại
+async function sendMessage(chatId, text, messageId = null, parseMode = "HTML") {
+  try {
+    return await sendMessageRaw(chatId, text, messageId, parseMode);
+  } catch (error) {
+    if (parseMode && error.message.includes("can't parse entities")) {
+      // Gửi lại dưới dạng Plain Text không parse_mode để tránh crash stream
+      return await sendMessageRaw(chatId, text, messageId, null);
+    }
+    throw error;
+  }
+}
+
 function buildConversationHistory(messages) {
   return messages.map((msg) => ({
     role: msg.role === "user" ? "user" : "model",
@@ -153,6 +186,9 @@ function buildConversationHistory(messages) {
 
 async function streamGeminiResponse(chatId, userMessage) {
   try {
+    // Kích hoạt icon "typing..." chuẩn của Telegram
+    sendTypingAction(chatId).catch(() => {});
+
     const historyMessages = await getChatMemory(chatId);
 
     const model = genAI.getGenerativeModel({
@@ -163,8 +199,8 @@ async function streamGeminiResponse(chatId, userMessage) {
     const formattedHistory = buildConversationHistory(historyMessages);
     const chat = model.startChat({ history: formattedHistory });
 
-    // Tin nhắn tạm thời dùng HTML
-    let messageId = await sendMessage(chatId, "Thinking...", null, "HTML");
+    // Thay thế "Thinking..." thành "Đang nhập..."
+    let messageId = await sendMessage(chatId, "<i>Đang nhập...</i>", null, "HTML");
     let fullResponse = "";
     let updateCounter = 0;
 
@@ -177,10 +213,9 @@ async function streamGeminiResponse(chatId, userMessage) {
 
         if (updateCounter++ % 3 === 0) {
           try {
-            // Cập nhật câu trả lời từ AI theo định dạng Markdown
             messageId = await sendMessage(
               chatId,
-              fullResponse || "Thinking...",
+              fullResponse,
               messageId,
               "Markdown"
             );
@@ -192,7 +227,6 @@ async function streamGeminiResponse(chatId, userMessage) {
     }
 
     if (fullResponse) {
-      // Gửi tin nhắn hoàn thiện cuối cùng bằng Markdown
       await sendMessage(chatId, fullResponse, messageId, "Markdown");
 
       historyMessages.push({ role: "user", content: userMessage });
@@ -217,10 +251,8 @@ async function handleUpdate(update) {
   const chatId = message.chat.id;
   const text = message.text.trim();
 
-  // Tự động fetch Username bot
   const botUsername = await getBotUsername();
 
-  // Kiểm tra lệnh /start (Giữ HTML)
   if (isCommand(text, "/start", botUsername)) {
     await sendMessage(
       chatId,
@@ -234,14 +266,12 @@ async function handleUpdate(update) {
     return;
   }
 
-  // Kiểm tra lệnh /clearmy (Giữ HTML)
   if (isCommand(text, "/clearmy", botUsername)) {
     await clearChatMemory(chatId);
-    await sendMessage(chatId, "✅ <b>Đã xóa lịch sử trò chuyện của đoạn chat này!</b>", null, "HTML");
+    await sendMessage(chatId, "✅ <b>Đã xóa lịch sử trò chuyện của đoạn chat me!</b>", null, "HTML");
     return;
   }
 
-  // Bỏ qua nếu tin nhắn là lệnh tag bot khác (VD: /clearmy@bot_khac)
   const baseCmd = text.split(/\s+/)[0].split("@")[0];
   if (text.startsWith("/") && text.includes("@") && !isCommand(text, baseCmd, botUsername)) {
     return;
