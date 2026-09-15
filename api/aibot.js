@@ -55,7 +55,19 @@ async function getBotInfo() {
   return { id: null, username: "" };
 }
 
-// 1. Lấy thông tin chi tiết của Nhóm/Kênh (Mô tả, Invite Link, Linked Chat ID)
+// Chuyển đổi Markdown tiêu chuẩn Gemini sang Telegram Markdown legacy
+function cleanMarkdownForTelegram(text) {
+  if (!text) return "";
+  return text
+    // Chuyển **bold** thành *bold* (Chuẩn của Telegram Markdown v1)
+    .replace(/\*\*(.*?)\*\*/g, '*$1*')
+    // Chuyển __italic__ thành _italic_
+    .replace(/__(.*?)__/g, '_$1_')
+    // Chuyển tiêu đề ### Title thành *Title*
+    .replace(/^#{1,6}\s+(.*)$/gm, '*$1*');
+}
+
+// 1. Lấy thông tin chi tiết của Nhóm/Kênh
 async function getChatMetadata(chatId) {
   try {
     const res = await fetch(`${TELEGRAM_API_URL}/getChat?chat_id=${chatId}`);
@@ -154,15 +166,12 @@ async function searchDuckDuckGo(query) {
     });
     const html = await res.text();
     
-    // Tìm các đoạn snippet thông tin từ giao diện Lite
     const matches = [...html.matchAll(/class='result-snippet'[^>]*>([\s\S]*?)<\/td>/gi)];
-    
     if (matches.length > 0) {
       const snippets = matches.slice(0, 4).map(m => m[1].replace(/<[^>]+>/g, '').trim()).join("\n- ");
       return `Kết quả tìm kiếm cho "${query}":\n- ${snippets}`;
     }
     
-    // Fallback cho bản HTML thường nếu bản Lite bị lỗi
     const htmlMatches = [...html.matchAll(/<a class="result__snippet[^>]*>(.*?)<\/a>/g)];
     if (htmlMatches.length > 0) {
       const snippets = htmlMatches.slice(0, 4).map(m => m[1].replace(/<[^>]+>/g, '').trim()).join("\n- ");
@@ -178,7 +187,6 @@ async function searchDuckDuckGo(query) {
 // 7. Lấy thời tiết an toàn
 async function getWeather(location) {
   try {
-    // Dùng User-Agent là curl để wttr.in ưu tiên trả về phản hồi không bị chặn
     const res = await fetch(`https://wttr.in/${encodeURIComponent(location)}?format=j1&lang=vi`, {
       headers: { "User-Agent": "curl/7.68.0" }
     });
@@ -190,7 +198,6 @@ async function getWeather(location) {
     const text = await res.text();
     let data;
     try {
-      // Phân tích cú pháp an toàn, tránh bị crash bot nếu server trả về HTML báo lỗi
       data = JSON.parse(text);
     } catch (err) {
       return "Dịch vụ thời tiết đang quá tải hoặc trả về dữ liệu lỗi. Vui lòng thử lại sau.";
@@ -248,25 +255,20 @@ async function getTelegramFileBuffer(fileId) {
   }
 }
 
-// Kiểm tra điều kiện phản hồi trong nhóm (Đã thêm Tỉ lệ Auto & Đọc bài kênh liên kết)
+// Kiểm tra điều kiện phản hồi trong nhóm
 function shouldRespondInGroup(message, text, botUsername) {
   if (message.chat.type === "private") return true;
 
-  // 1. Tự động phản hồi tin nhắn forwarded tự động từ Kênh liên kết
   if (message.is_automatic_forward) return true;
 
   const lowerText = text.toLowerCase();
 
-  // 2. Được Tag
   if (botUsername && lowerText.includes(`@${botUsername}`)) return true;
 
-  // 3. Reply tin nhắn của Bot
   if (message.reply_to_message?.from?.username?.toLowerCase() === botUsername) return true;
 
-  // 4. Có từ khóa "chan"
   if (/\bchan\b/i.test(lowerText)) return true;
 
-  // 5. Tỉ lệ ngẫu nhiên tự động nhắn
   if (Math.random() < AUTO_RESPONSE_CHANCE) return true;
 
   return false;
@@ -378,22 +380,28 @@ async function sendMessageRaw(chatId, text, messageId = null, replyToMessageId =
   });
 }
 
+// Đã tối ưu chuyển đổi Markdown và bắt lỗi tin nhắn reply bị xóa
 async function sendOrUpdateMessage(chatId, text, messageId = null, replyToMessageId = null, parseMode = "Markdown") {
+  let formattedText = text;
+  if (parseMode === "Markdown") {
+    formattedText = cleanMarkdownForTelegram(text);
+  }
+
   try {
-    return await sendMessageRaw(chatId, text, messageId, replyToMessageId, parseMode);
+    return await sendMessageRaw(chatId, formattedText, messageId, replyToMessageId, parseMode);
   } catch (error) {
     const errStr = error.message || "";
-    
+
     // 1. Lỗi parse Markdown -> gửi lại văn bản thô (không dùng parseMode)
     if (parseMode && errStr.includes("can't parse entities")) {
       return await sendMessageRaw(chatId, text, messageId, replyToMessageId, null);
     }
-    
+
     // 2. Lỗi tin nhắn gốc đã bị xóa -> gửi lại tin nhắn mới (không reply nữa)
     if (errStr.includes("message to be replied not found") || errStr.includes("reply message not found")) {
-      return await sendMessageRaw(chatId, text, messageId, null, parseMode);
+      return await sendMessageRaw(chatId, formattedText, messageId, null, parseMode);
     }
-    
+
     throw error;
   }
 }
@@ -545,6 +553,13 @@ async function handleUpdate(update) {
   const message = update.message;
   if (!message) return;
 
+  // 1. FIX LỤC LẠI TIN NHẮN CŨ: Bỏ qua tin nhắn đã gửi quá 60 giây trước
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (message.date && (nowSec - message.date > 60)) {
+    console.log(`[Skip] Bỏ qua tin nhắn cũ (${nowSec - message.date}s) ID: ${message.message_id}`);
+    return;
+  }
+
   const chatId = message.chat.id;
   const originalMessageId = message.message_id;
   const rawText = message.text || message.caption || "";
@@ -573,86 +588,102 @@ async function handleUpdate(update) {
     return;
   }
 
-  // Thông tin người gửi
-  const uid = message.from?.id || "N/A";
-  const firstName = message.from?.first_name || "";
-  const lastName = message.from?.last_name || "";
-  const senderName = [firstName, lastName].filter(Boolean).join(" ") || "Người dùng";
-  const senderHandle = message.from?.username ? `@${message.from.username}` : "Không có";
+  const uid = message.from?.id;
+  if (!uid) return;
 
-  const userRole = await getUserRole(chatId, uid, message.chat.type);
+  // 2. FIX CHẶN SPAM KHI CÓ TIN NHẮN ĐANG XỬ LÝ (Khóa theo UID người gửi trong 30 giây)
+  const lockKey = `lock:user:${uid}`;
+  const acquiredLock = await redis.set(lockKey, "processing", "NX", "EX", 30);
+  if (!acquiredLock) {
+    console.log(`[Lock] User ${uid} đang có 1 tin nhắn đang xử lý, bỏ qua tin nhắn mới này.`);
+    return;
+  }
 
-  // Thu thập thông tin nhóm & kênh liên kết nếu ở trong nhóm
-  let groupDetailsStr = "";
-  if (message.chat.type !== "private") {
-    const chatMetadata = await getChatMetadata(chatId);
-    const adminData = await getGroupAdminsList(chatId);
+  try {
+    // Thông tin người gửi
+    const firstName = message.from?.first_name || "";
+    const lastName = message.from?.last_name || "";
+    const senderName = [firstName, lastName].filter(Boolean).join(" ") || "Người dùng";
+    const senderHandle = message.from?.username ? `@${message.from.username}` : "Không có";
 
-    let linkedChannelInfo = "Không kết nối kênh nào";
-    if (chatMetadata?.linked_chat_id) {
-      const channelMeta = await getChatMetadata(chatMetadata.linked_chat_id);
-      if (channelMeta) {
-        linkedChannelInfo = `Tên kênh: "${channelMeta.title || 'N/A'}" | ID: ${channelMeta.id} | Username: ${channelMeta.username ? '@' + channelMeta.username : 'Riêng tư'} | Link: ${channelMeta.invite_link || 'Không có'}`;
+    const userRole = await getUserRole(chatId, uid, message.chat.type);
+
+    // Thu thập thông tin nhóm & kênh liên kết nếu ở trong nhóm
+    let groupDetailsStr = "";
+    if (message.chat.type !== "private") {
+      const chatMetadata = await getChatMetadata(chatId);
+      const adminData = await getGroupAdminsList(chatId);
+
+      let linkedChannelInfo = "Không kết nối kênh nào";
+      if (chatMetadata?.linked_chat_id) {
+        const channelMeta = await getChatMetadata(chatMetadata.linked_chat_id);
+        if (channelMeta) {
+          linkedChannelInfo = `Tên kênh: "${channelMeta.title || 'N/A'}" | ID: ${channelMeta.id} | Username: ${channelMeta.username ? '@' + channelMeta.username : 'Riêng tư'} | Link: ${channelMeta.invite_link || 'Không có'}`;
+        }
       }
+
+      const ownersList = adminData.owners.length > 0 ? adminData.owners.join("; ") : "Không xác định";
+      const adminsList = adminData.admins.length > 0 ? adminData.admins.join("; ") : "Không có";
+
+      groupDetailsStr = `\n[Thông tin Nhóm Hiện Tại]:\n` +
+        `- Tên nhóm: "${chatMetadata?.title || message.chat.title || 'N/A'}"\n` +
+        `- Mô tả nhóm: "${chatMetadata?.description || 'Không có'}"\n` +
+        `- Link nhóm: "${chatMetadata?.invite_link || 'Không có'}"\n` +
+        `- Chủ nhóm (Owners): ${ownersList}\n` +
+        `- Danh sách Quản trị viên (Admins): ${adminsList}\n` +
+        `- Kênh liên kết với nhóm: [${linkedChannelInfo}]`;
     }
 
-    const ownersList = adminData.owners.length > 0 ? adminData.owners.join("; ") : "Không xác định";
-    const adminsList = adminData.admins.length > 0 ? adminData.admins.join("; ") : "Không có";
+    // Cờ nhận biết tin nhắn đăng từ Kênh liên kết
+    const channelPostNote = message.is_automatic_forward 
+      ? " [LƯU Ý: Đây là bài viết tự động gửi từ Kênh liên kết vào nhóm]" 
+      : "";
 
-    groupDetailsStr = `\n[Thông tin Nhóm Hiện Tại]:\n` +
-      `- Tên nhóm: "${chatMetadata?.title || message.chat.title || 'N/A'}"\n` +
-      `- Mô tả nhóm: "${chatMetadata?.description || 'Không có'}"\n` +
-      `- Link nhóm: "${chatMetadata?.invite_link || 'Không có'}"\n` +
-      `- Chủ nhóm (Owners): ${ownersList}\n` +
-      `- Danh sách Quản trị viên (Admins): ${adminsList}\n` +
-      `- Kênh liên kết với nhóm: [${linkedChannelInfo}]`;
+    // Ngữ cảnh Reply
+    let replyContext = "";
+    if (message.reply_to_message) {
+      const rMsg = message.reply_to_message;
+      const rFrom = rMsg.from;
+      const isBotSelf = rFrom?.id === botInfo.id;
+      const rName = [rFrom?.first_name, rFrom?.last_name].filter(Boolean).join(" ") || "Người dùng";
+      const rHandle = rFrom?.username ? `@${rFrom.username}` : "Không có";
+      const rText = rMsg.text || rMsg.caption || "(Nội dung không phải văn bản/Ảnh/Sticker)";
+
+      replyContext = `\n[Đang trả lời tin nhắn của ${isBotSelf ? "Chính Bot" : `${rName} (${rHandle}, ID: ${rFrom?.id})`}: "${rText}"]`;
+    }
+
+    let stickerInfo = "";
+    if (message.sticker) {
+      stickerInfo = ` [Gửi Sticker file_id: "${message.sticker.file_id}", Emoji: "${message.sticker.emoji || "N/A"}"]`;
+    }
+
+    const userHeader = `[Thời gian hiện tại ở Việt Nam: ${getVietnamTimeString()}]\n` +
+      `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole}]` +
+      `${channelPostNote}` +
+      `${replyContext}` +
+      `${groupDetailsStr}`;
+
+    const promptTextOnly = `${userHeader}\n[Nội dung tin nhắn]: ${rawText}${stickerInfo || " (Gửi phương tiện)"}`;
+    const userParts = [{ text: promptTextOnly }];
+
+    let fileData = null;
+    if (message.sticker) {
+      fileData = await getTelegramFileBuffer(message.sticker.file_id);
+    } else if (message.photo && message.photo.length > 0) {
+      const fileId = message.photo[message.photo.length - 1].file_id;
+      fileData = await getTelegramFileBuffer(fileId);
+    }
+
+    if (fileData) {
+      userParts.push(fileData);
+    }
+
+    await processGeminiResponse(chatId, userParts, promptTextOnly, originalMessageId);
+
+  } finally {
+    // Giải phóng khóa sau khi xử lý xong tin nhắn
+    await redis.del(lockKey).catch(() => {});
   }
-
-  // Cờ nhận biết tin nhắn đăng từ Kênh liên kết
-  const channelPostNote = message.is_automatic_forward 
-    ? " [LƯU Ý: Đây là bài viết tự động gửi từ Kênh liên kết vào nhóm]" 
-    : "";
-
-  // Ngữ cảnh Reply
-  let replyContext = "";
-  if (message.reply_to_message) {
-    const rMsg = message.reply_to_message;
-    const rFrom = rMsg.from;
-    const isBotSelf = rFrom?.id === botInfo.id;
-    const rName = [rFrom?.first_name, rFrom?.last_name].filter(Boolean).join(" ") || "Người dùng";
-    const rHandle = rFrom?.username ? `@${rFrom.username}` : "Không có";
-    const rText = rMsg.text || rMsg.caption || "(Nội dung không phải văn bản/Ảnh/Sticker)";
-
-    replyContext = `\n[Đang trả lời tin nhắn của ${isBotSelf ? "Chính Bot" : `${rName} (${rHandle}, ID: ${rFrom?.id})`}: "${rText}"]`;
-  }
-
-  let stickerInfo = "";
-  if (message.sticker) {
-    stickerInfo = ` [Gửi Sticker file_id: "${message.sticker.file_id}", Emoji: "${message.sticker.emoji || "N/A"}"]`;
-  }
-
-  const userHeader = `[Thời gian hiện tại ở Việt Nam: ${getVietnamTimeString()}]\n` +
-    `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole}]` +
-    `${channelPostNote}` +
-    `${replyContext}` +
-    `${groupDetailsStr}`;
-
-  const promptTextOnly = `${userHeader}\n[Nội dung tin nhắn]: ${rawText}${stickerInfo || " (Gửi phương tiện)"}`;
-  const userParts = [{ text: promptTextOnly }];
-
-  let fileData = null;
-  if (message.sticker) {
-    fileData = await getTelegramFileBuffer(message.sticker.file_id);
-  } else if (message.photo && message.photo.length > 0) {
-    const fileId = message.photo[message.photo.length - 1].file_id;
-    fileData = await getTelegramFileBuffer(fileId);
-  }
-
-  if (fileData) {
-    userParts.push(fileData);
-  }
-
-  await processGeminiResponse(chatId, userParts, promptTextOnly, originalMessageId);
 }
 
 module.exports = async (req, res) => {
@@ -670,3 +701,4 @@ module.exports = async (req, res) => {
     res.status(405).json({ error: "Method not allowed" });
   }
 };
+                    
