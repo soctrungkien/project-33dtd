@@ -1,7 +1,10 @@
 const https = require("https");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const Redis = require("ioredis");
-
+const redis = new Redis(process.env.REDIS_URL, {
+  maxRetriesPerRequest: 3,
+  connectTimeout: 5000,
+});
 const GEMINI_API_KEYS = (process.env.GEMINI_API_KEY_BOT || "")
   .split(",")
   .map((key) => key.trim())
