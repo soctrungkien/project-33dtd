@@ -141,32 +141,68 @@ async function sendSticker(chatId, fileId, replyToMessageId = null) {
   }
 }
 
-// 6. Tìm kiếm Web (DuckDuckGo)
+// 6. Tìm kiếm Web (DuckDuckGo Lite)
 async function searchDuckDuckGo(query) {
   try {
-    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+    const res = await fetch(`https://lite.duckduckgo.com/lite/`, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      },
+      body: `q=${encodeURIComponent(query)}`
     });
     const html = await res.text();
-    const matches = [...html.matchAll(/<a class="result__snippet[^>]*>(.*?)<\/a>/g)];
-    const snippets = matches.slice(0, 4).map(m => m[1].replace(/<[^>]+>/g, '')).join("\n- ");
-    return snippets ? `Kết quả tìm kiếm cho "${query}":\n- ${snippets}` : "Không tìm thấy kết quả phù hợp.";
+    
+    // Tìm các đoạn snippet thông tin từ giao diện Lite
+    const matches = [...html.matchAll(/class='result-snippet'[^>]*>([\s\S]*?)<\/td>/gi)];
+    
+    if (matches.length > 0) {
+      const snippets = matches.slice(0, 4).map(m => m[1].replace(/<[^>]+>/g, '').trim()).join("\n- ");
+      return `Kết quả tìm kiếm cho "${query}":\n- ${snippets}`;
+    }
+    
+    // Fallback cho bản HTML thường nếu bản Lite bị lỗi
+    const htmlMatches = [...html.matchAll(/<a class="result__snippet[^>]*>(.*?)<\/a>/g)];
+    if (htmlMatches.length > 0) {
+      const snippets = htmlMatches.slice(0, 4).map(m => m[1].replace(/<[^>]+>/g, '').trim()).join("\n- ");
+      return `Kết quả tìm kiếm cho "${query}":\n- ${snippets}`;
+    }
+
+    return "Không tìm thấy kết quả hoặc dịch vụ tìm kiếm tạm thời bị chặn.";
   } catch (e) {
     return `Lỗi khi tìm kiếm: ${e.message}`;
   }
 }
 
-// 7. Lấy thời tiết
+// 7. Lấy thời tiết an toàn
 async function getWeather(location) {
   try {
-    const res = await fetch(`https://wttr.in/${encodeURIComponent(location)}?format=j1&lang=vi`);
-    const data = await res.json();
+    // Dùng User-Agent là curl để wttr.in ưu tiên trả về phản hồi không bị chặn
+    const res = await fetch(`https://wttr.in/${encodeURIComponent(location)}?format=j1&lang=vi`, {
+      headers: { "User-Agent": "curl/7.68.0" }
+    });
+    
+    if (!res.ok) {
+      return `Không thể lấy thông tin thời tiết lúc này (Lỗi Server: ${res.status}).`;
+    }
+    
+    const text = await res.text();
+    let data;
+    try {
+      // Phân tích cú pháp an toàn, tránh bị crash bot nếu server trả về HTML báo lỗi
+      data = JSON.parse(text);
+    } catch (err) {
+      return "Dịch vụ thời tiết đang quá tải hoặc trả về dữ liệu lỗi. Vui lòng thử lại sau.";
+    }
+
     const current = data.current_condition[0];
     const area = data.nearest_area[0]?.areaName[0]?.value || location;
     const desc = current.lang_vi?.[0]?.value || current.weatherDesc[0]?.value;
+    
     return `Thời tiết tại ${area}: ${desc}, Nhiệt độ: ${current.temp_C}°C (Cảm giác như ${current.FeelsLikeC}°C), Độ ẩm: ${current.humidity}%, Sức gió: ${current.windspeedKmph} km/h.`;
   } catch (e) {
-    return `Không thể lấy thông tin thời tiết cho địa điểm: ${location}`;
+    return `Lỗi kết nối dịch vụ thời tiết: ${e.message}`;
   }
 }
 
@@ -346,9 +382,18 @@ async function sendOrUpdateMessage(chatId, text, messageId = null, replyToMessag
   try {
     return await sendMessageRaw(chatId, text, messageId, replyToMessageId, parseMode);
   } catch (error) {
-    if (parseMode && error.message.includes("can't parse entities")) {
+    const errStr = error.message || "";
+    
+    // 1. Lỗi parse Markdown -> gửi lại văn bản thô (không dùng parseMode)
+    if (parseMode && errStr.includes("can't parse entities")) {
       return await sendMessageRaw(chatId, text, messageId, replyToMessageId, null);
     }
+    
+    // 2. Lỗi tin nhắn gốc đã bị xóa -> gửi lại tin nhắn mới (không reply nữa)
+    if (errStr.includes("message to be replied not found") || errStr.includes("reply message not found")) {
+      return await sendMessageRaw(chatId, text, messageId, null, parseMode);
+    }
+    
     throw error;
   }
 }
