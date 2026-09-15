@@ -306,7 +306,7 @@ async function handleUpdate(update) {
       chatId,
       "👋 *Xin chào!*\n\nTôi là Bot AI.\n\n" +
       "💬 *Cách tương tác trong nhóm:*\n" +
-      "/clearmy để ai mất trí nhớ"
+      "/clearmy để ai mất trí nhớ",
       null,
       originalMessageId
     );
