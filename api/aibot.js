@@ -1,12 +1,8 @@
 const https = require("https");
-const OpenAI = require("openai");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 const Redis = require("ioredis");
 
-// 1. Khởi tạo OpenAI Client kết nối tới NVIDIA API
-const openai = new OpenAI({
-  baseURL: "https://integrate.api.nvidia.com/v1",
-  apiKey: process.env.NVIDIA_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_BOT);
 
 const redis = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: 3,
@@ -18,20 +14,28 @@ const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_URL = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}`;
 
 const RAM_TTL_MS = 1 * 60 * 1000;
-const REDIS_TTL_SEC = 180 * 60;
+const REDIS_TTL_SEC = 10 * 60;
 const MAX_MESSAGES = 20;
 
 const CUSTOM_PERSONALITY = process.env.BOT_PERSONALITY_AI || 
   "";
 
-// Cấu hình Model
-const TEXT_MODEL = "deepseek-ai/deepseek-v4-flash-0731"; // Model cho Chat/Logic
-const VISION_MODEL = "nvidia/neva-22b"; // Model fallback nếu có ảnh/sticker (NVIDIA Vision)
+// Danh sách các Model Gemini để xoay vòng & dự phòng (Fallback)
+const GEMINI_MODELS = [
+  "gemini-2.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-3.5-flash-lite",
+  "gemini-3.6-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-3.1-flash",
+  "gemini-3.5-flash",
+  "gemini-3.6-flash"
+];
+let currentModelIndex = 0;
 
 const ramCache = new Map();
 let cachedBotUsername = null;
 
-// Lấy thông tin Username của Bot
 async function getBotUsername() {
   if (cachedBotUsername) return cachedBotUsername;
 
@@ -56,8 +60,8 @@ async function getBotUsername() {
   });
 }
 
-// Chuyển File Telegram (Ảnh/Sticker) thành Base64
-async function getTelegramFileBase64(fileId) {
+// Chuyển Ảnh/Sticker trên Telegram thành Buffer/Base64 để Gemini nhận diện
+async function getTelegramFileBuffer(fileId) {
   try {
     const fileRes = await fetch(`${TELEGRAM_API_URL}/getFile?file_id=${fileId}`);
     const fileData = await fileRes.json();
@@ -66,35 +70,42 @@ async function getTelegramFileBase64(fileId) {
     const imgRes = await fetch(`${TELEGRAM_FILE_URL}/${fileData.result.file_path}`);
     const arrayBuffer = await imgRes.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    return `data:image/jpeg;base64,${buffer.toString("base64")}`;
+    
+    // Xác định MIME type sơ bộ
+    let mimeType = "image/jpeg";
+    if (fileData.result.file_path.endsWith(".png")) mimeType = "image/png";
+    if (fileData.result.file_path.endsWith(".webp")) mimeType = "image/webp";
+
+    return {
+      inlineData: {
+        data: buffer.toString("base64"),
+        mimeType: mimeType
+      }
+    };
   } catch (error) {
-    console.error("Lỗi tải file từ Telegram:", error);
+    console.error("Lỗi tải file Telegram:", error);
     return null;
   }
 }
 
-// Kiểm tra xem Bot có được kích hoạt trong Group hay không
+// Kiểm tra điều kiện phản hồi trong nhóm
 function shouldRespondInGroup(message, text, botUsername) {
-  const chatType = message.chat.type;
-
-  // Nếu là chat riêng tư với Bot -> Always Yes
-  if (chatType === "private") return true;
+  if (message.chat.type === "private") return true;
 
   const lowerText = text.toLowerCase();
 
-  // 1. Tag tên bot (@botusername)
+  // 1. Được Tag
   if (botUsername && lowerText.includes(`@${botUsername}`)) return true;
 
-  // 2. Reply lại tin nhắn của Bot
+  // 2. Reply tin nhắn của Bot
   if (message.reply_to_message?.from?.username?.toLowerCase() === botUsername) return true;
 
-  // 3. Có chứa từ khóa "chan" (hoặc "chan " / "chan,")
+  // 3. Có từ "chan"
   if (/\bchan\b/i.test(lowerText)) return true;
 
   return false;
 }
 
-// Bật trạng thái "typing..."
 async function sendChatAction(chatId, action = "typing") {
   return new Promise((resolve) => {
     const data = JSON.stringify({ chat_id: chatId, action });
@@ -115,7 +126,6 @@ async function sendChatAction(chatId, action = "typing") {
   });
 }
 
-// Quản lý Bộ nhớ Chat (Redis + RAM Cache)
 async function getChatMemory(chatId) {
   const now = Date.now();
   if (ramCache.has(chatId)) {
@@ -157,20 +167,16 @@ async function clearChatMemory(chatId) {
   }
 }
 
-// Gửi tin nhắn Telegram (Hỗ trợ Reply tin nhắn gốc)
 async function sendMessageRaw(chatId, text, messageId = null, replyToMessageId = null, parseMode = "Markdown") {
   return new Promise((resolve, reject) => {
     const method = messageId ? "editMessageText" : "sendMessage";
-    const payload = {
-      chat_id: chatId,
-      text: text,
-    };
+    const payload = { chat_id: chatId, text: text };
 
     if (parseMode) payload.parse_mode = parseMode;
     if (messageId) {
       payload.message_id = messageId;
     } else if (replyToMessageId) {
-      payload.reply_to_message_id = replyToMessageId; // Reply câu hỏi gốc
+      payload.reply_to_message_id = replyToMessageId;
     }
 
     const data = JSON.stringify(payload);
@@ -217,54 +223,68 @@ async function sendOrUpdateMessage(chatId, text, messageId = null, replyToMessag
   }
 }
 
-// Xử lý gọi NVIDIA API với OpenAI Format
-async function processNvidiaAiResponse(chatId, userContent, originalMessageId) {
+function buildGeminiHistory(messages) {
+  return messages.map((msg) => ({
+    role: msg.role === "user" ? "user" : "model",
+    parts: [{ text: msg.content }],
+  }));
+}
+
+// Thuật toán xoay vòng & Fallback Model Gemini
+async function generateGeminiWithRotation(historyMessages, userParts) {
+  let lastError = null;
+
+  for (let i = 0; i < GEMINI_MODELS.length; i++) {
+    // Tính toán model index theo kiểu xoay vòng Round-Robin
+    const indexToTry = (currentModelIndex + i) % GEMINI_MODELS.length;
+    const modelName = GEMINI_MODELS[indexToTry];
+
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        systemInstruction: CUSTOM_PERSONALITY,
+      });
+
+      const formattedHistory = buildGeminiHistory(historyMessages);
+      const chat = model.startChat({ history: formattedHistory });
+
+      const result = await chat.sendMessage(userParts);
+      const responseText = result.response.text();
+
+      // Cập nhật index cho lượt gọi tiếp theo (xoay vòng)
+      currentModelIndex = (indexToTry + 1) % GEMINI_MODELS.length;
+      return responseText;
+    } catch (error) {
+      console.warn(`[Gemini] Model ${modelName} gặp lỗi/bị rate-limit. Đang chuyển sang model tiếp theo...`);
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("Tất cả các model Gemini đều không phản hồi.");
+}
+
+async function processGeminiResponse(chatId, userParts, promptTextOnly, originalMessageId) {
   try {
     sendChatAction(chatId, "typing").catch(() => {});
 
-    const history = await getChatMemory(chatId);
+    const historyMessages = await getChatMemory(chatId);
 
-    // Chuẩn bị danh sách Message theo chuẩn OpenAI
-    const messagesPayload = [
-      { role: "system", content: CUSTOM_PERSONALITY },
-      ...history,
-      { role: "user", content: userContent }
-    ];
+    // Gọi Gemini với cơ chế xoay vòng model
+    const aiResponseText = await generateGeminiWithRotation(historyMessages, userParts);
 
-    // Kiểm tra xem userContent có chứa Hình ảnh/Sticker hay không
-    const hasImage = Array.isArray(userContent) && userContent.some(item => item.type === "image_url");
-    const selectedModel = hasImage ? VISION_MODEL : TEXT_MODEL;
+    if (aiResponseText) {
+      await sendOrUpdateMessage(chatId, aiResponseText, null, originalMessageId, "Markdown");
 
-    const extraBody = !hasImage ? { chat_template_kwargs: { thinking: true, reasoning_effort: "high" } } : {};
-
-    const completion = await openai.chat.completions.create({
-      model: selectedModel,
-      messages: messagesPayload,
-      temperature: 0.1,
-      top_p: 0.95,
-      max_tokens: 4096,
-      extra_body: extraBody
-    });
-
-    const aiMessage = completion.choices[0]?.message?.content || "Xin lỗi, tôi không thể phản hồi lúc này.";
-
-    // Gửi tin nhắn trả lời và REPLY trực tiếp tin nhắn gốc
-    await sendOrUpdateMessage(chatId, aiMessage, null, originalMessageId, "Markdown");
-
-    // Lưu lại lịch sử trò chuyện (Chỉ lưu dạng text rút gọn để tiết kiệm bộ nhớ)
-    const textOnlyPrompt = typeof userContent === "string" 
-      ? userContent 
-      : userContent.find(c => c.type === "text")?.text || "[Gửi hình ảnh/sticker]";
-
-    history.push({ role: "user", content: textOnlyPrompt });
-    history.push({ role: "assistant", content: aiMessage });
-    await saveChatMemory(chatId, history);
-
+      // Luôn chỉ lưu chuỗi text vào Redis memory
+      historyMessages.push({ role: "user", content: promptTextOnly });
+      historyMessages.push({ role: "model", content: aiResponseText });
+      await saveChatMemory(chatId, historyMessages);
+    }
   } catch (error) {
-    console.error("Lỗi NVIDIA API:", error);
+    console.error("Lỗi xử lý Gemini:", error);
     await sendOrUpdateMessage(
       chatId,
-      "❌ *Đã xảy ra lỗi khi kết nối AI.*",
+      `❌ *Đã xảy ra lỗi.* Hiện không thể phản hồi.`,
       null,
       originalMessageId,
       "Markdown"
@@ -272,7 +292,6 @@ async function processNvidiaAiResponse(chatId, userContent, originalMessageId) {
   }
 }
 
-// Xử lý Update từ Telegram Webhook
 async function handleUpdate(update) {
   const message = update.message;
   if (!message) return;
@@ -282,15 +301,12 @@ async function handleUpdate(update) {
   const rawText = message.text || message.caption || "";
   const botUsername = await getBotUsername();
 
-  // 1. Xử lý Lệnh cơ bản (/start, /clearmy)
   if (rawText.startsWith("/start")) {
     await sendOrUpdateMessage(
       chatId,
-      "👋 *Xin chào!*\n\nTôi là Bot AI nhóm thông minh.\n\n" +
-      "💬 *Cách dùng trong Group:*\n" +
-      "- Tag tên `@bot` hoặc Reply tin nhắn của bot.\n" +
-      "- Gọi tên `chan` trong câu nói.\n" +
-      "- Gửi ảnh hoặc Sticker đi kèm câu hỏi.",
+      "👋 *Xin chào!*\n\nTôi là Bot AI.\n\n" +
+      "💬 *Cách tương tác trong nhóm:*\n" +
+      "/clearmy để ai mất trí nhớ"
       null,
       originalMessageId
     );
@@ -303,43 +319,33 @@ async function handleUpdate(update) {
     return;
   }
 
-  // 2. Lọc kích hoạt trong nhóm
+  // Lọc tin nhắn kích hoạt trong nhóm
   if (!shouldRespondInGroup(message, rawText, botUsername)) {
     return;
   }
 
-  // 3. Trích xuất tên người dùng
+  // Định danh người dùng
   const senderName = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || "Người dùng";
   const senderHandle = message.from?.username ? `@${message.from.username}` : "";
   const userHeader = `[Người gửi: ${senderName} ${senderHandle}]`;
 
-  // 4. Xử lý nội dung Đa phương tiện (Text / Photo / Sticker)
-  let userContentPayload = [];
-  let base64Image = null;
+  const promptTextOnly = `${userHeader}: ${rawText || "(Gửi hình ảnh/sticker)"}`;
+  const userParts = [{ text: promptTextOnly }];
 
-  // Lấy file_id từ Sticker hoặc Photo
+  // Xử lý Sticker / Ảnh đính kèm
+  let fileData = null;
   if (message.sticker) {
-    const fileId = message.sticker.file_id;
-    base64Image = await getTelegramFileBase64(fileId);
+    fileData = await getTelegramFileBuffer(message.sticker.file_id);
   } else if (message.photo && message.photo.length > 0) {
-    // Lấy ảnh có độ phân giải cao nhất (phần tử cuối)
     const fileId = message.photo[message.photo.length - 1].file_id;
-    base64Image = await getTelegramFileBase64(fileId);
+    fileData = await getTelegramFileBuffer(fileId);
   }
 
-  const promptText = `${userHeader}: ${rawText || "(Gửi hình ảnh/sticker)"}`;
-
-  if (base64Image) {
-    userContentPayload = [
-      { type: "text", text: promptText },
-      { type: "image_url", image_url: { url: base64Image } }
-    ];
-  } else {
-    userContentPayload = promptText;
+  if (fileData) {
+    userParts.push(fileData);
   }
 
-  // 5. Gọi AI trả lời
-  await processNvidiaAiResponse(chatId, userContentPayload, originalMessageId);
+  await processGeminiResponse(chatId, userParts, promptTextOnly, originalMessageId);
 }
 
 module.exports = async (req, res) => {
@@ -350,7 +356,7 @@ module.exports = async (req, res) => {
       }
       res.status(200).json({ ok: true });
     } catch (error) {
-      console.error("Serverless Error:", error);
+      console.error("Lỗi Serverless:", error);
       res.status(500).json({ error: error.message });
     }
   } else {
