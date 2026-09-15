@@ -18,6 +18,8 @@ const geminiClients = GEMINI_API_KEYS.map((key) => new GoogleGenerativeAI(key));
 
 let currentApiKeyIndex = 0;
 
+const hide_text = "ㅤ"
+
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN_AI;
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_URL = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}`;
@@ -503,7 +505,7 @@ async function sendStreamingMessage(
   messageId = null,
   replyToMessageId = null,
 ) {
-  if (!text) text = " ▌";
+  if (!text) text = hide_text;
 
   // Telegram giới hạn khoảng 4096 ký tự
   const safeText = text.slice(0, 4000);
@@ -827,14 +829,14 @@ async function processGeminiResponse(
         if (!telegramMessageId) {
           telegramMessageId = await sendStreamingMessage(
             chatId,
-            text + " ▌",
+            text + hide_text,
             null,
             originalMessageId,
           );
         } else {
           await sendStreamingMessage(
             chatId,
-            text + " ▌",
+            text + hide_text,
             telegramMessageId,
             null,
           );
