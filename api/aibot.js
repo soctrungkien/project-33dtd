@@ -25,7 +25,7 @@ const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const TELEGRAM_FILE_URL = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}`;
 
 // Tỉ lệ tự động nhắn trong nhóm
-const AUTO_RESPONSE_CHANCE = parseFloat("0.01");
+const AUTO_RESPONSE_CHANCE = parseFloat("0.005"); // 0.5%
 
 const RAM_TTL_MS = 1 * 60 * 1000;
 const REDIS_TTL_SEC = 10 * 60;
