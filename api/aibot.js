@@ -18,7 +18,7 @@ const geminiClients = GEMINI_API_KEYS.map((key) => new GoogleGenerativeAI(key));
 
 let currentApiKeyIndex = 0;
 
-const hide_text = "ㅤ"
+const hide_text = "ㅤ";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN_AI;
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
@@ -169,18 +169,20 @@ async function setMessageReaction(chatId, messageId, emoji = "👍") {
 
 // 5. Gửi Sticker Telegram
 async function sendSticker(chatId, fileId, replyToMessageId = null) {
-  try {
-    const payload = { chat_id: chatId, sticker: fileId };
-    if (replyToMessageId) payload.reply_to_message_id = replyToMessageId;
+  const payload = { chat_id: chatId, sticker: fileId };
+  if (replyToMessageId) payload.reply_to_message_id = replyToMessageId;
 
-    await fetch(`${TELEGRAM_API_URL}/sendSticker`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (error) {
-    console.error("Lỗi gửi Sticker:", error);
+  const res = await fetch(`${TELEGRAM_API_URL}/sendSticker`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  if (!data.ok) {
+    throw new Error(data.description || "Telegram từ chối gửi sticker");
   }
+  return data.result;
 }
 
 // 6. Tìm kiếm Web (DuckDuckGo Lite)
@@ -723,16 +725,38 @@ async function generateGeminiWithRotation(
                 result: "Không có sticker pack yêu thích.",
               };
             } else {
-              const sticker =
-                stickers[Math.floor(Math.random() * stickers.length)];
+              // Xáo trộn danh sách sticker ngẫu nhiên
+              const shuffled = [...stickers].sort(() => Math.random() - 0.5);
+              let sent = false;
+              let lastError = null;
 
-              await sendSticker(chatId, sticker.file_id, originalMessageId);
+              // Duyệt và thử từng sticker đến khi gửi thành công
+              for (const sticker of shuffled) {
+                try {
+                  await sendSticker(chatId, sticker.file_id, originalMessageId);
+                  toolResponse = {
+                    success: true,
+                    result: `Đã gửi sticker từ pack ${sticker.pack}`,
+                    emoji: sticker.emoji,
+                  };
+                  sent = true;
+                  break;
+                } catch (error) {
+                  lastError = error;
+                  console.warn(
+                    `[Sticker] Lỗi gửi ${sticker.file_id}: ${error.message}. Đang thử sticker khác...`,
+                  );
+                }
+              }
 
-              toolResponse = {
-                success: true,
-                result: `Đã gửi sticker từ pack ${sticker.pack}`,
-                emoji: sticker.emoji,
-              };
+              if (!sent) {
+                toolResponse = {
+                  success: false,
+                  result:
+                    "Toàn bộ sticker trong pack yêu thích đều không gửi được.",
+                  error: lastError?.message || "Unknown sticker error",
+                };
+              }
             }
           }
         } catch (toolError) {
