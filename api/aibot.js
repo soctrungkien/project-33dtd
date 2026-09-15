@@ -2,21 +2,16 @@ const https = require("https");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const Redis = require("ioredis");
 
-const GEMINI_API_KEYS = (
-  process.env.GEMINI_API_KEY_BOT ||
-  ""
-)
+const GEMINI_API_KEYS = (process.env.GEMINI_API_KEY_BOT || "")
   .split(",")
-  .map(key => key.trim())
+  .map((key) => key.trim())
   .filter(Boolean);
 
 if (GEMINI_API_KEYS.length === 0) {
   throw new Error("Chưa cấu hình GEMINI_API_KEYS");
 }
 
-const geminiClients = GEMINI_API_KEYS.map(
-  key => new GoogleGenerativeAI(key)
-);
+const geminiClients = GEMINI_API_KEYS.map((key) => new GoogleGenerativeAI(key));
 
 let currentApiKeyIndex = 0;
 
@@ -41,17 +36,14 @@ const GEMINI_MODELS = [
   "gemini-2.5-flash",
   "gemini-3.1-flash",
   "gemini-3.5-flash",
-  "gemini-3.6-flash"
+  "gemini-3.6-flash",
 ];
 
 let currentModelIndex = 0;
 
-const STICKER_FAVORITE_PACKS = (
-  process.env.STICKER_FAVORITE_PACKS_BOT ||
-  ""
-)
+const STICKER_FAVORITE_PACKS = (process.env.STICKER_FAVORITE_PACKS_BOT || "")
   .split(",")
-  .map(x => x.trim())
+  .map((x) => x.trim())
   .filter(Boolean);
 
 const stickerPackCache = new Map();
@@ -67,7 +59,7 @@ async function getBotInfo() {
     if (data.ok && data.result) {
       cachedBotInfo = {
         id: data.result.id,
-        username: data.result.username.toLowerCase()
+        username: data.result.username.toLowerCase(),
       };
       return cachedBotInfo;
     }
@@ -80,13 +72,15 @@ async function getBotInfo() {
 // Chuyển đổi Markdown tiêu chuẩn Gemini sang Telegram Markdown legacy
 function cleanMarkdownForTelegram(text) {
   if (!text) return "";
-  return text
-    // Chuyển **bold** thành *bold* (Chuẩn của Telegram Markdown v1)
-    .replace(/\*\*(.*?)\*\*/g, '*$1*')
-    // Chuyển __italic__ thành _italic_
-    .replace(/__(.*?)__/g, '_$1_')
-    // Chuyển tiêu đề ### Title thành *Title*
-    .replace(/^#{1,6}\s+(.*)$/gm, '*$1*');
+  return (
+    text
+      // Chuyển **bold** thành *bold* (Chuẩn của Telegram Markdown v1)
+      .replace(/\*\*(.*?)\*\*/g, "*$1*")
+      // Chuyển __italic__ thành _italic_
+      .replace(/__(.*?)__/g, "_$1_")
+      // Chuyển tiêu đề ### Title thành *Title*
+      .replace(/^#{1,6}\s+(.*)$/gm, "*$1*")
+  );
 }
 
 // 1. Lấy thông tin chi tiết của Nhóm/Kênh
@@ -104,14 +98,21 @@ async function getChatMetadata(chatId) {
 // 2. Lấy toàn bộ danh sách Owners và Admins trong nhóm
 async function getGroupAdminsList(chatId) {
   try {
-    const res = await fetch(`${TELEGRAM_API_URL}/getChatAdministrators?chat_id=${chatId}`);
+    const res = await fetch(
+      `${TELEGRAM_API_URL}/getChatAdministrators?chat_id=${chatId}`,
+    );
     const data = await res.json();
     if (data.ok && Array.isArray(data.result)) {
       const owners = [];
       const admins = [];
-      data.result.forEach(member => {
-        const name = [member.user.first_name, member.user.last_name].filter(Boolean).join(" ") || "N/A";
-        const username = member.user.username ? `@${member.user.username}` : "Không có";
+      data.result.forEach((member) => {
+        const name =
+          [member.user.first_name, member.user.last_name]
+            .filter(Boolean)
+            .join(" ") || "N/A";
+        const username = member.user.username
+          ? `@${member.user.username}`
+          : "Không có";
         const info = `${name} (${username} | ID: ${member.user.id})`;
         if (member.status === "creator") owners.push(info);
         else if (member.status === "administrator") admins.push(info);
@@ -128,7 +129,9 @@ async function getGroupAdminsList(chatId) {
 async function getUserRole(chatId, userId, chatType) {
   if (chatType === "private") return "Trò chuyện cá nhân";
   try {
-    const res = await fetch(`${TELEGRAM_API_URL}/getChatMember?chat_id=${chatId}&user_id=${userId}`);
+    const res = await fetch(
+      `${TELEGRAM_API_URL}/getChatMember?chat_id=${chatId}&user_id=${userId}`,
+    );
     const data = await res.json();
     if (data.ok && data.result) {
       const status = data.result.status;
@@ -151,8 +154,8 @@ async function setMessageReaction(chatId, messageId, emoji = "👍") {
       body: JSON.stringify({
         chat_id: chatId,
         message_id: messageId,
-        reaction: [{ type: "emoji", emoji: emoji }]
-      })
+        reaction: [{ type: "emoji", emoji: emoji }],
+      }),
     });
   } catch (error) {
     console.error("Lỗi thả cảm xúc:", error);
@@ -168,7 +171,7 @@ async function sendSticker(chatId, fileId, replyToMessageId = null) {
     await fetch(`${TELEGRAM_API_URL}/sendSticker`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
   } catch (error) {
     console.error("Lỗi gửi Sticker:", error);
@@ -180,23 +183,34 @@ async function searchDuckDuckGo(query) {
   try {
     const res = await fetch(`https://lite.duckduckgo.com/lite/`, {
       method: "POST",
-      headers: { 
+      headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       },
-      body: `q=${encodeURIComponent(query)}`
+      body: `q=${encodeURIComponent(query)}`,
     });
     const html = await res.text();
-    
-    const matches = [...html.matchAll(/class='result-snippet'[^>]*>([\s\S]*?)<\/td>/gi)];
+
+    const matches = [
+      ...html.matchAll(/class='result-snippet'[^>]*>([\s\S]*?)<\/td>/gi),
+    ];
     if (matches.length > 0) {
-      const snippets = matches.slice(0, 4).map(m => m[1].replace(/<[^>]+>/g, '').trim()).join("\n- ");
+      const snippets = matches
+        .slice(0, 4)
+        .map((m) => m[1].replace(/<[^>]+>/g, "").trim())
+        .join("\n- ");
       return `Kết quả tìm kiếm cho "${query}":\n- ${snippets}`;
     }
-    
-    const htmlMatches = [...html.matchAll(/<a class="result__snippet[^>]*>(.*?)<\/a>/g)];
+
+    const htmlMatches = [
+      ...html.matchAll(/<a class="result__snippet[^>]*>(.*?)<\/a>/g),
+    ];
     if (htmlMatches.length > 0) {
-      const snippets = htmlMatches.slice(0, 4).map(m => m[1].replace(/<[^>]+>/g, '').trim()).join("\n- ");
+      const snippets = htmlMatches
+        .slice(0, 4)
+        .map((m) => m[1].replace(/<[^>]+>/g, "").trim())
+        .join("\n- ");
       return `Kết quả tìm kiếm cho "${query}":\n- ${snippets}`;
     }
 
@@ -209,14 +223,17 @@ async function searchDuckDuckGo(query) {
 // 7. Lấy thời tiết an toàn
 async function getWeather(location) {
   try {
-    const res = await fetch(`https://wttr.in/${encodeURIComponent(location)}?format=j1&lang=vi`, {
-      headers: { "User-Agent": "curl/7.68.0" }
-    });
-    
+    const res = await fetch(
+      `https://wttr.in/${encodeURIComponent(location)}?format=j1&lang=vi`,
+      {
+        headers: { "User-Agent": "curl/7.68.0" },
+      },
+    );
+
     if (!res.ok) {
       return `Không thể lấy thông tin thời tiết lúc này (Lỗi Server: ${res.status}).`;
     }
-    
+
     const text = await res.text();
     let data;
     try {
@@ -228,7 +245,7 @@ async function getWeather(location) {
     const current = data.current_condition[0];
     const area = data.nearest_area[0]?.areaName[0]?.value || location;
     const desc = current.lang_vi?.[0]?.value || current.weatherDesc[0]?.value;
-    
+
     return `Thời tiết tại ${area}: ${desc}, Nhiệt độ: ${current.temp_C}°C (Cảm giác như ${current.FeelsLikeC}°C), Độ ẩm: ${current.humidity}%, Sức gió: ${current.windspeedKmph} km/h.`;
   } catch (e) {
     return `Lỗi kết nối dịch vụ thời tiết: ${e.message}`;
@@ -248,7 +265,7 @@ async function getFavoriteStickers() {
     for (const sticker of stickers) {
       all.push({
         ...sticker,
-        pack: packName
+        pack: packName,
       });
     }
   }
@@ -267,7 +284,7 @@ function getVietnamTimeString() {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false
+    hour12: false,
   });
 }
 
@@ -278,7 +295,7 @@ async function getStickerPack(packName) {
 
   try {
     const res = await fetch(
-      `${TELEGRAM_API_URL}/getStickerSet?name=${encodeURIComponent(packName)}`
+      `${TELEGRAM_API_URL}/getStickerSet?name=${encodeURIComponent(packName)}`,
     );
 
     const data = await res.json();
@@ -286,26 +303,23 @@ async function getStickerPack(packName) {
     if (!data.ok || !data.result?.stickers) {
       console.error(
         `[Sticker] Không lấy được pack ${packName}:`,
-        data.description
+        data.description,
       );
       return [];
     }
 
     const stickers = data.result.stickers
-      .map(sticker => ({
+      .map((sticker) => ({
         file_id: sticker.file_id,
-        emoji: sticker.emoji || ""
+        emoji: sticker.emoji || "",
       }))
-      .filter(x => x.file_id);
+      .filter((x) => x.file_id);
 
     stickerPackCache.set(packName, stickers);
 
     return stickers;
   } catch (error) {
-    console.error(
-      `[Sticker] ${packName}:`,
-      error.message
-    );
+    console.error(`[Sticker] ${packName}:`, error.message);
 
     return [];
   }
@@ -314,14 +328,18 @@ async function getStickerPack(packName) {
 // Lấy buffer file
 async function getTelegramFileBuffer(fileId) {
   try {
-    const fileRes = await fetch(`${TELEGRAM_API_URL}/getFile?file_id=${fileId}`);
+    const fileRes = await fetch(
+      `${TELEGRAM_API_URL}/getFile?file_id=${fileId}`,
+    );
     const fileData = await fileRes.json();
     if (!fileData.ok || !fileData.result?.file_path) return null;
 
-    const imgRes = await fetch(`${TELEGRAM_FILE_URL}/${fileData.result.file_path}`);
+    const imgRes = await fetch(
+      `${TELEGRAM_FILE_URL}/${fileData.result.file_path}`,
+    );
     const arrayBuffer = await imgRes.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    
+
     let mimeType = "image/jpeg";
     if (fileData.result.file_path.endsWith(".png")) mimeType = "image/png";
     if (fileData.result.file_path.endsWith(".webp")) mimeType = "image/webp";
@@ -329,8 +347,8 @@ async function getTelegramFileBuffer(fileId) {
     return {
       inlineData: {
         data: buffer.toString("base64"),
-        mimeType: mimeType
-      }
+        mimeType: mimeType,
+      },
     };
   } catch (error) {
     console.error("Lỗi tải file Telegram:", error);
@@ -348,7 +366,8 @@ function shouldRespondInGroup(message, text, botUsername) {
 
   if (botUsername && lowerText.includes(`@${botUsername}`)) return true;
 
-  if (message.reply_to_message?.from?.username?.toLowerCase() === botUsername) return true;
+  if (message.reply_to_message?.from?.username?.toLowerCase() === botUsername)
+    return true;
 
   if (/\bchan\b/i.test(lowerText)) return true;
 
@@ -369,7 +388,7 @@ async function sendChatAction(chatId, action = "typing") {
           "Content-Length": Buffer.byteLength(data),
         },
       },
-      () => resolve()
+      () => resolve(),
     );
     req.on("error", () => resolve());
     req.write(data);
@@ -403,7 +422,12 @@ async function saveChatMemory(chatId, messages) {
   const now = Date.now();
   ramCache.set(chatId, { data: trimmed, timestamp: now });
   try {
-    await redis.set(`chat:${chatId}:memory`, JSON.stringify(trimmed), "EX", REDIS_TTL_SEC);
+    await redis.set(
+      `chat:${chatId}:memory`,
+      JSON.stringify(trimmed),
+      "EX",
+      REDIS_TTL_SEC,
+    );
   } catch (error) {
     console.error("Lỗi ghi Redis:", error);
   }
@@ -418,7 +442,13 @@ async function clearChatMemory(chatId) {
   }
 }
 
-async function sendMessageRaw(chatId, text, messageId = null, replyToMessageId = null, parseMode = "Markdown") {
+async function sendMessageRaw(
+  chatId,
+  text,
+  messageId = null,
+  replyToMessageId = null,
+  parseMode = "Markdown",
+) {
   return new Promise((resolve, reject) => {
     const method = messageId ? "editMessageText" : "sendMessage";
     const payload = { chat_id: chatId, text: text };
@@ -455,7 +485,7 @@ async function sendMessageRaw(chatId, text, messageId = null, replyToMessageId =
             reject(e);
           }
         });
-      }
+      },
     );
     req.on("error", reject);
     req.write(data);
@@ -468,7 +498,7 @@ async function sendStreamingMessage(
   chatId,
   text,
   messageId = null,
-  replyToMessageId = null
+  replyToMessageId = null,
 ) {
   if (!text) text = " ▌";
 
@@ -481,7 +511,7 @@ async function sendStreamingMessage(
       cleanMarkdownForTelegram(safeText),
       messageId,
       replyToMessageId,
-      "Markdown"
+      "Markdown",
     );
   } catch (error) {
     // Markdown lỗi → gửi plain text
@@ -491,7 +521,7 @@ async function sendStreamingMessage(
         safeText,
         messageId,
         replyToMessageId,
-        null
+        null,
       );
     }
 
@@ -511,14 +541,15 @@ const GEMINI_TOOLS = [
     functionDeclarations: [
       {
         name: "web_search",
-        description: "Tìm kiếm thông tin thực tế hoặc tin tức trên internet qua DuckDuckGo.",
+        description:
+          "Tìm kiếm thông tin thực tế hoặc tin tức trên internet qua DuckDuckGo.",
         parameters: {
           type: "OBJECT",
           properties: {
-            query: { type: "STRING", description: "Từ khóa cần tìm kiếm" }
+            query: { type: "STRING", description: "Từ khóa cần tìm kiếm" },
           },
-          required: ["query"]
-        }
+          required: ["query"],
+        },
       },
       {
         name: "get_weather",
@@ -526,10 +557,13 @@ const GEMINI_TOOLS = [
         parameters: {
           type: "OBJECT",
           properties: {
-            location: { type: "STRING", description: "Tên địa điểm hoặc thành phố" }
+            location: {
+              type: "STRING",
+              description: "Tên địa điểm hoặc thành phố",
+            },
           },
-          required: ["location"]
-        }
+          required: ["location"],
+        },
       },
       {
         name: "react_message",
@@ -537,10 +571,13 @@ const GEMINI_TOOLS = [
         parameters: {
           type: "OBJECT",
           properties: {
-            emoji: { type: "STRING", description: "Emoji cần thả (👍, ❤️, 🔥, 😂, 👏, 🤔, v.v.)" }
+            emoji: {
+              type: "STRING",
+              description: "Emoji cần thả (👍, ❤️, 🔥, 😂, 👏, 🤔, v.v.)",
+            },
           },
-          required: ["emoji"]
-       }
+          required: ["emoji"],
+        },
       },
       {
         name: "send_sticker",
@@ -548,28 +585,31 @@ const GEMINI_TOOLS = [
         parameters: {
           type: "OBJECT",
           properties: {
-            file_id: { type: "STRING", description: "Telegram sticker file_id" }
+            file_id: {
+              type: "STRING",
+              description: "Telegram sticker file_id",
+            },
           },
-          required: ["file_id"]
-        }
+          required: ["file_id"],
+        },
       },
-{
-  name: "send_favorite_sticker",
-  description:
-    "Chọn và gửi một sticker phù hợp từ các sticker pack yêu thích đã cấu hình. Chỉ sử dụng khi sticker thực sự phù hợp với ngữ cảnh.",
-  parameters: {
-    type: "OBJECT",
-    properties: {
-      reason: {
-        type: "STRING",
-        description: "Mô tả ngắn lý do/chủ đề sticker cần tìm"
-      }
-    },
-    required: ["reason"]
-  }
-}
-    ]
-  }
+      {
+        name: "send_favorite_sticker",
+        description:
+          "Chọn và gửi một sticker phù hợp từ các sticker pack yêu thích đã cấu hình. Chỉ sử dụng khi sticker thực sự phù hợp với ngữ cảnh.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            reason: {
+              type: "STRING",
+              description: "Mô tả ngắn lý do/chủ đề sticker cần tìm",
+            },
+          },
+          required: ["reason"],
+        },
+      },
+    ],
+  },
 ];
 
 async function generateGeminiWithRotation(
@@ -577,48 +617,39 @@ async function generateGeminiWithRotation(
   userParts,
   chatId,
   originalMessageId,
-  onTextUpdate
+  onTextUpdate,
 ) {
   let lastError = null;
 
-  const totalAttempts =
-    GEMINI_API_KEYS.length *
-    GEMINI_MODELS.length;
+  const totalAttempts = GEMINI_API_KEYS.length * GEMINI_MODELS.length;
 
   for (let attempt = 0; attempt < totalAttempts; attempt++) {
-
     const apiKeyIndex =
-      (currentApiKeyIndex +
-        Math.floor(attempt / GEMINI_MODELS.length)) %
+      (currentApiKeyIndex + Math.floor(attempt / GEMINI_MODELS.length)) %
       GEMINI_API_KEYS.length;
 
-    const modelIndex =
-      (currentModelIndex + attempt) %
-      GEMINI_MODELS.length;
+    const modelIndex = (currentModelIndex + attempt) % GEMINI_MODELS.length;
 
-    const genAI =
-      geminiClients[apiKeyIndex];
+    const genAI = geminiClients[apiKeyIndex];
 
-    const modelName =
-      GEMINI_MODELS[modelIndex];
+    const modelName = GEMINI_MODELS[modelIndex];
 
     try {
       console.log(
-        `[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | ${modelName}`
+        `[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | ${modelName}`,
       );
 
       const model = genAI.getGenerativeModel({
         model: modelName,
         systemInstruction: CUSTOM_PERSONALITY,
-        tools: GEMINI_TOOLS
+        tools: GEMINI_TOOLS,
       });
 
       const chat = model.startChat({
-        history: buildGeminiHistory(historyMessages)
+        history: buildGeminiHistory(historyMessages),
       });
 
-      let result =
-        await chat.sendMessageStream(userParts);
+      let result = await chat.sendMessageStream(userParts);
 
       let fullText = "";
 
@@ -634,113 +665,75 @@ async function generateGeminiWithRotation(
         } catch (_) {}
       }
 
-      const finalResponse =
-        await result.response;
+      const finalResponse = await result.response;
 
-      let calls =
-        finalResponse.functionCalls();
+      let calls = finalResponse.functionCalls();
 
       while (calls && calls.length > 0) {
         const call = calls[0];
 
         let toolResponse = {
-          success: false
+          success: false,
         };
 
         try {
           if (call.name === "web_search") {
-
-            const query =
-              String(call.args?.query || "").trim();
+            const query = String(call.args?.query || "").trim();
 
             toolResponse = {
               success: true,
-              result: await searchDuckDuckGo(query)
+              result: await searchDuckDuckGo(query),
             };
-
           } else if (call.name === "get_weather") {
-
-            const location =
-              String(call.args?.location || "").trim();
+            const location = String(call.args?.location || "").trim();
 
             toolResponse = {
               success: true,
-              result: await getWeather(location)
+              result: await getWeather(location),
             };
-
           } else if (call.name === "react_message") {
+            const emoji = String(call.args?.emoji || "👍");
 
-            const emoji =
-              String(call.args?.emoji || "👍");
-
-            await setMessageReaction(
-              chatId,
-              originalMessageId,
-              emoji
-            );
+            await setMessageReaction(chatId, originalMessageId, emoji);
 
             toolResponse = {
               success: true,
-              result: `Đã thả cảm xúc ${emoji}`
+              result: `Đã thả cảm xúc ${emoji}`,
             };
-
           } else if (call.name === "send_sticker") {
+            const fileId = String(call.args?.file_id || "").trim();
 
-            const fileId =
-              String(call.args?.file_id || "").trim();
-
-            await sendSticker(
-              chatId,
-              fileId,
-              originalMessageId
-            );
+            await sendSticker(chatId, fileId, originalMessageId);
 
             toolResponse = {
               success: true,
-              result: "Đã gửi sticker"
+              result: "Đã gửi sticker",
             };
-
-          } else if (
-            call.name === "send_favorite_sticker"
-          ) {
-
-            const stickers =
-              await getFavoriteStickers();
+          } else if (call.name === "send_favorite_sticker") {
+            const stickers = await getFavoriteStickers();
 
             if (stickers.length === 0) {
               toolResponse = {
                 success: false,
-                result:
-                  "Không có sticker pack yêu thích."
+                result: "Không có sticker pack yêu thích.",
               };
             } else {
               const sticker =
-                stickers[
-                  Math.floor(
-                    Math.random() *
-                    stickers.length
-                  )
-                ];
+                stickers[Math.floor(Math.random() * stickers.length)];
 
-              await sendSticker(
-                chatId,
-                sticker.file_id,
-                originalMessageId
-              );
+              await sendSticker(chatId, sticker.file_id, originalMessageId);
 
               toolResponse = {
                 success: true,
-                result:
-                  `Đã gửi sticker từ pack ${sticker.pack}`,
-                emoji: sticker.emoji
+                result: `Đã gửi sticker từ pack ${sticker.pack}`,
+                emoji: sticker.emoji,
               };
             }
           }
-
         } catch (toolError) {
           toolResponse = {
             success: false,
-            error: toolError.message
+            error: toolError.message,
           };
         }
 
@@ -748,17 +741,15 @@ async function generateGeminiWithRotation(
           {
             functionResponse: {
               name: call.name,
-              response: toolResponse
-            }
-          }
+              response: toolResponse,
+            },
+          },
         ]);
 
-        calls =
-          result.response.functionCalls();
+        calls = result.response.functionCalls();
 
         try {
-          const nextText =
-            result.response.text();
+          const nextText = result.response.text();
 
           if (nextText) {
             fullText = nextText;
@@ -769,25 +760,19 @@ async function generateGeminiWithRotation(
 
       try {
         if (!fullText) {
-          fullText =
-            finalResponse.text();
+          fullText = finalResponse.text();
         }
       } catch (_) {}
 
       // Thành công → lần sau bắt đầu từ key/model kế tiếp
-      currentApiKeyIndex =
-        (apiKeyIndex + 1) %
-        GEMINI_API_KEYS.length;
+      currentApiKeyIndex = (apiKeyIndex + 1) % GEMINI_API_KEYS.length;
 
-      currentModelIndex =
-        (modelIndex + 1) %
-        GEMINI_MODELS.length;
+      currentModelIndex = (modelIndex + 1) % GEMINI_MODELS.length;
 
       return fullText;
-
     } catch (error) {
       console.warn(
-        `[Gemini] Key ${apiKeyIndex + 1} | ${modelName} lỗi: ${error.message}`
+        `[Gemini] Key ${apiKeyIndex + 1} | ${modelName} lỗi: ${error.message}`,
       );
 
       lastError = error;
@@ -798,10 +783,7 @@ async function generateGeminiWithRotation(
   }
 
   throw (
-    lastError ||
-    new Error(
-      "Tất cả Gemini API key và model đều không phản hồi."
-    )
+    lastError || new Error("Tất cả Gemini API key và model đều không phản hồi.")
   );
 }
 
@@ -809,13 +791,12 @@ async function processGeminiResponse(
   chatId,
   userParts,
   promptTextOnly,
-  originalMessageId
+  originalMessageId,
 ) {
   try {
     sendChatAction(chatId, "typing").catch(() => {});
 
-    const historyMessages =
-      await getChatMemory(chatId);
+    const historyMessages = await getChatMemory(chatId);
 
     // Tin nhắn Telegram tạm
     let telegramMessageId = null;
@@ -832,10 +813,7 @@ async function processGeminiResponse(
       // Giới hạn tốc độ edit Telegram
       const now = Date.now();
 
-      if (
-        now - lastUpdate < 700 &&
-        text.length < 3900
-      ) {
+      if (now - lastUpdate < 700 && text.length < 3900) {
         return;
       }
 
@@ -844,87 +822,74 @@ async function processGeminiResponse(
 
       try {
         if (!telegramMessageId) {
-          telegramMessageId =
-            await sendStreamingMessage(
-              chatId,
-              text + " ▌",
-              null,
-              originalMessageId
-            );
+          telegramMessageId = await sendStreamingMessage(
+            chatId,
+            text + " ▌",
+            null,
+            originalMessageId,
+          );
         } else {
           await sendStreamingMessage(
             chatId,
             text + " ▌",
             telegramMessageId,
-            null
+            null,
           );
         }
       } catch (error) {
-        console.error(
-          "[Telegram Stream]",
-          error.message
-        );
+        console.error("[Telegram Stream]", error.message);
       }
     };
 
-    const aiResponseText =
-      await generateGeminiWithRotation(
-        historyMessages,
-        userParts,
-        chatId,
-        originalMessageId,
-        updateTelegram
-      );
+    const aiResponseText = await generateGeminiWithRotation(
+      historyMessages,
+      userParts,
+      chatId,
+      originalMessageId,
+      updateTelegram,
+    );
 
     // =========================
     // FINAL MESSAGE
     // =========================
     if (aiResponseText) {
       if (!telegramMessageId) {
-        telegramMessageId =
-          await sendStreamingMessage(
-            chatId,
-            aiResponseText,
-            null,
-            originalMessageId
-          );
+        telegramMessageId = await sendStreamingMessage(
+          chatId,
+          aiResponseText,
+          null,
+          originalMessageId,
+        );
       } else {
         await sendStreamingMessage(
           chatId,
           aiResponseText,
           telegramMessageId,
-          null
+          null,
         );
       }
 
       historyMessages.push({
         role: "user",
-        content: promptTextOnly
+        content: promptTextOnly,
       });
 
       historyMessages.push({
         role: "model",
-        content: aiResponseText
+        content: aiResponseText,
       });
 
-      await saveChatMemory(
-        chatId,
-        historyMessages
-      );
+      await saveChatMemory(chatId, historyMessages);
     }
-
   } catch (error) {
-    console.error(
-      "Lỗi xử lý Gemini:",
-      error
-    );
+    console.error("Lỗi xử lý Gemini:", error);
 
     await sendOrUpdateMessage(
       chatId,
       `❌ *Đã xảy ra lỗi.* Hiện không thể phản hồi.`,
       null,
       originalMessageId,
-      "Markdown"
+      "Markdown",
     );
   }
 }
@@ -935,8 +900,10 @@ async function handleUpdate(update) {
 
   // 1. FIX LỤC LẠI TIN NHẮN CŨ: Bỏ qua tin nhắn đã gửi quá 60 giây trước
   const nowSec = Math.floor(Date.now() / 1000);
-  if (message.date && (nowSec - message.date > 60)) {
-    console.log(`[Skip] Bỏ qua tin nhắn cũ (${nowSec - message.date}s) ID: ${message.message_id}`);
+  if (message.date && nowSec - message.date > 60) {
+    console.log(
+      `[Skip] Bỏ qua tin nhắn cũ (${nowSec - message.date}s) ID: ${message.message_id}`,
+    );
     return;
   }
 
@@ -949,17 +916,22 @@ async function handleUpdate(update) {
     await sendOrUpdateMessage(
       chatId,
       "👋 *Xin chào!*\n\nTôi là Bot AI.\n\n" +
-      "💬 *Cách tương tác trong nhóm:*\n" +
-      "/clearmy để xóa bộ nhớ trò chuyện",
+        "💬 *Cách tương tác trong nhóm:*\n" +
+        "/clearmy để xóa bộ nhớ trò chuyện",
       null,
-      originalMessageId
+      originalMessageId,
     );
     return;
   }
 
   if (rawText.startsWith("/clearmy")) {
     await clearChatMemory(chatId);
-    await sendOrUpdateMessage(chatId, "✅ *Đã xóa bộ nhớ cuộc trò chuyện!*", null, originalMessageId);
+    await sendOrUpdateMessage(
+      chatId,
+      "✅ *Đã xóa bộ nhớ cuộc trò chuyện!*",
+      null,
+      originalMessageId,
+    );
     return;
   }
 
@@ -975,7 +947,9 @@ async function handleUpdate(update) {
   const lockKey = `lock:user:${uid}`;
   const acquiredLock = await redis.set(lockKey, "processing", "NX", "EX", 30);
   if (!acquiredLock) {
-    console.log(`[Lock] User ${uid} đang có 1 tin nhắn đang xử lý, bỏ qua tin nhắn mới này.`);
+    console.log(
+      `[Lock] User ${uid} đang có 1 tin nhắn đang xử lý, bỏ qua tin nhắn mới này.`,
+    );
     return;
   }
 
@@ -983,8 +957,11 @@ async function handleUpdate(update) {
     // Thông tin người gửi
     const firstName = message.from?.first_name || "";
     const lastName = message.from?.last_name || "";
-    const senderName = [firstName, lastName].filter(Boolean).join(" ") || "Người dùng";
-    const senderHandle = message.from?.username ? `@${message.from.username}` : "Không có";
+    const senderName =
+      [firstName, lastName].filter(Boolean).join(" ") || "Người dùng";
+    const senderHandle = message.from?.username
+      ? `@${message.from.username}`
+      : "Không có";
 
     const userRole = await getUserRole(chatId, uid, message.chat.type);
 
@@ -998,25 +975,30 @@ async function handleUpdate(update) {
       if (chatMetadata?.linked_chat_id) {
         const channelMeta = await getChatMetadata(chatMetadata.linked_chat_id);
         if (channelMeta) {
-          linkedChannelInfo = `Tên kênh: "${channelMeta.title || 'N/A'}" | ID: ${channelMeta.id} | Username: ${channelMeta.username ? '@' + channelMeta.username : 'Riêng tư'} | Link: ${channelMeta.invite_link || 'Không có'}`;
+          linkedChannelInfo = `Tên kênh: "${channelMeta.title || "N/A"}" | ID: ${channelMeta.id} | Username: ${channelMeta.username ? "@" + channelMeta.username : "Riêng tư"} | Link: ${channelMeta.invite_link || "Không có"}`;
         }
       }
 
-      const ownersList = adminData.owners.length > 0 ? adminData.owners.join("; ") : "Không xác định";
-      const adminsList = adminData.admins.length > 0 ? adminData.admins.join("; ") : "Không có";
+      const ownersList =
+        adminData.owners.length > 0
+          ? adminData.owners.join("; ")
+          : "Không xác định";
+      const adminsList =
+        adminData.admins.length > 0 ? adminData.admins.join("; ") : "Không có";
 
-      groupDetailsStr = `\n[Thông tin Nhóm Hiện Tại]:\n` +
-        `- Tên nhóm: "${chatMetadata?.title || message.chat.title || 'N/A'}"\n` +
-        `- Mô tả nhóm: "${chatMetadata?.description || 'Không có'}"\n` +
-        `- Link nhóm: "${chatMetadata?.invite_link || 'Không có'}"\n` +
+      groupDetailsStr =
+        `\n[Thông tin Nhóm Hiện Tại]:\n` +
+        `- Tên nhóm: "${chatMetadata?.title || message.chat.title || "N/A"}"\n` +
+        `- Mô tả nhóm: "${chatMetadata?.description || "Không có"}"\n` +
+        `- Link nhóm: "${chatMetadata?.invite_link || "Không có"}"\n` +
         `- Chủ nhóm (Owners): ${ownersList}\n` +
         `- Danh sách Quản trị viên (Admins): ${adminsList}\n` +
         `- Kênh liên kết với nhóm: [${linkedChannelInfo}]`;
     }
 
     // Cờ nhận biết tin nhắn đăng từ Kênh liên kết
-    const channelPostNote = message.is_automatic_forward 
-      ? " [LƯU Ý: Đây là bài viết tự động gửi từ Kênh liên kết vào nhóm]" 
+    const channelPostNote = message.is_automatic_forward
+      ? " [LƯU Ý: Đây là bài viết tự động gửi từ Kênh liên kết vào nhóm]"
       : "";
 
     // Ngữ cảnh Reply
@@ -1025,9 +1007,14 @@ async function handleUpdate(update) {
       const rMsg = message.reply_to_message;
       const rFrom = rMsg.from;
       const isBotSelf = rFrom?.id === botInfo.id;
-      const rName = [rFrom?.first_name, rFrom?.last_name].filter(Boolean).join(" ") || "Người dùng";
+      const rName =
+        [rFrom?.first_name, rFrom?.last_name].filter(Boolean).join(" ") ||
+        "Người dùng";
       const rHandle = rFrom?.username ? `@${rFrom.username}` : "Không có";
-      const rText = rMsg.text || rMsg.caption || "(Nội dung không phải văn bản/Ảnh/Sticker)";
+      const rText =
+        rMsg.text ||
+        rMsg.caption ||
+        "(Nội dung không phải văn bản/Ảnh/Sticker)";
 
       replyContext = `\n[Đang trả lời tin nhắn của ${isBotSelf ? "Chính Bot" : `${rName} (${rHandle}, ID: ${rFrom?.id})`}: "${rText}"]`;
     }
@@ -1037,7 +1024,8 @@ async function handleUpdate(update) {
       stickerInfo = ` [Gửi Sticker file_id: "${message.sticker.file_id}", Emoji: "${message.sticker.emoji || "N/A"}"]`;
     }
 
-    const userHeader = `[Thời gian hiện tại ở Việt Nam: ${getVietnamTimeString()}]\n` +
+    const userHeader =
+      `[Thời gian hiện tại ở Việt Nam: ${getVietnamTimeString()}]\n` +
       `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole}]` +
       `${channelPostNote}` +
       `${replyContext}` +
@@ -1058,8 +1046,12 @@ async function handleUpdate(update) {
       userParts.push(fileData);
     }
 
-    await processGeminiResponse(chatId, userParts, promptTextOnly, originalMessageId);
-
+    await processGeminiResponse(
+      chatId,
+      userParts,
+      promptTextOnly,
+      originalMessageId,
+    );
   } finally {
     // Giải phóng khóa sau khi xử lý xong tin nhắn
     await redis.del(lockKey).catch(() => {});
@@ -1081,4 +1073,3 @@ module.exports = async (req, res) => {
     res.status(405).json({ error: "Method not allowed" });
   }
 };
-                    
