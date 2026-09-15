@@ -500,6 +500,39 @@ async function sendMessageRaw(
   });
 }
 
+async function sendOrUpdateMessage(
+  chatId,
+  text,
+  messageId = null,
+  replyToMessageId = null,
+  parseMode = "Markdown"
+) {
+  try {
+    const safeText = text.slice(0, 4000);
+    const contentToSend = parseMode === "Markdown" ? cleanMarkdownForTelegram(safeText) : safeText;
+    
+    return await sendMessageRaw(
+      chatId,
+      contentToSend,
+      messageId,
+      replyToMessageId,
+      parseMode
+    );
+  } catch (error) {
+    // Nếu lỗi Markdown parse entities thì fallback gửi dạng Plain Text
+    if (error.message?.includes("can't parse entities")) {
+      return await sendMessageRaw(
+        chatId,
+        text,
+        messageId,
+        replyToMessageId,
+        null
+      );
+    }
+    console.error("Lỗi sendOrUpdateMessage:", error.message);
+  }
+}
+
 // Đã tối ưu chuyển đổi Markdown và bắt lỗi tin nhắn reply bị xóa
 async function sendStreamingMessage(
   chatId,
