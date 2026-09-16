@@ -185,7 +185,34 @@ async function sendSticker(chatId, fileId, replyToMessageId = null) {
   return data.result;
 }
 
-// 6. Tìm kiếm Web (DuckDuckGo Lite)
+// 6. Mute (Cấm chat) thành viên trong nhóm
+async function muteUser(chatId, userId, durationSeconds) {
+  // Telegram giới hạn duration: tối thiểu 30s (dưới 30s Telegram coi là vĩnh viễn), tối đa 180s theo yêu cầu
+  const duration = Math.max(30, Math.min(Number(durationSeconds) || 30, 180));
+  const untilDate = Math.floor(Date.now() / 1000) + duration;
+
+  const res = await fetch(`${TELEGRAM_API_URL}/restrictChatMember`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      user_id: userId,
+      permissions: {
+        can_send_messages: false,
+      },
+      until_date: untilDate,
+    }),
+  });
+
+  const data = await res.json();
+  if (!data.ok) {
+    throw new Error(data.description || "Không thể thực hiện lệnh mute.");
+  }
+
+  return duration;
+}
+
+// 7. Tìm kiếm Web (DuckDuckGo Lite)
 async function searchDuckDuckGo(query) {
   try {
     const res = await fetch(`https://lite.duckduckgo.com/lite/`, {
@@ -227,7 +254,7 @@ async function searchDuckDuckGo(query) {
   }
 }
 
-// 7. Lấy thời tiết an toàn
+// 8. Lấy thời tiết an toàn
 async function getWeather(location) {
   try {
     const res = await fetch(
@@ -280,7 +307,7 @@ async function getFavoriteStickers() {
   return all;
 }
 
-// 8. Lấy thời gian Việt Nam
+// 9. Lấy thời gian Việt Nam
 function getVietnamTimeString() {
   return new Date().toLocaleString("vi-VN", {
     timeZone: "Asia/Ho_Chi_Minh",
@@ -519,7 +546,6 @@ async function sendOrUpdateMessage(
       parseMode
     );
   } catch (error) {
-    // Nếu lỗi Markdown parse entities thì fallback gửi dạng Plain Text
     if (error.message?.includes("can't parse entities")) {
       return await sendMessageRaw(
         chatId,
@@ -533,7 +559,6 @@ async function sendOrUpdateMessage(
   }
 }
 
-// Đã tối ưu chuyển đổi Markdown và bắt lỗi tin nhắn reply bị xóa
 async function sendStreamingMessage(
   chatId,
   text,
@@ -542,7 +567,6 @@ async function sendStreamingMessage(
 ) {
   if (!text) text = hide_text;
 
-  // Telegram giới hạn khoảng 4096 ký tự
   const safeText = text.slice(0, 4000);
 
   try {
@@ -554,7 +578,6 @@ async function sendStreamingMessage(
       "Markdown",
     );
   } catch (error) {
-    // Markdown lỗi → gửi plain text
     if (error.message?.includes("can't parse entities")) {
       return await sendMessageRaw(
         chatId,
@@ -646,6 +669,29 @@ const GEMINI_TOOLS = [
             },
           },
           required: ["reason"],
+        },
+      },
+      {
+        name: "mute_user",
+        description:
+          "Tạm thời cấm chat (mute) một thành viên trong nhóm với thời gian tối đa 180 giây (tối thiểu 30s).",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            user_id: {
+              type: "NUMBER",
+              description: "ID Telegram của người dùng cần mute",
+            },
+            duration_seconds: {
+              type: "NUMBER",
+              description: "Thời gian mute tính bằng giây (tối đa 180s, tối thiểu 30s)",
+            },
+            reason: {
+              type: "STRING",
+              description: "Lý do cấm chat",
+            },
+          },
+          required: ["user_id", "duration_seconds"],
         },
       },
     ],
@@ -758,12 +804,10 @@ async function generateGeminiWithRotation(
                 result: "Không có sticker pack yêu thích.",
               };
             } else {
-              // Xáo trộn danh sách sticker ngẫu nhiên
               const shuffled = [...stickers].sort(() => Math.random() - 0.5);
               let sent = false;
               let lastError = null;
 
-              // Duyệt và thử từng sticker đến khi gửi thành công
               for (const sticker of shuffled) {
                 try {
                   await sendSticker(chatId, sticker.file_id, originalMessageId);
@@ -788,6 +832,30 @@ async function generateGeminiWithRotation(
                   result:
                     "Toàn bộ sticker trong pack yêu thích đều không gửi được.",
                   error: lastError?.message || "Unknown sticker error",
+                };
+              }
+            }
+          } else if (call.name === "mute_user") {
+            const targetUserId = Number(call.args?.user_id);
+            const durationReq = Number(call.args?.duration_seconds || 60);
+            const reason = String(call.args?.reason || "Không có lý do");
+
+            if (!targetUserId) {
+              toolResponse = {
+                success: false,
+                error: "Không có user_id hợp lệ để mute.",
+              };
+            } else {
+              try {
+                const appliedDuration = await muteUser(chatId, targetUserId, durationReq);
+                toolResponse = {
+                  success: true,
+                  result: `Đã mute thành công user ID ${targetUserId} trong ${appliedDuration} giây. Lý do: ${reason}`,
+                };
+              } catch (err) {
+                toolResponse = {
+                  success: false,
+                  error: `Không thể mute user ${targetUserId}: ${err.message}`,
                 };
               }
             }
@@ -826,7 +894,6 @@ async function generateGeminiWithRotation(
         }
       } catch (_) {}
 
-      // Thành công → lần sau bắt đầu từ key/model kế tiếp
       currentApiKeyIndex = (apiKeyIndex + 1) % GEMINI_API_KEYS.length;
 
       currentModelIndex = (modelIndex + 1) % GEMINI_MODELS.length;
@@ -839,7 +906,6 @@ async function generateGeminiWithRotation(
 
       lastError = error;
 
-      // Thử key/model tiếp theo
       continue;
     }
   }
@@ -860,7 +926,6 @@ async function processGeminiResponse(
 
     const historyMessages = await getChatMemory(chatId);
 
-    // Tin nhắn Telegram tạm
     let telegramMessageId = null;
 
     let lastUpdate = 0;
@@ -869,10 +934,8 @@ async function processGeminiResponse(
     const updateTelegram = async (text) => {
       if (!text) return;
 
-      // Không update nếu text không đổi
       if (text === lastText) return;
 
-      // Giới hạn tốc độ edit Telegram
       const now = Date.now();
 
       if (now - lastUpdate < 700 && text.length < 3900) {
@@ -911,9 +974,6 @@ async function processGeminiResponse(
       updateTelegram,
     );
 
-    // =========================
-    // FINAL MESSAGE
-    // =========================
     if (aiResponseText) {
       if (!telegramMessageId) {
         telegramMessageId = await sendStreamingMessage(
@@ -960,7 +1020,6 @@ async function handleUpdate(update) {
   const message = update.message;
   if (!message) return;
 
-  // 1. FIX LỤC LẠI TIN NHẮN CŨ: Bỏ qua tin nhắn đã gửi quá 60 giây trước
   const nowSec = Math.floor(Date.now() / 1000);
   if (message.date && nowSec - message.date > 60) {
     console.log(
@@ -997,7 +1056,6 @@ async function handleUpdate(update) {
     return;
   }
 
-  // Lọc điều kiện phản hồi trong nhóm
   if (!shouldRespondInGroup(message, rawText, botInfo.username)) {
     return;
   }
@@ -1005,7 +1063,6 @@ async function handleUpdate(update) {
   const uid = message.from?.id;
   if (!uid) return;
 
-  // 2. FIX CHẶN SPAM KHI CÓ TIN NHẮN ĐANG XỬ LÝ (Khóa theo UID người gửi trong 30 giây)
   const lockKey = `lock:user:${uid}`;
   const acquiredLock = await redis.set(lockKey, "processing", "NX", "EX", 30);
   if (!acquiredLock) {
@@ -1016,7 +1073,6 @@ async function handleUpdate(update) {
   }
 
   try {
-    // Thông tin người gửi
     const firstName = message.from?.first_name || "";
     const lastName = message.from?.last_name || "";
     const senderName =
@@ -1027,7 +1083,6 @@ async function handleUpdate(update) {
 
     const userRole = await getUserRole(chatId, uid, message.chat.type);
 
-    // Thu thập thông tin nhóm & kênh liên kết nếu ở trong nhóm
     let groupDetailsStr = "";
     if (message.chat.type !== "private") {
       const chatMetadata = await getChatMetadata(chatId);
@@ -1058,12 +1113,10 @@ async function handleUpdate(update) {
         `- Kênh liên kết với nhóm: [${linkedChannelInfo}]`;
     }
 
-    // Cờ nhận biết tin nhắn đăng từ Kênh liên kết
     const channelPostNote = message.is_automatic_forward
       ? " [LƯU Ý: Đây là bài viết tự động gửi từ Kênh liên kết vào nhóm]"
       : "";
 
-    // Ngữ cảnh Reply
     let replyContext = "";
     if (message.reply_to_message) {
       const rMsg = message.reply_to_message;
@@ -1115,7 +1168,6 @@ async function handleUpdate(update) {
       originalMessageId,
     );
   } finally {
-    // Giải phóng khóa sau khi xử lý xong tin nhắn
     await redis.del(lockKey).catch(() => {});
   }
 }
