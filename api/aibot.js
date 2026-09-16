@@ -698,6 +698,8 @@ const GEMINI_TOOLS = [
   },
 ];
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function generateGeminiWithRotation(
   historyMessages,
   userParts,
@@ -706,18 +708,15 @@ async function generateGeminiWithRotation(
   onTextUpdate,
 ) {
   let lastError = null;
-
   const totalAttempts = GEMINI_API_KEYS.length * GEMINI_MODELS.length;
 
   for (let attempt = 0; attempt < totalAttempts; attempt++) {
     const apiKeyIndex =
       (currentApiKeyIndex + Math.floor(attempt / GEMINI_MODELS.length)) %
       GEMINI_API_KEYS.length;
-
     const modelIndex = (currentModelIndex + attempt) % GEMINI_MODELS.length;
 
     const genAI = geminiClients[apiKeyIndex];
-
     const modelName = GEMINI_MODELS[modelIndex];
 
     try {
@@ -736,73 +735,45 @@ async function generateGeminiWithRotation(
       });
 
       let result = await chat.sendMessageStream(userParts);
-
       let fullText = "";
 
       for await (const chunk of result.stream) {
         try {
           const chunkText = chunk.text();
-
           if (chunkText) {
             fullText += chunkText;
-
             await onTextUpdate(fullText);
           }
         } catch (_) {}
       }
 
       const finalResponse = await result.response;
-
       let calls = finalResponse.functionCalls();
 
+      // Xử lý Tool Calling
       while (calls && calls.length > 0) {
         const call = calls[0];
-
-        let toolResponse = {
-          success: false,
-        };
+        let toolResponse = { success: false };
 
         try {
           if (call.name === "web_search") {
             const query = String(call.args?.query || "").trim();
-
-            toolResponse = {
-              success: true,
-              result: await searchDuckDuckGo(query),
-            };
+            toolResponse = { success: true, result: await searchDuckDuckGo(query) };
           } else if (call.name === "get_weather") {
             const location = String(call.args?.location || "").trim();
-
-            toolResponse = {
-              success: true,
-              result: await getWeather(location),
-            };
+            toolResponse = { success: true, result: await getWeather(location) };
           } else if (call.name === "react_message") {
             const emoji = String(call.args?.emoji || "👍");
-
             await setMessageReaction(chatId, originalMessageId, emoji);
-
-            toolResponse = {
-              success: true,
-              result: `Đã thả cảm xúc ${emoji}`,
-            };
+            toolResponse = { success: true, result: `Đã thả cảm xúc ${emoji}` };
           } else if (call.name === "send_sticker") {
             const fileId = String(call.args?.file_id || "").trim();
-
             await sendSticker(chatId, fileId, originalMessageId);
-
-            toolResponse = {
-              success: true,
-              result: "Đã gửi sticker",
-            };
+            toolResponse = { success: true, result: "Đã gửi sticker" };
           } else if (call.name === "send_favorite_sticker") {
             const stickers = await getFavoriteStickers();
-
             if (stickers.length === 0) {
-              toolResponse = {
-                success: false,
-                result: "Không có sticker pack yêu thích.",
-              };
+              toolResponse = { success: false, result: "Không có sticker pack yêu thích." };
             } else {
               const shuffled = [...stickers].sort(() => Math.random() - 0.5);
               let sent = false;
@@ -820,67 +791,72 @@ async function generateGeminiWithRotation(
                   break;
                 } catch (error) {
                   lastError = error;
-                  console.warn(
-                    `[Sticker] Lỗi gửi ${sticker.file_id}: ${error.message}. Đang thử sticker khác...`,
-                  );
                 }
               }
 
               if (!sent) {
                 toolResponse = {
                   success: false,
-                  result:
-                    "Toàn bộ sticker trong pack yêu thích đều không gửi được.",
+                  result: "Toàn bộ sticker trong pack yêu thích đều không gửi được.",
                   error: lastError?.message || "Unknown sticker error",
                 };
               }
             }
-          } else if (call.name === "mute_user") {
+          } else if (call.name === "ban_user") {
             const targetUserId = Number(call.args?.user_id);
-            const durationReq = Number(call.args?.duration_seconds || 60);
-            const reason = String(call.args?.reason || "Không có lý do");
+            const duration = Number(call.args?.duration || 60);
 
             if (!targetUserId) {
-              toolResponse = {
-                success: false,
-                error: "Không có user_id hợp lệ để mute.",
-              };
+              toolResponse = { success: false, result: "Thất bại: ID người dùng không hợp lệ." };
             } else {
-              try {
-                const appliedDuration = await muteUser(chatId, targetUserId, durationReq);
+              const resBan = await banChatMember(chatId, targetUserId, duration);
+              if (resBan.success) {
                 toolResponse = {
                   success: true,
-                  result: `Đã mute thành công user ID ${targetUserId} trong ${appliedDuration} giây. Lý do: ${reason}`,
+                  result: `Đã ban thành công user ID ${targetUserId} trong ${resBan.duration} giây.`,
                 };
-              } catch (err) {
+              } else {
                 toolResponse = {
                   success: false,
-                  error: `Không thể mute user ${targetUserId}: ${err.message}`,
+                  result: `Không thể ban user ID ${targetUserId}: ${resBan.error}`,
                 };
               }
             }
           }
         } catch (toolError) {
-          toolResponse = {
-            success: false,
-            error: toolError.message,
-          };
+          toolResponse = { success: false, error: toolError.message };
         }
 
-        result = await chat.sendMessage([
-          {
-            functionResponse: {
-              name: call.name,
-              response: toolResponse,
-            },
-          },
-        ]);
+        // TỰ ĐỘNG RETRY NẾU DÍNH LỖI 429 KHI GỬI KẾT QUẢ TOOL
+        let toolSubmitSuccess = false;
+        for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
+          try {
+            result = await chat.sendMessage([
+              {
+                functionResponse: {
+                  name: call.name,
+                  response: toolResponse,
+                },
+              },
+            ]);
+            toolSubmitSuccess = true;
+            break;
+          } catch (sendErr) {
+            if (sendErr.status === 429 && toolRetry === 0) {
+              console.warn("[Gemini 429] Bị giới hạn Quota khi gửi Tool response. Đang chờ 3.5s để thử lại...");
+              await sleep(3500); // Chờ 3.5 giây theo thông báo của Google
+            } else {
+              throw sendErr; // Vượt quá thử lại hoặc lỗi khác -> Nhảy sang Key/Model kế tiếp
+            }
+          }
+        }
+
+        if (!toolSubmitSuccess) break;
 
         calls = result.response.functionCalls();
 
         try {
           const nextText = result.response.text();
-
           if (nextText) {
             fullText = nextText;
             await onTextUpdate(fullText);
@@ -895,7 +871,6 @@ async function generateGeminiWithRotation(
       } catch (_) {}
 
       currentApiKeyIndex = (apiKeyIndex + 1) % GEMINI_API_KEYS.length;
-
       currentModelIndex = (modelIndex + 1) % GEMINI_MODELS.length;
 
       return fullText;
@@ -903,9 +878,7 @@ async function generateGeminiWithRotation(
       console.warn(
         `[Gemini] Key ${apiKeyIndex + 1} | ${modelName} lỗi: ${error.message}`,
       );
-
       lastError = error;
-
       continue;
     }
   }
