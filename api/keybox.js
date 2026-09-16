@@ -141,8 +141,11 @@ async function validateKeyboxXml(rawXmlContent) {
     const chainValid = await verifyCertificateChain(pemCerts);
     if (!chainValid) return false;
 
-    const rootCertInfo = identifyRootCert(pemCerts[pemCerts.length - 1]);
-    if (rootCertInfo.name === 'unknown') return false;
+    // Bỏ qua kiểm tra Root Certificate nếu NumberOfCertificates = 4
+    if (numCerts !== 4) {
+      const rootCertInfo = identifyRootCert(pemCerts[pemCerts.length - 1]);
+      if (rootCertInfo.name === 'unknown') return false;
+    }
 
     const serialNumber = cert.serialNumber.replace(/^0x/i, '').toLowerCase();
     const revocationList = await loadRevocationList();
