@@ -709,7 +709,49 @@ const GEMINI_TOOLS = [
   },
 ];
 
+async function deleteTelegramMessage(chatId, messageId) {
+  if (!messageId) return false;
+
+  try {
+    const res = await fetch(`${TELEGRAM_API_URL}/deleteMessage`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (!data.ok) {
+      console.warn("[Telegram] Không thể xóa message:", data.description);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("[Telegram] Lỗi xóa message:", error.message);
+    return false;
+  }
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isQuotaZeroError(error) {
+  const message = String(error?.message || "");
+
+  return (
+    error?.status === 429 &&
+    (
+      message.includes("limit: 0") ||
+      message.includes("FreeTier") ||
+      message.includes("free_tier")
+    )
+  );
+}
 
 async function generateGeminiWithRotation(
   historyMessages,
@@ -717,6 +759,7 @@ async function generateGeminiWithRotation(
   chatId,
   originalMessageId,
   onTextUpdate,
+  onToolOnlyResponse,
 ) {
   let lastError = null;
   const totalAttempts = GEMINI_API_KEYS.length * GEMINI_MODELS.length;
@@ -789,42 +832,72 @@ async function generateGeminiWithRotation(
             const emoji = String(call.args?.emoji || "👍");
             await setMessageReaction(chatId, originalMessageId, emoji);
             toolResponse = { success: true, result: `Đã thả cảm xúc ${emoji}` };
-          } else if (call.name === "send_sticker") {
-            const fileId = String(call.args?.file_id || "").trim();
-            await sendSticker(chatId, fileId, originalMessageId);
-            toolResponse = { success: true, result: "Đã gửi sticker" };
-          } else if (call.name === "send_favorite_sticker") {
-            const stickers = await getFavoriteStickers();
-            if (stickers.length === 0) {
-              toolResponse = { success: false, result: "Không có sticker pack yêu thích." };
-            } else {
-              const shuffled = [...stickers].sort(() => Math.random() - 0.5);
-              let sent = false;
-              let lastError = null;
-
-              for (const sticker of shuffled) {
-                try {
-                  await sendSticker(chatId, sticker.file_id, originalMessageId);
-                  toolResponse = {
-                    success: true,
-                    result: `Đã gửi sticker từ pack ${sticker.pack}`,
-                    emoji: sticker.emoji,
-                  };
-                  sent = true;
-                  break;
-                } catch (error) {
-                  lastError = error;
-                }
-              }
-
-              if (!sent) {
+        } else if (call.name === "send_sticker") {
+          const fileId = String(call.args?.file_id || "").trim();
+        
+          await sendSticker(
+            chatId,
+            fileId,
+            originalMessageId,
+          );
+        
+          toolResponse = {
+            success: true,
+            result: "Đã gửi sticker",
+          };
+        
+          await onToolOnlyResponse();
+        
+        } else if (call.name === "send_favorite_sticker") {
+          const stickers = await getFavoriteStickers();
+        
+          if (stickers.length === 0) {
+            toolResponse = {
+              success: false,
+              result: "Không có sticker pack yêu thích.",
+            };
+          } else {
+            const shuffled = [...stickers].sort(
+              () => Math.random() - 0.5
+            );
+        
+            let sent = false;
+            let lastError = null;
+        
+            for (const sticker of shuffled) {
+              try {
+                await sendSticker(
+                  chatId,
+                  sticker.file_id,
+                  originalMessageId,
+                );
+        
                 toolResponse = {
-                  success: false,
-                  result: "Toàn bộ sticker trong pack yêu thích đều không gửi được.",
-                  error: lastError?.message || "Unknown sticker error",
+                  success: true,
+                  result: `Đã gửi sticker từ pack ${sticker.pack}`,
+                  emoji: sticker.emoji,
                 };
+        
+                sent = true;
+        
+                // XÓA "🤔 Thinking..."
+                await onToolOnlyResponse();
+        
+                break;
+              } catch (error) {
+                lastError = error;
               }
             }
+        
+            if (!sent) {
+              toolResponse = {
+                success: false,
+                result:
+                  "Toàn bộ sticker trong pack yêu thích đều không gửi được.",
+                error: lastError?.message || "Unknown sticker error",
+              };
+            }
+          }
           } else if (call.name === "mute_user" || call.name === "ban_user") {
             const targetUserId = Number(call.args?.user_id);
             const duration = Number(call.args?.duration_seconds || call.args?.duration || 60);
@@ -901,7 +974,20 @@ async function generateGeminiWithRotation(
       console.warn(
         `[Gemini] Key ${apiKeyIndex + 1} | ${modelName} lỗi: ${error.message}`,
       );
+    
       lastError = error;
+    
+      if (isQuotaZeroError(error)) {
+        console.warn(
+          `[Gemini] ${modelName} đang có quota = 0, bỏ qua model này.`,
+        );
+        continue;
+      }
+    
+      if (error?.status === 429) {
+        await sleep(2000);
+      }
+    
       continue;
     }
   }
@@ -964,6 +1050,13 @@ async function processGeminiResponse(
       chatId,
       originalMessageId,
       updateTelegram,
+      async () => {
+        if (telegramMessageId) {
+          await deleteTelegramMessage(chatId, telegramMessageId);
+          telegramMessageId = null;
+          lastText = "";
+        }
+      },
     );
 
     if (aiResponseText) {
