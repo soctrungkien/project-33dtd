@@ -80,11 +80,12 @@ function cleanMarkdownForTelegram(text) {
   return (
     text
       // Chuyển **bold** thành *bold* (Chuẩn của Telegram Markdown v1)
-      .replace(/\*\*(.*?)\*\*/g, "*$1*")
+      //.replace(/\*\*(.*?)\*\*/g, "*$1*")
       // Chuyển __italic__ thành _italic_
-      .replace(/__(.*?)__/g, "_$1_")
+      //.replace(/__(.*?)__/g, "_$1_")
       // Chuyển tiêu đề ### Title thành *Title*
-      .replace(/^#{1,6}\s+(.*)$/gm, "*$1*")
+      //.replace(/^#{1,6}\s+(.*)$/gm, "*$1*")
+      // k cần nữa
   );
 }
 
@@ -359,29 +360,130 @@ async function getStickerPack(packName) {
   }
 }
 
-// Lấy buffer file
+const MIME_TYPES_URL =
+  "https://pastefy.app/54r4Jf0t/raw";
+
+let mimeMapCache = null;
+
+async function loadMimeMap() {
+  if (mimeMapCache) return mimeMapCache;
+
+  try {
+    const res = await fetch(MIME_TYPES_URL);
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const text = await res.text();
+
+    const mimeMap = new Map();
+
+    // Parse:
+    // ".3dm":  "x-world/x-3dmf",
+    // ".7z":   "application/x-7z-compressed",
+    // ...
+    const regex = /"(\.[^"]+)"\s*:\s*"([^"]+)"/g;
+
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const ext = match[1].toLowerCase();
+      const mime = match[2].trim();
+
+      if (ext && mime) {
+        mimeMap.set(ext, mime);
+      }
+    }
+
+    // Fallback nếu source không parse được
+    if (mimeMap.size === 0) {
+      throw new Error("Không tìm thấy MIME map trong mimetypes.go");
+    }
+
+    mimeMapCache = mimeMap;
+
+    console.log(`Đã load ${mimeMap.size} MIME types`);
+
+    return mimeMap;
+  } catch (error) {
+    console.error("Lỗi tải mimetypes.go:", error);
+
+    // MIME tối thiểu để bot vẫn hoạt động
+    const fallback = new Map([
+      [".jpg", "image/jpeg"],
+      [".jpeg", "image/jpeg"],
+      [".png", "image/png"],
+      [".gif", "image/gif"],
+      [".webp", "image/webp"],
+      [".bmp", "image/bmp"],
+      [".svg", "image/svg+xml"],
+      [".mp4", "video/mp4"],
+      [".mp3", "audio/mpeg"],
+      [".pdf", "application/pdf"],
+      [".zip", "application/zip"],
+      [".7z", "application/x-7z-compressed"],
+      [".json", "application/json"],
+      [".txt", "text/plain"],
+    ]);
+
+    mimeMapCache = fallback;
+
+    return fallback;
+  }
+}
+
+function getExtension(filePath) {
+  const cleanPath = filePath.split("?")[0];
+
+  const index = cleanPath.lastIndexOf(".");
+  if (index === -1) return "";
+
+  return cleanPath.slice(index).toLowerCase();
+}
+
 async function getTelegramFileBuffer(fileId) {
   try {
     const fileRes = await fetch(
-      `${TELEGRAM_API_URL}/getFile?file_id=${fileId}`,
+      `${TELEGRAM_API_URL}/getFile?file_id=${encodeURIComponent(fileId)}`
     );
+
     const fileData = await fileRes.json();
-    if (!fileData.ok || !fileData.result?.file_path) return null;
+
+    if (!fileData.ok || !fileData.result?.file_path) {
+      return null;
+    }
+
+    const filePath = fileData.result.file_path;
 
     const imgRes = await fetch(
-      `${TELEGRAM_FILE_URL}/${fileData.result.file_path}`,
+      `${TELEGRAM_FILE_URL}/${filePath}`
     );
+
+    if (!imgRes.ok) {
+      console.error(
+        "Lỗi tải file Telegram:",
+        imgRes.status,
+        imgRes.statusText
+      );
+      return null;
+    }
+
     const arrayBuffer = await imgRes.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    let mimeType = "image/jpeg";
-    if (fileData.result.file_path.endsWith(".png")) mimeType = "image/png";
-    if (fileData.result.file_path.endsWith(".webp")) mimeType = "image/webp";
+    const mimeMap = await loadMimeMap();
+
+    const ext = getExtension(filePath);
+
+    // Ưu tiên MIME lấy từ mimetypes.go
+    // Nếu không có extension thì dùng application/octet-stream
+    const mimeType =
+      mimeMap.get(ext) || "application/octet-stream";
 
     return {
       inlineData: {
         data: buffer.toString("base64"),
-        mimeType: mimeType,
+        mimeType,
       },
     };
   } catch (error) {
