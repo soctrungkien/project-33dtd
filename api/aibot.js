@@ -184,7 +184,7 @@ async function sendSticker(chatId, fileId, replyToMessageId = null) {
 // 6. Mute (Cấm chat) thành viên trong nhóm
 async function muteUser(chatId, userId, durationSeconds) {
   // Thay Math.max(30, ...) thành Math.max(36, ...)
-  const duration = Math.max(36, Math.min(Number(durationSeconds) || 36, 180));
+  const duration = Math.max(36, Math.min(Number(durationSeconds) || 36, 67));
   const untilDate = Math.floor(Date.now() / 1000) + duration;
 
   const res = await fetch(`${TELEGRAM_API_URL}/restrictChatMember`, {
@@ -825,7 +825,7 @@ const GEMINI_TOOLS = [
       {
         name: "mute_user",
         description:
-          "Tạm thời cấm chat (mute) một thành viên trong nhóm với thời gian tối đa 180 giây (tối thiểu 36s).",
+          "Tạm thời cấm chat (mute) một thành viên trong nhóm với thời gian tối đa 67 giây (tối thiểu 36s).",
         parameters: {
           type: "OBJECT",
           properties: {
@@ -836,7 +836,7 @@ const GEMINI_TOOLS = [
             duration_seconds: {
               type: "NUMBER",
               description:
-                "Thời gian mute tính bằng giây (tối đa 180s, tối thiểu 36s)",
+                "Thời gian mute tính bằng giây (tối đa 67s, tối thiểu 36s)",
             },
             reason: { type: "STRING", description: "Lý do cấm chat" },
           },
