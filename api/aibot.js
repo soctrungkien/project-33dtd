@@ -1455,6 +1455,8 @@ async function handleUpdate(update) {
   const rawText = message.text || message.caption || "";
   const botInfo = await getBotInfo();
 
+  const replyTargetId = message.from?.is_bot ? null : originalMessageId;
+
   if (rawText.startsWith("/start")) {
     await sendOrUpdateMessage(
       chatId,
@@ -1598,7 +1600,7 @@ async function handleUpdate(update) {
       chatId,
       userParts,
       promptTextOnly,
-      originalMessageId,
+      replyTargetId,
       senderHandle,
     );
   } finally {
