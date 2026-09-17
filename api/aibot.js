@@ -792,9 +792,6 @@ async function generateGeminiWithRotation(
         history: buildGeminiHistory(historyMessages),
       });
 
-      // Hiển thị trạng thái Thinking...
-      await onTextUpdate("🤔 Thinking...");
-
       let result = await chat.sendMessageStream(userParts);
       let fullText = "";
       let hasReceivedText = false;
@@ -961,7 +958,7 @@ async function generateGeminiWithRotation(
       }
 
       try {
-        if (!fullText || fullText === "🤔 Thinking...") {
+        if (!fullText) {
           fullText = finalResponse.text();
         }
       } catch (_) {}
@@ -1052,9 +1049,6 @@ async function processGeminiResponse(
       updateTelegram,
       async () => {
         if (telegramMessageId) {
-          await deleteTelegramMessage(chatId, telegramMessageId);
-          telegramMessageId = null;
-          lastText = "";
         }
       },
     );
@@ -1094,7 +1088,7 @@ async function processGeminiResponse(
     const tagUser = senderHandle && senderHandle !== "Không có" ? `${senderHandle} ` : "";
     await sendOrUpdateMessage(
       chatId,
-      `${tagUser}❌ *Đã xảy ra lỗi.* Hiện không thể phản hồi.`,
+      `${tagUser} "Lệnh đã đc thực hiện nhưng ko thếr tạo text trả lời*`,
       null,
       originalMessageId,
       "Markdown",
@@ -1122,8 +1116,8 @@ async function handleUpdate(update) {
   if (rawText.startsWith("/start")) {
     await sendOrUpdateMessage(
       chatId,
-      "👋 *Xin chào!*\n\nTôi là Bot AI.\n\n" +
-        "💬 *Cách tương tác trong nhóm:*\n" +
+      "👋 *Xin chào!*\n> Tôi là Bot AI tên là chan.\n" +
+        "💬 *command:*\n" +
         "/clearmy để xóa bộ nhớ trò chuyện",
       null,
       originalMessageId,
