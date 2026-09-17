@@ -1260,9 +1260,12 @@ async function generateGeminiWithRotation(
 
         // RETRY KHI DÍNH LỖI 429
         let toolSubmitSuccess = false;
+        const candidateParts = finalResponse.candidates?.[0]?.content?.parts || [];
+
         for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
           try {
             result = await chat.sendMessage([
+              ...candidateParts,
               {
                 functionResponse: {
                   name: call.name,
