@@ -1088,7 +1088,7 @@ async function processGeminiResponse(
     const tagUser = senderHandle && senderHandle !== "Không có" ? `${senderHandle} ` : "";
     await sendOrUpdateMessage(
       chatId,
-      `${tagUser} *Lệnh đã đc thực hiện nhưng ko thếr tạo text trả lời*`,
+      `${tagUser} *Lệnh đã đc thực hiện nhưng ko thể tạo text trả lời*`,
       null,
       originalMessageId,
       "Markdown",
