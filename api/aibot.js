@@ -28,7 +28,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_GENERATED_FILE_SIZE = 10 * 1024 * 1024;
 
 // Tỉ lệ tự động nhắn trong nhóm
-const AUTO_RESPONSE_CHANCE = parseFloat("0.005"); // 0.5%
+const AUTO_RESPONSE_CHANCE = parseFloat("0.00001"); // 0.001%
 
 const RAM_TTL_MS = 1 * 60 * 1000;
 const REDIS_TTL_SEC = 10 * 60;
