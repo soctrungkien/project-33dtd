@@ -32,7 +32,7 @@ const AUTO_RESPONSE_CHANCE = parseFloat("0.00001"); // 0.001%
 
 const RAM_TTL_MS = 1 * 60 * 1000;
 const REDIS_TTL_SEC = 10 * 60;
-const MAX_MESSAGES = 20;
+const MAX_MESSAGES = 10;
 
 const CUSTOM_PERSONALITY = process.env.BOT_PERSONALITY_AI || "";
 
@@ -1263,6 +1263,7 @@ async function generateGeminiWithRotation(
 
         for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
           try {
+            // 🔴 FIX: Gửi RIÊNG functionResponse, không trộn với text
             result = await chat.sendMessage([
               {
                 functionResponse: {
@@ -1289,6 +1290,9 @@ async function generateGeminiWithRotation(
 
         calls = result.response.functionCalls();
 
+        // 🔴 FIX: Sau khi gửi functionResponse thành công, 
+        // chỉ lấy text nếu có, nhưng KHÔNG lại mix nó vào functionResponse
+        // Chỉ update text cho response tiếp theo
         try {
           const nextText = result.response.text();
           if (nextText) {
@@ -1301,7 +1305,7 @@ async function generateGeminiWithRotation(
       try {
         if (!fullText) {
           try {
-            fullText = latestResponse.text();
+            fullText = finalResponse.text();
           } catch (_) {}
         }
       } catch (_) {}
@@ -1459,28 +1463,41 @@ async function handleUpdate(update) {
 
   const replyTargetId = message.from?.is_bot ? null : originalMessageId;
 
-  if (rawText.startsWith("/start")) {
-    await sendOrUpdateMessage(
-      chatId,
-      "👋 *Xin chào!*\n> Tôi là Bot AI tên là chan.\n" +
-        "💬 *command:*\n" +
-        "/clearmy để xóa bộ nhớ trò chuyện",
-      null,
-      originalMessageId,
-    );
-    return;
-  }
+  const botUsername = (await getBotUsername()).toLowerCase();
 
-  if (rawText.startsWith("/clearmy")) {
-    await clearChatMemory(chatId);
-    await sendOrUpdateMessage(
-      chatId,
-      "✅ *Đã xóa bộ nhớ cuộc trò chuyện!*",
-      null,
-      originalMessageId,
-    );
-    return;
-  }
+    if (rawText.startsWith("/start") || rawText.startsWith("/clearmy")) {
+      const command = rawText.split(/\s+/)[0];
+    
+      // Trong group: nếu có @username thì chỉ nhận @bot của mình
+      if (
+        chatType !== "private" &&
+        command.includes("@") &&
+        command.toLowerCase() !== `${command.split("@")[0].toLowerCase()}@${botUsername}`
+      ) {
+        return;
+      }
+    
+      if (rawText.startsWith("/start")) {
+        await sendOrUpdateMessage(
+          chatId,
+          "👋 *Xin chào!*\n> Tôi là Bot AI tên là chan.\n" +
+            "💬 *command:*\n" +
+            "/clearmy để xóa bộ nhớ trò chuyện",
+          null,
+          originalMessageId,
+        );
+        return;
+      }
+    
+      await clearChatMemory(chatId);
+      await sendOrUpdateMessage(
+        chatId,
+        "✅ *Đã xóa bộ nhớ cuộc trò chuyện!*",
+        null,
+        originalMessageId,
+      );
+      return;
+    }
 
   if (!shouldRespondInGroup(message, rawText, botInfo.username)) {
     return;
@@ -1598,13 +1615,15 @@ async function handleUpdate(update) {
         `\n- Tên/đường dẫn: ${fileData.filePath}`;
     }
 
-    await processGeminiResponse(
+    processGeminiResponse(
       chatId,
       userParts,
       promptTextOnly,
       replyTargetId,
       senderHandle,
-    );
+    ).catch(console.error);
+    
+    return res.status(200).json({ ok: true });
   } finally {
     await redis.del(lockKey).catch(() => {});
   }
