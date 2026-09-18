@@ -1463,7 +1463,7 @@ async function handleUpdate(update) {
 
   const replyTargetId = message.from?.is_bot ? null : originalMessageId;
 
-  const botUsername = (await getBotUsername()).toLowerCase();
+  const botUsername = (await botInfo.username).toLowerCase();
 
     if (rawText.startsWith("/start") || rawText.startsWith("/clearmy")) {
       const command = rawText.split(/\s+/)[0];
