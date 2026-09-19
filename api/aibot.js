@@ -1395,53 +1395,17 @@ async function generateGeminiWithRotation(
           id: part.functionCall.id,
         }));
       }
+      
+      // ============================================================
+      // TOOL LOOP
+      // ============================================================
+      while (calls.length > 0) {
+        const modelContent = finalResponse?.candidates?.[0]?.content;
 
-        // ============================================================
-        // TOOL LOOP – giữ thoughtSignature tuyệt đối
-        // ============================================================
-        while (calls.length > 0) {
-          const modelContent = finalResponse?.candidates?.[0]?.content;
-        
-          if (modelContent && Array.isArray(modelContent.parts)) {
-            // Debug – xem signature có tồn tại không
-            modelContent.parts.forEach((p, i) => {
-              if (p.functionCall) {
-                console.log(
-                  `[ThoughtSig] Part ${i} ${p.functionCall.name}:`,
-                  !!p.thoughtSignature || !!p.thought_signature,
-                  (p.thoughtSignature || p.thought_signature || "").slice(0, 30)
-                );
-              }
-            });
-        
-            // Push NGUYÊN object content của model (không clone/spread)
-            contents.push(modelContent);
-          }
-        
-          // ... phần execute tools giữ nguyên ...
-        
-          // Khi tạo functionResponseParts cũng KHÔNG được thêm thoughtSignature giả
-          // Chỉ thêm id nếu Gemini thật sự trả id
-          const functionResponseParts = [];
-          for (const call of calls) {
-            // ... logic tool ...
-            const functionResponse = {
-              name: callName,
-              response: toolResponse,
-            };
-            if (call?.id) {
-              functionResponse.id = call.id;
-            }
-            functionResponseParts.push({ functionResponse });
-          }
-        
-          contents.push({
-            role: "user",
-            parts: functionResponseParts,
-          });
-        
-          // tiếp tục gọi lại Gemini...
+        if (modelContent && Array.isArray(modelContent.parts)) {
+          contents.push(modelContent);
         }
+
         
         // ==========================================================
         // EXECUTE ALL FUNCTION CALLS
