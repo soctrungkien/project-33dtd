@@ -521,6 +521,102 @@ async function getFileFromMessage(message) {
   return null;
 }
 
+async function googleTranslateTTS(text, language = "vi") {
+  const chunks = String(text)
+    .match(/.{1,180}(?:\s|$)/g) || [String(text)];
+
+  const buffers = [];
+
+  for (const chunk of chunks) {
+    const url =
+      "https://translate.google.com/translate_tts" +
+      `?ie=UTF-8&client=tw-ob&tl=${encodeURIComponent(language)}` +
+      `&q=${encodeURIComponent(chunk)}`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Google TTS HTTP ${response.status}`);
+    }
+
+    buffers.push(Buffer.from(await response.arrayBuffer()));
+  }
+
+  return Buffer.concat(buffers);
+}
+
+async function sendVoiceBuffer(chatId, buffer, replyToMessageId = null) {
+  const boundary = `----TelegramForm${Date.now()}`;
+
+  const parts = [];
+
+  const addField = (name, value) => {
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="${name}"\r\n\r\n` +
+        `${value}\r\n`
+      )
+    );
+  };
+
+  const addFile = (name, filename, contentType, data) => {
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\n` +
+        `Content-Type: ${contentType}\r\n\r\n`
+      )
+    );
+    parts.push(data);
+    parts.push(Buffer.from("\r\n"));
+  };
+
+  addField("chat_id", chatId);
+
+  if (replyToMessageId) {
+    addField("reply_to_message_id", replyToMessageId);
+  }
+
+  addFile("audio", "tts.mp3", "audio/mpeg", buffer);
+
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+
+  const body = Buffer.concat(parts);
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      `${TELEGRAM_API_URL}/sendAudio`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": body.length,
+        },
+      },
+      (res) => {
+        let data = "";
+
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            resolve(data);
+          }
+        });
+      }
+    );
+
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 function shouldRespondInGroup(message, text, botUsername) {
   if (message.chat.type === "private") return true;
   if (message.is_automatic_forward) return true;
@@ -1133,8 +1229,6 @@ async function generateGeminiWithRotation(
       while (calls && calls.length > 0) {
         const call = calls[0];
         let toolResponse = { success: false };
-
-        try {
         // FIX #1: web_search (dòng ~1138)
         if (call.name === "web_search") {
           const query = String(call.args?.query || "").trim();
@@ -1570,7 +1664,7 @@ async function handleUpdate(update) {
     
       // Trong group: nếu có @username thì chỉ nhận @bot của mình
       if (
-        chatType !== "private" &&
+        message.chat.type !== "private" &&
         command.includes("@") &&
         command.toLowerCase() !== `${command.split("@")[0].toLowerCase()}@${botUsername}`
       ) {
