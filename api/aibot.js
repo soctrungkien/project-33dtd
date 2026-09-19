@@ -1485,8 +1485,10 @@ async function generateGeminiWithRotation(
             if (typeof textMethod === "function") {
               const nextText = textMethod.call(result.response);
               if (nextText) {
-                fullText = nextText;
-                await onTextUpdate(fullText);
+                if (nextText !== fullText) {
+                  fullText += nextText;
+                  await onTextUpdate(fullText);
+                }
               }
             }
           } catch (e) {
@@ -1555,15 +1557,10 @@ async function processGeminiResponse(
     let lastText = "";
 
     const updateTelegram = async (text) => {
-      if (!text) return;
-      if (text === lastText) return;
-
-      const now = Date.now();
-      if (now - lastUpdate < 700 && text.length < 3900) return;
-
-      lastUpdate = now;
+      if (!text || text === lastText) return;
+    
       lastText = text;
-
+    
       try {
         if (!telegramMessageId) {
           telegramMessageId = await sendStreamingMessage(
