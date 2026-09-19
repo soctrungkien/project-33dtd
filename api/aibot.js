@@ -1896,38 +1896,37 @@ async function generateGeminiWithRotation(
         // ==========================================================
         // GET NEXT MODEL RESPONSE
         // ==========================================================
-
+        
         result = nextResult;
         finalResponse = result.response;
-
+        
         let nextCalls = [];
-
+        
         try {
-        const nextModelParts =
-          finalResponse?.candidates?.[0]?.content?.parts || [];
+          const nextModelParts =
+            finalResponse?.candidates?.[0]?.content?.parts || [];
         
-        nextCalls = nextModelParts
-          .filter((part) => part && part.functionCall)
-          .map((part) => ({
-            ...part.functionCall,
+          nextCalls = nextModelParts
+            .filter((part) => part && part.functionCall)
+            .map((part) => ({
+              ...part.functionCall,
         
-            // Giữ metadata nếu cần debug / xử lý tiếp.
-            thoughtSignature: part.thoughtSignature,
-            thought_signature: part.thought_signature,
+              // Giữ metadata nếu cần debug / xử lý tiếp.
+              thoughtSignature: part.thoughtSignature,
+              thought_signature: part.thought_signature,
         
-            id: part.functionCall?.id,
-          }));
+              id: part.functionCall?.id,
+            }));
         } catch (e) {
           console.warn(
             "[Tool] Error calling functionCalls():",
             e?.message || e,
           );
-
+        
           nextCalls = [];
         }
-
+        
         calls = nextCalls;
-      }
 
       // ============================================================
       // FINAL TEXT
