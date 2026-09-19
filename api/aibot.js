@@ -853,7 +853,7 @@ function validateHistoryFormat(messages) {
     }
 
     const role = String(msg.role).toUpperCase();
-    if (role !== "USER" && role !== "MODEL" && role !== "ASSISTANT") {
+    if (role !== "user" && role !== "model" && role !== "assistant") {
       issues.push(`[${idx}] Role không hợp lệ: "${role}"`);
     }
 
@@ -879,7 +879,7 @@ function buildGeminiHistory(messages) {
 
       const role = String(msg.role).toUpperCase();
       // Chuẩn hóa role về dạng viết hoa hợp lệ: USER hoặc MODEL
-      const normalizedRole = (role === "MODEL" || role === "ASSISTANT") ? "MODEL" : "USER";
+      const normalizedRole = (role === "model" || role === "assistant") ? "model" : "user";
 
       let parts;
       if (msg.parts && Array.isArray(msg.parts)) {
