@@ -878,7 +878,6 @@ function buildGeminiHistory(messages) {
       if (!msg || !msg.role) return null;
 
       const role = String(msg.role).toUpperCase();
-      // Chuẩn hóa role về dạng viết hoa hợp lệ: USER hoặc MODEL
       const normalizedRole = (role === "model" || role === "assistant") ? "model" : "user";
 
       let parts;
@@ -890,14 +889,9 @@ function buildGeminiHistory(messages) {
             newPart.text = newPart.text.slice(0, 30000);
           }
 
-          if (part.thought_signature !== undefined) {
-            newPart.thought_signature = part.thought_signature;
-          }
-          if (part.thoughtSignature !== undefined) {
-            newPart.thoughtSignature = part.thoughtSignature;
-          }
-          if (part.thought !== undefined) {
-            newPart.thought = part.thought;
+          // Tự động bổ sung thought_signature cho các part có functionCall nếu bị thiếu
+          if (newPart.functionCall && !newPart.thought_signature) {
+            newPart.thought_signature = part.thought_signature || part.thoughtSignature || "skip_thought_signature";
           }
 
           return newPart;
@@ -1256,6 +1250,24 @@ async function generateGeminiWithRotation(
 
       const finalResponse = await result.response;
       let calls = finalResponse.functionCalls();
+
+      // Fix: Đồng bộ response thực tế và bổ sung thought_signature vào chat._history trước khi thực thi tool
+      if (chat._history && Array.isArray(chat._history)) {
+        const lastMsg = chat._history[chat._history.length - 1];
+        if (lastMsg && lastMsg.role === "model" && finalResponse?.candidates?.[0]?.content?.parts) {
+          lastMsg.parts = finalResponse.candidates[0].content.parts;
+        }
+
+        chat._history.forEach((msg) => {
+          if (msg.parts && Array.isArray(msg.parts)) {
+            msg.parts.forEach((part) => {
+              if (part.functionCall && !part.thought_signature) {
+                part.thought_signature = part.thought_signature || part.thoughtSignature || "skip_thought_signature";
+              }
+            });
+          }
+        });
+      }
 
       // Xử lý Tool Calling
       while (calls && calls.length > 0) {
