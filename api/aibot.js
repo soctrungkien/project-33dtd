@@ -1227,7 +1227,7 @@ async function generateGeminiWithRotation(
       `[History] Built ${builtHistory.length} messages, ~${JSON.stringify(builtHistory).length} bytes`
     );
     
-    const chat = model.startChat({
+    let chat = model.startChat({
       history: builtHistory,
     });
 
@@ -1447,25 +1447,42 @@ async function generateGeminiWithRotation(
           try {
             console.log(`[Tool] Attempt ${toolRetry + 1}: Sending ${call.name}...`);
         
-            // ✅ New chat instance for retry
-            const sendChat = toolRetry === 0 
-              ? chat 
-              : model.startChat({ history: builtHistory });
-        
-            result = await sendChat.sendMessage([
+            // 1. Lấy lịch sử chuẩn từ chat hiện tại
+            const currentHistory = await chat.getHistory();
+            
+            // 2. ÉP BUỘC role "user" cho tool response để vượt qua kiểm tra của v1
+            const newContents = [
+              ...currentHistory,
               {
-                functionResponse: {
-                  name: call.name,
-                  response: toolResponse,
-                },
+                role: "user",
+                parts: [
+                  {
+                    functionResponse: {
+                      name: call.name,
+                      response: toolResponse,
+                    },
+                  },
+                ],
               },
-            ]);
+            ];
+
+            // 3. Gửi thẳng bằng generateContent thay vì chat.sendMessage
+            result = await model.generateContent({
+              contents: newContents,
+            });
         
             console.log(`[Tool] ${call.name} sent successfully`);
             toolSubmitSuccess = true;
+            
+            // 4. Khởi tạo lại chat object với lịch sử mới nhất để dùng cho vòng lặp while kế tiếp (nếu có)
+            if (result?.response?.candidates?.[0]?.content) {
+              const modelReply = result.response.candidates[0].content; 
+              chat = model.startChat({ history: [...newContents, modelReply] });
+            }
+            
             break;
                     
-            } catch (sendErr) {
+          } catch (sendErr) {
               const errorMessage = sendErr?.message || String(sendErr);
               const statusCode = sendErr?.status || "unknown";
             
