@@ -1319,13 +1319,6 @@ async function generateGeminiWithRotation(
             }
           }
         }
-        
-        // FIX #9: Error handler (dòng ~1312)
-        catch (toolError) {
-          toolResponse = {
-            text: `Lỗi thực thi tool: ${toolError.message}`,  // ✅ ĐÚNG
-          };
-        }
 
         let toolSubmitSuccess = false;
         
