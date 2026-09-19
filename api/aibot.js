@@ -743,11 +743,69 @@ async function sendStreamingMessage(
   }
 }
 
+function validateHistoryFormat(messages) {
+  if (!Array.isArray(messages)) {
+    console.error("[Validate] History không phải array");
+    return false;
+  }
+
+  const issues = [];
+  messages.forEach((msg, idx) => {
+    if (!msg.role) {
+      issues.push(`[${idx}] Không có role`);
+      return;
+    }
+
+    const role = String(msg.role).toLowerCase();
+    if (role !== "user" && role !== "model") {
+      issues.push(`[${idx}] Role không hợp lệ: "${role}"`);
+    }
+
+    if (!msg.content && !msg.parts) {
+      issues.push(`[${idx}] Không có content hoặc parts`);
+    }
+  });
+
+  if (issues.length > 0) {
+    console.warn("[Validate] History issues:", issues);
+    return false;
+  }
+
+  return true;
+}
+
 function buildGeminiHistory(messages) {
-  return messages.map((msg) => ({
-    role: msg.role === "user" ? "user" : "model",
-    parts: [{ text: msg.content }],
-  }));
+  if (!messages || messages.length === 0) return [];
+
+  return messages
+    .map((msg) => {
+      // ✅ Skip: Chỉ lưu user + model, bỏ qua bất kỳ role nào khác
+      if (!msg || !msg.role) return null;
+
+      const role = String(msg.role).toLowerCase();
+      if (role !== "user" && role !== "model") {
+        return null;  // Bỏ qua role không hợp lệ
+      }
+
+      // ✅ Normalize role to SDK format
+      const normalizedRole = role === "user" ? "user" : "model";
+
+      // ✅ Handle parts: nếu có structure parts thì dùng, không thì tạo từ content
+      let parts;
+      if (msg.parts && Array.isArray(msg.parts)) {
+        parts = msg.parts;
+      } else if (msg.content) {
+        parts = [{ text: String(msg.content) }];
+      } else {
+        parts = [{ text: "" }];
+      }
+
+      return {
+        role: normalizedRole,
+        parts: parts,
+      };
+    })
+    .filter(Boolean);  // Bỏ null entries
 }
 
 const GEMINI_TOOLS = [
@@ -1039,16 +1097,13 @@ async function generateGeminiWithRotation(
         `[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | ${modelName}`,
       );
 
-      // Cấu hình v1beta trực tiếp cho model hỗ trợ thinking
-      const model = genAI.getGenerativeModel(
-        {
-          model: modelName,
-          systemInstruction: CUSTOM_PERSONALITY,
-          tools: GEMINI_TOOLS,
-        },
-        { apiVersion: "v1beta" },
-      );
-
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      systemInstruction: CUSTOM_PERSONALITY,
+      tools: GEMINI_TOOLS,
+      // Không cần apiVersion - sẽ dùng v1 mặc định
+    });
+    
       const chat = model.startChat({
         history: buildGeminiHistory(historyMessages),
       });
@@ -1258,12 +1313,12 @@ async function generateGeminiWithRotation(
           toolResponse = { success: false, error: toolError.message };
         }
 
-        // RETRY KHI DÍNH LỖI 429
         let toolSubmitSuccess = false;
-
+        
         for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
           try {
-            // 🔴 FIX: Gửi RIÊNG functionResponse, không trộn với text
+            console.log(`[Tool] Attempt ${toolRetry + 1}: Sending ${call.name}...`);
+        
             result = await chat.sendMessage([
               {
                 functionResponse: {
@@ -1272,33 +1327,75 @@ async function generateGeminiWithRotation(
                 },
               },
             ]);
+        
+            console.log(`[Tool] ${call.name} sent successfully`);
             toolSubmitSuccess = true;
             break;
           } catch (sendErr) {
-            if (sendErr.status === 429 && toolRetry === 0) {
-              console.warn(
-                "[Gemini 429] Bị giới hạn Quota khi gửi Tool response. Đang chờ 3.5s...",
-              );
+            // ✅ Better error handling
+            const errorMessage = sendErr?.message || String(sendErr);
+            const statusCode = sendErr?.status || "unknown";
+        
+            console.warn(
+              `[Tool] ${call.name} failed (${statusCode}): ${errorMessage.slice(0, 100)}`
+            );
+        
+            // ✅ Retry logic
+            if (statusCode === 429 && toolRetry === 0) {
+              console.warn("[Tool 429] Rate limited, waiting 3.5s...");
               await sleep(3500);
+              // Continue to retry
+            } else if (statusCode === 500 || statusCode === 503) {
+              console.warn("[Tool 5XX] Server error, waiting 2s...");
+              await sleep(2000);
+              // Continue to retry
             } else {
-              throw sendErr;
+              // Other errors: don't retry
+              console.error("[Tool] Non-retryable error, giving up");
+              toolSubmitSuccess = false;
+              break;
             }
           }
         }
-
-        if (!toolSubmitSuccess) break;
-
-        calls = result.response.functionCalls();
-
-        // 🔴 FIX: Sau khi gửi functionResponse thành công, 
-        // chỉ lấy text nếu có, nhưng KHÔNG lại mix nó vào functionResponse
-        // Chỉ update text cho response tiếp theo
-        try {
-          const nextText = result.response.text();
-          if (nextText) {
-            fullText = nextText;
-            await onTextUpdate(fullText);
+        
+        if (!toolSubmitSuccess) {
+          console.warn("[Tool] Failed to send tool response after retries");
+          break;  // Exit while loop
+        }
+        
+        // ✅ Safe: Kiểm tra result trước khi access
+        if (result && result.response) {
+          // ✅ Safely call functionCalls() - có thể throw
+          let nextCalls = [];
+          try {
+            const callsResult = result.response.functionCalls?.();
+            if (callsResult && Array.isArray(callsResult)) {
+              nextCalls = callsResult;
+            }
+          } catch (e) {
+            console.warn("[Tool] Error calling functionCalls():", e.message);
+            nextCalls = [];
           }
+          calls = nextCalls;
+        
+          // ✅ Safely call text() - có thể throw hoặc undefined
+          try {
+            const textMethod = result.response.text;
+            if (typeof textMethod === "function") {
+              const nextText = textMethod.call(result.response);
+              if (nextText) {
+                fullText = nextText;
+                await onTextUpdate(fullText);
+              }
+            }
+          } catch (e) {
+            console.warn("[Tool] Error calling text():", e.message);
+            // Không sao - text có thể không có khi chỉ có tool call
+          }
+        } else {
+          console.warn("[Tool] Result or response is null/undefined after sendMessage");
+          calls = [];
+        }
         } catch (_) {}
       }
 
@@ -1401,33 +1498,30 @@ async function processGeminiResponse(
     );
 
     if (aiResponseText) {
-      if (!telegramMessageId) {
-        telegramMessageId = await sendStreamingMessage(
-          chatId,
-          aiResponseText,
-          null,
-          originalMessageId,
-        );
+      if (typeof aiResponseText !== "string" || !aiResponseText.trim()) {
+        console.warn("[Save] aiResponseText invalid, skipping history save");
       } else {
-        await sendStreamingMessage(
-          chatId,
-          aiResponseText,
-          telegramMessageId,
-          null,
+        // ✅ Lưu user message
+        historyMessages.push({
+          role: "user",
+          content: promptTextOnly,
+        });
+    
+        // ✅ Lưu model response
+        historyMessages.push({
+          role: "model",
+          content: aiResponseText,
+        });
+    
+        // ✅ Lưu vào Redis
+        await saveChatMemory(chatId, historyMessages);
+    
+        console.log(
+          "[Save] Saved history:",
+          historyMessages.length,
+          "messages"
         );
       }
-
-      historyMessages.push({
-        role: "user",
-        content: promptTextOnly,
-      });
-
-      historyMessages.push({
-        role: "model",
-        content: aiResponseText,
-      });
-
-      await saveChatMemory(chatId, historyMessages);
     }
   } catch (error) {
     console.error("Lỗi xử lý Gemini:", error);
