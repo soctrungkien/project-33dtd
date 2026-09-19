@@ -884,26 +884,37 @@ function buildGeminiHistory(messages) {
 
       const normalizedRole = role === "user" ? "user" : "model";
 
-      // ✅ Cap size properly
+      // ✅ Cap size properly & preserve thought_signature
       let parts;
       if (msg.parts && Array.isArray(msg.parts)) {
-        parts = msg.parts.map(part => {
-          if (part.text && typeof part.text === "string") {
-            return {
-              ...part,
-              text: part.text.slice(0, 30000)  // ✅ CAP 30KB
-            };
+        parts = msg.parts.map((part) => {
+          const newPart = { ...part };
+
+          if (newPart.text && typeof newPart.text === "string") {
+            newPart.text = newPart.text.slice(0, 30000); // ✅ CAP 30KB
           }
-          return part;
+
+          // ✅ Giữ lại thought_signature, thoughtSignature hoặc thought nếu có
+          if (part.thought_signature !== undefined) {
+            newPart.thought_signature = part.thought_signature;
+          }
+          if (part.thoughtSignature !== undefined) {
+            newPart.thoughtSignature = part.thoughtSignature;
+          }
+          if (part.thought !== undefined) {
+            newPart.thought = part.thought;
+          }
+
+          return newPart;
         });
       } else if (msg.content) {
-        const text = String(msg.content).slice(0, 30000);  // ✅ CAP 30KB
+        const text = String(msg.content).slice(0, 30000); // ✅ CAP 30KB
         if (!text.trim()) {
-          return null;  // ✅ Skip empty
+          return null; // ✅ Skip empty
         }
         parts = [{ text }];
       } else {
-        return null;  // ✅ Skip if no content
+        return null; // ✅ Skip if no content
       }
 
       return {
