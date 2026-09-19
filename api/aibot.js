@@ -852,8 +852,8 @@ function validateHistoryFormat(messages) {
       return;
     }
 
-    const role = String(msg.role).toLowerCase();
-    if (role !== "user" && role !== "model") {
+    const role = String(msg.role).toUpperCase();
+    if (role !== "USER" && role !== "MODEL" && role !== "ASSISTANT") {
       issues.push(`[${idx}] Role không hợp lệ: "${role}"`);
     }
 
@@ -877,24 +877,19 @@ function buildGeminiHistory(messages) {
     .map((msg) => {
       if (!msg || !msg.role) return null;
 
-      const role = String(msg.role).toLowerCase();
-      if (role !== "user" && role !== "model") {
-        return null;
-      }
+      const role = String(msg.role).toUpperCase();
+      // Chuẩn hóa role về dạng viết hoa hợp lệ: USER hoặc MODEL
+      const normalizedRole = (role === "MODEL" || role === "ASSISTANT") ? "MODEL" : "USER";
 
-      const normalizedRole = role === "user" ? "user" : "model";
-
-      // ✅ Cap size properly & preserve thought_signature
       let parts;
       if (msg.parts && Array.isArray(msg.parts)) {
         parts = msg.parts.map((part) => {
           const newPart = { ...part };
 
           if (newPart.text && typeof newPart.text === "string") {
-            newPart.text = newPart.text.slice(0, 30000); // ✅ CAP 30KB
+            newPart.text = newPart.text.slice(0, 30000);
           }
 
-          // ✅ Giữ lại thought_signature, thoughtSignature hoặc thought nếu có
           if (part.thought_signature !== undefined) {
             newPart.thought_signature = part.thought_signature;
           }
@@ -908,13 +903,13 @@ function buildGeminiHistory(messages) {
           return newPart;
         });
       } else if (msg.content) {
-        const text = String(msg.content).slice(0, 30000); // ✅ CAP 30KB
+        const text = String(msg.content).slice(0, 30000);
         if (!text.trim()) {
-          return null; // ✅ Skip empty
+          return null;
         }
         parts = [{ text }];
       } else {
-        return null; // ✅ Skip if no content
+        return null;
       }
 
       return {
@@ -1214,14 +1209,13 @@ async function generateGeminiWithRotation(
         `[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | ${modelName}`,
       );
 
-    // ✅ FORCE v1 API explicitly
     const model = genAI.getGenerativeModel(
       {
         model: modelName,
         systemInstruction: CUSTOM_PERSONALITY,
         tools: GEMINI_TOOLS,
       },
-      { apiVersion: "v1" }  // ← FORCE v1
+      { apiVersion: "v1beta" }
     );
     
     // ✅ Trim history
