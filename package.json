@@ -7,6 +7,7 @@
     "pem": "^1.14.8",
     "asn1.js": "^5.4.1",
     "openai": "^4.0.0",
+    "user-agents": "^2.1.188",
     "@google/generative-ai": "^0.21.0",
     "@google/genai": "^2.23.0",
     "@peculiar/x509": "^1.9.0"
