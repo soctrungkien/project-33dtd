@@ -1817,17 +1817,17 @@ async function handleUpdate(update) {
 
       let startMsg =
         "👋 *Xin chào!*\n> Tôi là Bot AI tên là chan.\n\n" +
-        `🪙 Bạn đang có: *${tokens} token*\n` +
+        `🪙 Bạn đang có: *$`{tokens}` token*\n` +
         "💬 *Các lệnh khả dụng:*\n" +
-        "- `/clearmy` : Xóa bộ nhớ trò chuyện\n" +
-        "- `/token` : Kiểm tra và mua thêm token";
+        "- /clearmy : Xóa bộ nhớ trò chuyện\n" +
+        "- /token : Kiểm tra và mua thêm token";
 
       // ĐẶC BIỆT: Chỉ hiện lệnh Admin khi trong chat riêng VÀ là Admin
       if (isPrivate && userIsAdmin) {
         startMsg +=
           "\n\n🛠️ *Lệnh Quản Trị Viên (Admin):*\n" +
-          "- `/addtoken <uid> <số_lượng>` : Cộng token cho người dùng\n" +
-          "- `/checktoken <uid>` : Xem số token còn lại của người dùng";
+          "- /addtoken `<uid> <số_lượng>` : Cộng token cho người dùng\n" +
+          "- /checktoken `<uid>` : Xem số token còn lại của người dùng";
       }
 
       await sendOrUpdateMessage(chatId, startMsg, null, originalMessageId);
