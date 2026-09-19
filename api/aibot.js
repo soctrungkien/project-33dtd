@@ -1681,37 +1681,45 @@ async function handleUpdate(update) {
 
   // 1. LỆNH NẠP / KIỂM TRA TOKEN (/token)
   if (rawText.startsWith("/token")) {
-    const tokens = await getUserTokens(uid);
-    const resetRemaining = await getResetRemainingTimeString(uid);
+  const tokens = await getUserTokens(uid);
+  const resetRemaining = await getResetRemainingTimeString(uid);
 
-    let tokenMsg = `🪙 *SỐ TOKEN HIỆN CÓ CỦA BẠN:* \`${tokens}\` token\n`;
-    if (resetRemaining) {
-      tokenMsg += `⏳ *Tự động hồi 50 token sau:* ${resetRemaining}\n`;
-    }
-    tokenMsg +=
-      `\n📌 *Quy đổi Token:* 10 ⭐ (Telegram Stars) = 100 Token\n\n` +
-      `💡 Nhấn nút bên dưới để mua ngay 100 Token bằng Telegram Stars!`;
+  let tokenMsg = `🪙 *SỐ TOKEN HIỆN CÓ CỦA BẠN:* \`${tokens}\` token\n`;
 
-    const replyMarkup = {
-      inline_keyboard: [
-        [
-          {
-            text: "⭐ Mua 100 Token (10 Stars)",
-            callback_data: "buy_tokens_100",
-          },
+  if (resetRemaining) {
+    tokenMsg += `⏳ *Tự động hồi 50 token sau:* ${resetRemaining}\n`;
+  }
+
+  tokenMsg += `\n📌 *Quy đổi Token:* 10 ⭐ (Telegram Stars) = 100 Token`;
+
+  // Chỉ thêm nút mua khi ở chat riêng
+  if (isPrivate) {
+    tokenMsg += `\n\n💡 Nhấn nút bên dưới để mua ngay 100 Token bằng Telegram Stars!`;
+  }
+
+  const replyMarkup = isPrivate
+    ? {
+        inline_keyboard: [
+          [
+            {
+              text: "⭐ Mua 100 Token (10 Stars)",
+              callback_data: "buy_tokens_100",
+            },
+          ],
         ],
-      ],
-    };
+      }
+    : undefined;
 
-    await sendOrUpdateMessage(
-      chatId,
-      tokenMsg,
-      null,
-      originalMessageId,
-      "Markdown",
-      replyMarkup,
-    );
-    return;
+  await sendOrUpdateMessage(
+    chatId,
+    tokenMsg,
+    null,
+    originalMessageId,
+    "Markdown",
+    replyMarkup,
+  );
+
+  return;
   }
 
   // 2. LỆNH ADMIN (/addtoken & /checktoken)
