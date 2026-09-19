@@ -875,25 +875,35 @@ function buildGeminiHistory(messages) {
 
   return messages
     .map((msg) => {
-      // ✅ Skip: Chỉ lưu user + model, bỏ qua bất kỳ role nào khác
       if (!msg || !msg.role) return null;
 
       const role = String(msg.role).toLowerCase();
       if (role !== "user" && role !== "model") {
-        return null;  // Bỏ qua role không hợp lệ
+        return null;
       }
 
-      // ✅ Normalize role to SDK format
       const normalizedRole = role === "user" ? "user" : "model";
 
-      // ✅ Handle parts: nếu có structure parts thì dùng, không thì tạo từ content
+      // ✅ Cap size properly
       let parts;
       if (msg.parts && Array.isArray(msg.parts)) {
-        parts = msg.parts;
+        parts = msg.parts.map(part => {
+          if (part.text && typeof part.text === "string") {
+            return {
+              ...part,
+              text: part.text.slice(0, 30000)  // ✅ CAP 30KB
+            };
+          }
+          return part;
+        });
       } else if (msg.content) {
-        parts = [{ text: String(msg.content) }];
+        const text = String(msg.content).slice(0, 30000);  // ✅ CAP 30KB
+        if (!text.trim()) {
+          return null;  // ✅ Skip empty
+        }
+        parts = [{ text }];
       } else {
-        parts = [{ text: "" }];
+        return null;  // ✅ Skip if no content
       }
 
       return {
@@ -901,7 +911,7 @@ function buildGeminiHistory(messages) {
         parts: parts,
       };
     })
-    .filter(Boolean);  // Bỏ null entries
+    .filter(Boolean);
 }
 
 const GEMINI_TOOLS = [
@@ -1193,16 +1203,33 @@ async function generateGeminiWithRotation(
         `[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | ${modelName}`,
       );
 
-    const model = genAI.getGenerativeModel({
-      model: modelName,
-      systemInstruction: CUSTOM_PERSONALITY,
-      tools: GEMINI_TOOLS,
-      // Không cần apiVersion - sẽ dùng v1 mặc định
-    });
+    // ✅ FORCE v1 API explicitly
+    const model = genAI.getGenerativeModel(
+      {
+        model: modelName,
+        systemInstruction: CUSTOM_PERSONALITY,
+        tools: GEMINI_TOOLS,
+      },
+      { apiVersion: "v1" }  // ← FORCE v1
+    );
     
-      const chat = model.startChat({
-        history: buildGeminiHistory(historyMessages),
-      });
+    // ✅ Trim history
+    const trimmedMessages = historyMessages.slice(-MAX_MESSAGES);
+    
+    console.log(
+      `[History] Using ${trimmedMessages.length}/${historyMessages.length} messages`
+    );
+    
+    // ✅ Build history
+    const builtHistory = buildGeminiHistory(trimmedMessages);
+    
+    console.log(
+      `[History] Built ${builtHistory.length} messages, ~${JSON.stringify(builtHistory).length} bytes`
+    );
+    
+    const chat = model.startChat({
+      history: builtHistory,
+    });
 
       let result = await chat.sendMessageStream(userParts);
       let fullText = "";
@@ -1420,7 +1447,12 @@ async function generateGeminiWithRotation(
           try {
             console.log(`[Tool] Attempt ${toolRetry + 1}: Sending ${call.name}...`);
         
-            result = await chat.sendMessage([
+            // ✅ New chat instance for retry
+            const sendChat = toolRetry === 0 
+              ? chat 
+              : model.startChat({ history: builtHistory });
+        
+            result = await sendChat.sendMessage([
               {
                 functionResponse: {
                   name: call.name,
@@ -1432,36 +1464,47 @@ async function generateGeminiWithRotation(
             console.log(`[Tool] ${call.name} sent successfully`);
             toolSubmitSuccess = true;
             break;
-          } catch (sendErr) {
-            // ✅ Better error handling
-            const errorMessage = sendErr?.message || String(sendErr);
-            const statusCode = sendErr?.status || "unknown";
-        
-            console.warn(
-              `[Tool] ${call.name} failed (${statusCode}): ${errorMessage.slice(0, 100)}`
-            );
-        
-            // ✅ Retry logic
-            if (statusCode === 429 && toolRetry === 0) {
-              console.warn("[Tool 429] Rate limited, waiting 3.5s...");
-              await sleep(3500);
-              // Continue to retry
-            } else if (statusCode === 500 || statusCode === 503) {
-              console.warn("[Tool 5XX] Server error, waiting 2s...");
-              await sleep(2000);
-              // Continue to retry
-            } else {
-              // Other errors: don't retry
-              console.error("[Tool] Non-retryable error, giving up");
-              toolSubmitSuccess = false;
-              break;
+                    
+            } catch (sendErr) {
+              const errorMessage = sendErr?.message || String(sendErr);
+              const statusCode = sendErr?.status || "unknown";
+            
+              // ✅ Detailed logging
+              console.error(`[Tool Error] ${call.name}:`);
+              console.error(`  Status: ${statusCode}`);
+              console.error(`  Message: ${errorMessage.slice(0, 200)}`);
+            
+              if (sendErr.errorDetails) {
+                console.error(`  Details: ${JSON.stringify(sendErr.errorDetails)}`);
+              }
+            
+              // ✅ Analyze 400
+              if (statusCode === 400) {
+                console.error(`[400 Analysis]`);
+                console.error(`  - History size: ${historyMessages.length}`);
+                console.error(`  - Tool: ${call.name}`);
+                console.error(`  - Response keys: ${Object.keys(toolResponse).join(", ")}`);
+                console.error(`  - Response bytes: ${JSON.stringify(toolResponse).length}`);
+            
+                toolSubmitSuccess = false;
+                break;
+              }
+            
+              // ✅ Retry only for specific status
+              if ((statusCode === 429 || statusCode === 500 || statusCode === 503) && toolRetry === 0) {
+                console.warn(`[Tool] ${statusCode} - retrying...`);
+                await sleep(statusCode === 429 ? 3500 : 2000);
+              } else {
+                console.error(`[Tool] ${statusCode} - not retrying`);
+                toolSubmitSuccess = false;
+                break;
+              }
             }
-          }
         }
         
         if (!toolSubmitSuccess) {
-          console.warn("[Tool] Failed to send tool response after retries");
-          break;  // Exit while loop
+          console.warn(`[Tool] Failed to send ${call.name}`);
+          break;
         }
         
         // ✅ Safe: Kiểm tra result trước khi access
