@@ -871,44 +871,95 @@ function validateHistoryFormat(messages) {
 }
 
 function buildGeminiHistory(messages) {
-  if (!messages || messages.length === 0) return [];
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
 
   return messages
     .map((msg) => {
       if (!msg || !msg.role) return null;
 
-      const role = String(msg.role).toUpperCase();
-      const normalizedRole = (role === "model" || role === "assistant") ? "model" : "user";
+      const role = String(msg.role).toLowerCase();
 
-      let parts;
-      if (msg.parts && Array.isArray(msg.parts)) {
-        parts = msg.parts.map((part) => {
-          const newPart = { ...part };
+      const normalizedRole =
+        role === "model" || role === "assistant"
+          ? "model"
+          : "user";
 
-          if (newPart.text && typeof newPart.text === "string") {
-            newPart.text = newPart.text.slice(0, 30000);
-          }
+      let parts = [];
 
-          // Tự động bổ sung thought_signature cho các part có functionCall nếu bị thiếu
-          if (newPart.functionCall && !newPart.thought_signature) {
-            newPart.thought_signature = part.thought_signature || part.thoughtSignature || "skip_thought_signature";
-          }
+      if (Array.isArray(msg.parts)) {
+        parts = msg.parts
+          .map((part) => {
+            if (!part || typeof part !== "object") {
+              return null;
+            }
 
-          return newPart;
-        });
-      } else if (msg.content) {
-        const text = String(msg.content).slice(0, 30000);
-        if (!text.trim()) {
-          return null;
-        }
-        parts = [{ text }];
-      } else {
+            const newPart = { ...part };
+
+            if (
+              typeof newPart.text === "string"
+            ) {
+              newPart.text = newPart.text.slice(
+                0,
+                30000,
+              );
+            }
+
+            /*
+             * QUAN TRỌNG:
+             *
+             * Không tạo thoughtSignature.
+             * Không dùng:
+             *
+             *   "skip_thought_signature"
+             *
+             * Nếu signature tồn tại thì giữ NGUYÊN.
+             */
+
+            if (
+              part.thoughtSignature !== undefined
+            ) {
+              newPart.thoughtSignature =
+                part.thoughtSignature;
+            }
+
+            if (
+              part.thought_signature !== undefined
+            ) {
+              newPart.thought_signature =
+                part.thought_signature;
+            }
+
+            return newPart;
+          })
+          .filter(Boolean);
+      }
+
+      /*
+       * History Redis hiện tại của bot chủ yếu là
+       * text user/model, nên nếu có content thì chuyển
+       * thành text part.
+       */
+      if (
+        parts.length === 0 &&
+        typeof msg.content === "string" &&
+        msg.content.length > 0
+      ) {
+        parts = [
+          {
+            text: msg.content.slice(0, 30000),
+          },
+        ];
+      }
+
+      if (parts.length === 0) {
         return null;
       }
 
       return {
         role: normalizedRole,
-        parts: parts,
+        parts,
       };
     })
     .filter(Boolean);
@@ -1363,6 +1414,20 @@ async function generateGeminiWithRotation(
           modelContent &&
           Array.isArray(modelContent.parts)
         ) {
+          for (const part of modelContent.parts) {
+            if (part.functionCall) {
+              const signature =
+                part.thoughtSignature ??
+                part.thought_signature;
+        
+              if (!signature) {
+                throw new Error(
+                  `Gemini trả functionCall "${part.functionCall.name}" nhưng không có thoughtSignature`,
+                );
+              }
+            }
+          }
+        
           contents.push({
             role: "model",
             parts: modelContent.parts.map((part) => ({
