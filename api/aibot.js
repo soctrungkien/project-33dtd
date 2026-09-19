@@ -1135,182 +1135,196 @@ async function generateGeminiWithRotation(
         let toolResponse = { success: false };
 
         try {
-          if (call.name === "web_search") {
-            const query = String(call.args?.query || "").trim();
+        // FIX #1: web_search (dòng ~1138)
+        if (call.name === "web_search") {
+          const query = String(call.args?.query || "").trim();
+          const result = await searchDuckDuckGo(query);
+          toolResponse = {
+            text: result,  // ✅ ĐÚNG: key là 'text', không 'result'
+          };
+        }
+        
+        // FIX #2: get_weather (dòng ~1144)
+        else if (call.name === "get_weather") {
+          const location = String(call.args?.location || "").trim();
+          const result = await getWeather(location);
+          toolResponse = {
+            text: result,  // ✅ ĐÚNG
+          };
+        }
+        
+        // FIX #3: react_message (dòng ~1150)
+        else if (call.name === "react_message") {
+          const emoji = String(call.args?.emoji || "👍");
+          await setMessageReaction(chatId, originalMessageId, emoji);
+          toolResponse = {
+            text: `Đã thả cảm xúc ${emoji}`,  // ✅ ĐÚNG
+          };
+        }
+        
+        // FIX #4: send_sticker (dòng ~1158)
+        else if (call.name === "send_sticker") {
+          const fileId = String(call.args?.file_id || "").trim();
+        
+          await sendSticker(chatId, fileId, originalMessageId);
+        
+          toolResponse = {
+            text: "Đã gửi sticker",  // ✅ ĐÚNG
+          };
+        
+          await onToolOnlyResponse();
+        }
+        
+        // FIX #5: send_favorite_sticker (dòng ~1167)
+        else if (call.name === "send_favorite_sticker") {
+          const stickers = await getFavoriteStickers();
+        
+          if (stickers.length === 0) {
             toolResponse = {
-              success: true,
-              result: await searchDuckDuckGo(query),
+              text: "Không có sticker pack yêu thích.",  // ✅ ĐÚNG
             };
-          } else if (call.name === "get_weather") {
-            const location = String(call.args?.location || "").trim();
-            toolResponse = {
-              success: true,
-              result: await getWeather(location),
-            };
-          } else if (call.name === "react_message") {
-            const emoji = String(call.args?.emoji || "👍");
-            await setMessageReaction(chatId, originalMessageId, emoji);
-            toolResponse = { success: true, result: `Đã thả cảm xúc ${emoji}` };
-          } else if (call.name === "send_sticker") {
-            const fileId = String(call.args?.file_id || "").trim();
-
-            await sendSticker(chatId, fileId, originalMessageId);
-
-            toolResponse = {
-              success: true,
-              result: "Đã gửi sticker",
-            };
-
-            await onToolOnlyResponse();
-          } else if (call.name === "send_favorite_sticker") {
-            const stickers = await getFavoriteStickers();
-
-            if (stickers.length === 0) {
-              toolResponse = {
-                success: false,
-                result: "Không có sticker pack yêu thích.",
-              };
-            } else {
-              const shuffled = [...stickers].sort(() => Math.random() - 0.5);
-
-              let sent = false;
-              let lastError = null;
-
-              for (const sticker of shuffled) {
-                try {
-                  await sendSticker(chatId, sticker.file_id, originalMessageId);
-
-                  toolResponse = {
-                    success: true,
-                    result: `Đã gửi sticker từ pack ${sticker.pack}`,
-                    emoji: sticker.emoji,
-                  };
-
-                  sent = true;
-
-                  // Xóa message đang hiển thị trước đó
-                  await onToolOnlyResponse();
-
-                  break;
-                } catch (error) {
-                  lastError = error;
-                }
-              }
-
-              if (!sent) {
-                toolResponse = {
-                  success: false,
-                  result:
-                    "Toàn bộ sticker trong pack yêu thích đều không gửi được.",
-                  error: lastError?.message || "Unknown sticker error",
-                };
-              }
-            }
-          } else if (call.name === "mute_user") {
-            const targetUserId = Number(call.args?.user_id);
-
-            const duration = Number(
-              call.args?.duration_seconds || call.args?.duration || 60,
-            );
-
-            if (!targetUserId) {
-              toolResponse = {
-                success: false,
-                result: "Thất bại: ID người dùng không hợp lệ.",
-              };
-            } else {
+          } else {
+            const shuffled = [...stickers].sort(() => Math.random() - 0.5);
+        
+            let sent = false;
+            let lastError = null;
+        
+            for (const sticker of shuffled) {
               try {
-                const mutedSecs = await muteUser(
-                  chatId,
-                  targetUserId,
-                  duration,
-                );
-
+                await sendSticker(chatId, sticker.file_id, originalMessageId);
+        
                 toolResponse = {
-                  success: true,
-                  result: `Đã mute thành công user ID ${targetUserId} trong ${mutedSecs} giây.`,
+                  text: `Đã gửi sticker từ pack ${sticker.pack}`,  // ✅ ĐÚNG
+                  emoji: sticker.emoji,
                 };
-              } catch (muteErr) {
-                toolResponse = {
-                  success: false,
-                  result: `Không thể mute user ID ${targetUserId}: ${muteErr.message}`,
-                };
-              }
-            }
-          } else if (call.name === "create_file") {
-            const filename = String(call.args?.filename || "output.txt").trim();
-
-            const content = String(call.args?.content || "");
-
-            if (!content) {
-              toolResponse = {
-                success: false,
-                result: "Nội dung file trống.",
-              };
-            } else {
-              let safeFilename = filename
-                .replace(/[\/\\:*?"<>|]/g, "_")
-                .slice(0, 150);
-
-              if (!safeFilename) {
-                safeFilename = "output.txt";
-              }
-
-              const buffer = Buffer.from(content, "utf8");
-
-              if (buffer.length >= MAX_GENERATED_FILE_SIZE) {
-                toolResponse = {
-                  success: false,
-                  result: "File tạo ra vượt quá giới hạn 10 MB.",
-                };
-              } else {
-                await sendDocumentBuffer(
-                  chatId,
-                  buffer,
-                  safeFilename,
-                  "",
-                  originalMessageId,
-                );
-
-                toolResponse = {
-                  success: true,
-                  result: `Đã tạo và gửi file ${safeFilename}.`,
-                };
-
+        
+                sent = true;
+        
+                // Xóa message đang hiển thị trước đó
                 await onToolOnlyResponse();
-              }
-            }
-          } else if (call.name === "text_to_speech") {
-            const text = String(call.args?.text || "").trim();
-            const language = String(call.args?.language || "vi").trim();
-
-            if (!text) {
-              toolResponse = {
-                success: false,
-                result: "Không có nội dung để đọc.",
-              };
-            } else {
-              try {
-                const audioBuffer = await googleTranslateTTS(text, language);
-
-                await sendVoiceBuffer(chatId, audioBuffer, originalMessageId);
-
-                toolResponse = {
-                  success: true,
-                  result: "Đã tạo và gửi giọng nói.",
-                };
-
-                await onToolOnlyResponse();
+        
+                break;
               } catch (error) {
-                toolResponse = {
-                  success: false,
-                  result: `Không thể tạo giọng nói: ${error.message}`,
-                };
+                lastError = error;
               }
+            }
+        
+            if (!sent) {
+              toolResponse = {
+                text: "Toàn bộ sticker trong pack yêu thích đều không gửi được.",  // ✅ ĐÚNG
+                error: lastError?.message || "Unknown sticker error",
+              };
             }
           }
-        } catch (toolError) {
-          toolResponse = { success: false, error: toolError.message };
+        }
+        
+        // FIX #6: mute_user (dòng ~1209)
+        else if (call.name === "mute_user") {
+          const targetUserId = Number(call.args?.user_id);
+        
+          const duration = Number(
+            call.args?.duration_seconds || call.args?.duration || 60,
+          );
+        
+          if (!targetUserId) {
+            toolResponse = {
+              text: "Thất bại: ID người dùng không hợp lệ.",  // ✅ ĐÚNG
+            };
+          } else {
+            try {
+              const mutedSecs = await muteUser(
+                chatId,
+                targetUserId,
+                duration,
+              );
+        
+              toolResponse = {
+                text: `Đã mute thành công user ID ${targetUserId} trong ${mutedSecs} giây.`,  // ✅ ĐÚNG
+              };
+            } catch (muteErr) {
+              toolResponse = {
+                text: `Không thể mute user ID ${targetUserId}: ${muteErr.message}`,  // ✅ ĐÚNG
+              };
+            }
+          }
+        }
+        
+        // FIX #7: create_file (dòng ~1239)
+        else if (call.name === "create_file") {
+          const filename = String(call.args?.filename || "output.txt").trim();
+        
+          const content = String(call.args?.content || "");
+        
+          if (!content) {
+            toolResponse = {
+              text: "Nội dung file trống.",  // ✅ ĐÚNG
+            };
+          } else {
+            let safeFilename = filename
+              .replace(/[\/\\:*?"<>|]/g, "_")
+              .slice(0, 150);
+        
+            if (!safeFilename) {
+              safeFilename = "output.txt";
+            }
+        
+            const buffer = Buffer.from(content, "utf8");
+        
+            if (buffer.length >= MAX_GENERATED_FILE_SIZE) {
+              toolResponse = {
+                text: "File tạo ra vượt quá giới hạn 10 MB.",  // ✅ ĐÚNG
+              };
+            } else {
+              await sendDocumentBuffer(
+                chatId,
+                buffer,
+                safeFilename,
+                "",
+                originalMessageId,
+              );
+        
+              toolResponse = {
+                text: `Đã tạo và gửi file ${safeFilename}.`,  // ✅ ĐÚNG
+              };
+        
+              await onToolOnlyResponse();
+            }
+          }
+        }
+        
+        // FIX #8: text_to_speech (dòng ~1282)
+        else if (call.name === "text_to_speech") {
+          const text = String(call.args?.text || "").trim();
+          const language = String(call.args?.language || "vi").trim();
+        
+          if (!text) {
+            toolResponse = {
+              text: "Không có nội dung để đọc.",  // ✅ ĐÚNG
+            };
+          } else {
+            try {
+              const audioBuffer = await googleTranslateTTS(text, language);
+        
+              await sendVoiceBuffer(chatId, audioBuffer, originalMessageId);
+        
+              toolResponse = {
+                text: "Đã tạo và gửi giọng nói.",  // ✅ ĐÚNG
+              };
+        
+              await onToolOnlyResponse();
+            } catch (error) {
+              toolResponse = {
+                text: `Không thể tạo giọng nói: ${error.message}`,  // ✅ ĐÚNG
+              };
+            }
+          }
+        }
+        
+        // FIX #9: Error handler (dòng ~1312)
+        catch (toolError) {
+          toolResponse = {
+            text: `Lỗi thực thi tool: ${toolError.message}`,  // ✅ ĐÚNG
+          };
         }
 
         let toolSubmitSuccess = false;
