@@ -1373,19 +1373,27 @@ async function generateGeminiWithRotation(
 
       let calls = [];
 
-      try {
-        const detectedCalls =
-          finalResponse?.functionCalls?.();
+      // Lấy trực tiếp từ raw model response.
+      // Không dùng finalResponse.functionCalls() vì có thể
+      // làm mất metadata thoughtSignature.
+      const firstModelParts =
+        finalResponse?.candidates?.[0]?.content?.parts || [];
 
-        if (Array.isArray(detectedCalls)) {
-          calls = detectedCalls;
-        }
-      } catch (e) {
-        console.warn(
-          "[Tool] Không đọc được functionCalls():",
-          e?.message || e,
-        );
-        calls = [];
+      const firstFunctionParts = firstModelParts.filter(
+        (part) => part && part.functionCall,
+      );
+
+      if (firstFunctionParts.length > 0) {
+        calls = firstFunctionParts.map((part) => ({
+          ...part.functionCall,
+
+          // Giữ nguyên signature nếu SDK/API trả về.
+          thoughtSignature: part.thoughtSignature,
+          thought_signature: part.thought_signature,
+
+          // Giữ nguyên ID nếu có.
+          id: part.functionCall.id,
+        }));
       }
 
       // ============================================================
@@ -1414,20 +1422,8 @@ async function generateGeminiWithRotation(
           modelContent &&
           Array.isArray(modelContent.parts)
         ) {
-          for (const part of modelContent.parts) {
-            if (part.functionCall) {
-              const signature =
-                part.thoughtSignature ??
-                part.thought_signature;
-        
-              if (!signature) {
-                throw new Error(
-                  `Gemini trả functionCall "${part.functionCall.name}" nhưng không có thoughtSignature`,
-                );
-              }
-            }
-          }
-        
+          // Giữ NGUYÊN toàn bộ raw parts của Gemini.
+          // Không tự thêm/xóa/sửa thoughtSignature.
           contents.push({
             role: "model",
             parts: modelContent.parts.map((part) => ({
