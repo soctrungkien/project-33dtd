@@ -1417,19 +1417,16 @@ async function generateGeminiWithRotation(
 
         const modelContent =
           finalResponse?.candidates?.[0]?.content;
-
+        
         if (
           modelContent &&
           Array.isArray(modelContent.parts)
         ) {
-          // Giữ NGUYÊN toàn bộ raw parts của Gemini.
-          // Không tự thêm/xóa/sửa thoughtSignature.
-          contents.push({
-            role: "model",
-            parts: modelContent.parts.map((part) => ({
-              ...part,
-            })),
-          });
+          // QUAN TRỌNG:
+          // Giữ nguyên object Part do Gemini SDK trả về.
+          // Không spread / clone Part vì Gemini 3 cần
+          // thoughtSignature đúng vị trí ban đầu.
+          contents.push(modelContent);
         }
 
         // ==========================================================
@@ -1892,12 +1889,20 @@ async function generateGeminiWithRotation(
         let nextCalls = [];
 
         try {
-          const callsResult =
-            finalResponse?.functionCalls?.();
-
-          if (Array.isArray(callsResult)) {
-            nextCalls = callsResult;
-          }
+        const nextModelParts =
+          finalResponse?.candidates?.[0]?.content?.parts || [];
+        
+        nextCalls = nextModelParts
+          .filter((part) => part && part.functionCall)
+          .map((part) => ({
+            ...part.functionCall,
+        
+            // Giữ metadata nếu cần debug / xử lý tiếp.
+            thoughtSignature: part.thoughtSignature,
+            thought_signature: part.thought_signature,
+        
+            id: part.functionCall?.id,
+          }));
         } catch (e) {
           console.warn(
             "[Tool] Error calling functionCalls():",
