@@ -38,15 +38,15 @@ const CUSTOM_PERSONALITY = process.env.BOT_PERSONALITY_AI || "";
 
 const GEMINI_MODELS = [
   "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
   "gemini-3.1-flash-lite",
   "gemini-3.5-flash-lite",
-  "gemini-2.5-flash",
   "gemini-3-flash-preview",
   "gemini-3.5-flash",
   "gemini-3.6-flash",
   "gemini-3.7-flash",
   "gemini-3.8-flash",
-  "gemini-2.5-pro",
   "gemini-3.1-pro-preview",
 ];
 
@@ -1396,39 +1396,53 @@ async function generateGeminiWithRotation(
         }));
       }
 
-      // ============================================================
-      // TOOL LOOP
-      // ============================================================
-
-      while (calls.length > 0) {
-        /*
-         * QUAN TRỌNG:
-         *
-         * Lưu nguyên content của MODEL response.
-         *
-         * Không sửa:
-         *   thoughtSignature
-         *   thought_signature
-         *   functionCall.id
-         *   functionCall.args
-         *
-         * Không tạo signature giả.
-         */
-
-        const modelContent =
-          finalResponse?.candidates?.[0]?.content;
+        // ============================================================
+        // TOOL LOOP – giữ thoughtSignature tuyệt đối
+        // ============================================================
+        while (calls.length > 0) {
+          const modelContent = finalResponse?.candidates?.[0]?.content;
         
-        if (
-          modelContent &&
-          Array.isArray(modelContent.parts)
-        ) {
-          // QUAN TRỌNG:
-          // Giữ nguyên object Part do Gemini SDK trả về.
-          // Không spread / clone Part vì Gemini 3 cần
-          // thoughtSignature đúng vị trí ban đầu.
-          contents.push(modelContent);
+          if (modelContent && Array.isArray(modelContent.parts)) {
+            // Debug – xem signature có tồn tại không
+            modelContent.parts.forEach((p, i) => {
+              if (p.functionCall) {
+                console.log(
+                  `[ThoughtSig] Part ${i} ${p.functionCall.name}:`,
+                  !!p.thoughtSignature || !!p.thought_signature,
+                  (p.thoughtSignature || p.thought_signature || "").slice(0, 30)
+                );
+              }
+            });
+        
+            // Push NGUYÊN object content của model (không clone/spread)
+            contents.push(modelContent);
+          }
+        
+          // ... phần execute tools giữ nguyên ...
+        
+          // Khi tạo functionResponseParts cũng KHÔNG được thêm thoughtSignature giả
+          // Chỉ thêm id nếu Gemini thật sự trả id
+          const functionResponseParts = [];
+          for (const call of calls) {
+            // ... logic tool ...
+            const functionResponse = {
+              name: callName,
+              response: toolResponse,
+            };
+            if (call?.id) {
+              functionResponse.id = call.id;
+            }
+            functionResponseParts.push({ functionResponse });
+          }
+        
+          contents.push({
+            role: "user",
+            parts: functionResponseParts,
+          });
+        
+          // tiếp tục gọi lại Gemini...
         }
-
+        
         // ==========================================================
         // EXECUTE ALL FUNCTION CALLS
         // ==========================================================
