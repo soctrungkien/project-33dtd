@@ -1525,7 +1525,7 @@ async function generateGeminiWithRotation(
           // ✅ Safely call text() - có thể throw hoặc undefined
           try {
             const textMethod = result.response.text;
-            if (typeof textMethod === "function") {
+            if (typeof textMethod === "MODEL") {
               const nextText = textMethod.call(result.response);
               if (nextText) {
                 if (nextText !== fullText) {
