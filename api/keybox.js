@@ -1,10 +1,19 @@
 import { Telegraf, Markup } from 'telegraf';
+import dns from 'dns';
 import axios from 'axios';
 import https from 'https';
+import UserAgent from 'user-agents';
 import { X509Certificate } from '@peculiar/x509';
 
 const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
 const checkkeyboz = process.env.USERNAME_BOT_CHECK_KEYBOX;
+
+dns.setServers(['1.1.1.1', '1.0.0.1']);
+
+const agent = new https.Agent({
+  rejectUnauthorized: false,
+  keepAlive: true
+});
 
 // ==========================================================
 // CONFIGURATION & SOURCES
@@ -943,11 +952,19 @@ async function getFreecamkKeybox() {
 // ==========================================================
 
 export async function getDavidepalmaKeybox() {
+  const userAgent = new UserAgent({ deviceCategory: 'desktop' });
+  
   try {
     const { data } = await axios.get(DAVIDEPALMA_URL, {
       responseType: 'text',
+      httpsAgent: agent,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': userAgent.toString(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'no-cache'
       }
     });
 
@@ -957,7 +974,7 @@ export async function getDavidepalmaKeybox() {
       filename: 'keybox-davidepalma.xml'
     };
   } catch (error) {
-    throw new Error(`Lỗi tải keybox: ${error.message}`);
+    throw new Error(`Fetch fail: ${error.message}`);
   }
 }
 
