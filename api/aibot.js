@@ -1622,8 +1622,6 @@ async function handleUpdate(update) {
       replyTargetId,
       senderHandle,
     );
-    
-    return res.status(200).json({ ok: true });
   } finally {
     await redis.del(lockKey).catch(() => {});
   }
@@ -1633,14 +1631,17 @@ module.exports = async (req, res) => {
   if (req.method === "POST") {
     try {
       if (req.body?.update_id) {
-        await handleUpdate(req.body);
+        handleUpdate(req.body).catch((error) => {
+          console.error("Lỗi xử lý update:", error);
+        });
       }
-      res.status(200).json({ ok: true });
+
+      return res.status(200).json({ ok: true });
     } catch (error) {
       console.error("Lỗi Serverless:", error);
-      res.status(500).json({ error: error.message });
+      return res.status(500).json({ error: error.message });
     }
-  } else {
-    res.status(405).json({ error: "Method not allowed" });
   }
+
+  return res.status(405).json({ error: "Method not allowed" });
 };
