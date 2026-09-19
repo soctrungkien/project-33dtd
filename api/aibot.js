@@ -1396,7 +1396,6 @@ async function generateGeminiWithRotation(
           console.warn("[Tool] Result or response is null/undefined after sendMessage");
           calls = [];
         }
-        } catch (_) {}
       }
 
       try {
