@@ -1187,13 +1187,17 @@ async function generateGeminiWithRotation(
   onToolOnlyResponse,
 ) {
   let lastError = null;
-  const totalAttempts = GEMINI_API_KEYS.length * GEMINI_MODELS.length;
+  const totalAttempts =
+    GEMINI_API_KEYS.length * GEMINI_MODELS.length;
 
   for (let attempt = 0; attempt < totalAttempts; attempt++) {
     const apiKeyIndex =
-      (currentApiKeyIndex + Math.floor(attempt / GEMINI_MODELS.length)) %
+      (currentApiKeyIndex +
+        Math.floor(attempt / GEMINI_MODELS.length)) %
       GEMINI_API_KEYS.length;
-    const modelIndex = (currentModelIndex + attempt) % GEMINI_MODELS.length;
+
+    const modelIndex =
+      (currentModelIndex + attempt) % GEMINI_MODELS.length;
 
     const genAI = geminiClients[apiKeyIndex];
     const modelName = GEMINI_MODELS[modelIndex];
@@ -1203,357 +1207,675 @@ async function generateGeminiWithRotation(
         `[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | ${modelName}`,
       );
 
-    const model = genAI.getGenerativeModel(
-      {
-        model: modelName,
-        systemInstruction: CUSTOM_PERSONALITY,
-        tools: GEMINI_TOOLS,
-      },
-      { apiVersion: "v1beta" }
-    );
-    
-    // ✅ Trim history
-    const trimmedMessages = historyMessages.slice(-MAX_MESSAGES);
-    
-    console.log(
-      `[History] Using ${trimmedMessages.length}/${historyMessages.length} messages`
-    );
-    
-    // ✅ Build history
-    const builtHistory = buildGeminiHistory(trimmedMessages);
-    
-    console.log(
-      `[History] Built ${builtHistory.length} messages, ~${JSON.stringify(builtHistory).length} bytes`
-    );
-    
-    let chat = model.startChat({
-      history: builtHistory,
-    });
+      const model = genAI.getGenerativeModel(
+        {
+          model: modelName,
+          systemInstruction: CUSTOM_PERSONALITY,
+          tools: GEMINI_TOOLS,
+        },
+        { apiVersion: "v1beta" },
+      );
 
-      let result = await chat.sendMessageStream(userParts);
+      // ============================================================
+      // BUILD HISTORY
+      // ============================================================
+
+      const trimmedMessages = historyMessages.slice(-MAX_MESSAGES);
+
+      console.log(
+        `[History] Using ${trimmedMessages.length}/${historyMessages.length} messages`,
+      );
+
+      const builtHistory = buildGeminiHistory(trimmedMessages);
+
+      console.log(
+        `[History] Built ${builtHistory.length} messages, ~${JSON.stringify(builtHistory).length} bytes`,
+      );
+
+      /*
+       * KHÔNG dùng model.startChat() ở đây.
+       *
+       * Lý do:
+       * @google/generative-ai legacy SDK tự biến:
+       *
+       *   functionResponse
+       *
+       * thành:
+       *
+       *   role: "function"
+       *
+       * Gemini 3.x không chấp nhận role này.
+       *
+       * Ta tự quản lý contents để functionResponse nằm trong
+       * role: "user".
+       */
+
+      const contents = Array.isArray(builtHistory)
+        ? builtHistory.map((message) => ({
+            role: message.role,
+            parts: Array.isArray(message.parts)
+              ? message.parts.map((part) => ({ ...part }))
+              : [],
+          }))
+        : [];
+
+      // ============================================================
+      // APPEND CURRENT USER MESSAGE
+      // ============================================================
+
+      contents.push({
+        role: "user",
+        parts: Array.isArray(userParts)
+          ? userParts.map((part) => ({ ...part }))
+          : [],
+      });
+
       let fullText = "";
       let hasReceivedText = false;
 
-      for await (const chunk of result.stream) {
-        try {
-          const chunkText = chunk.text();
-          if (chunkText) {
-            if (!hasReceivedText) {
-              fullText = ""; // Xóa chữ Thinking... khi có văn bản thực tế
-              hasReceivedText = true;
-            }
-            fullText += chunkText;
-            await onTextUpdate(fullText);
-          }
-        } catch (_) {}
-      }
+      // ============================================================
+      // RUN GEMINI
+      // ============================================================
 
-      const finalResponse = await result.response;
-      let calls = finalResponse.functionCalls();
-
-      // Fix: Đồng bộ response thực tế và bổ sung thought_signature vào chat._history trước khi thực thi tool
-      if (chat._history && Array.isArray(chat._history)) {
-        const lastMsg = chat._history[chat._history.length - 1];
-        if (lastMsg && lastMsg.role === "model" && finalResponse?.candidates?.[0]?.content?.parts) {
-          lastMsg.parts = finalResponse.candidates[0].content.parts;
-        }
-
-        chat._history.forEach((msg) => {
-          if (msg.parts && Array.isArray(msg.parts)) {
-            msg.parts.forEach((part) => {
-              if (part.functionCall && !part.thought_signature) {
-                part.thought_signature = part.thought_signature || part.thoughtSignature || "skip_thought_signature";
-              }
-            });
-          }
+      const runGemini = async () => {
+        const result = await model.generateContentStream({
+          contents,
         });
+
+        let streamedText = "";
+
+        for await (const chunk of result.stream) {
+          try {
+            const chunkText = chunk.text();
+
+            if (chunkText) {
+              if (!hasReceivedText) {
+                fullText = "";
+                hasReceivedText = true;
+              }
+
+              streamedText += chunkText;
+              fullText += chunkText;
+
+              await onTextUpdate(fullText);
+            }
+          } catch (_) {
+            // Chunk có thể chỉ chứa functionCall/thoughtSignature
+          }
+        }
+
+        const response = await result.response;
+
+        return {
+          response,
+          streamedText,
+        };
+      };
+
+      // ============================================================
+      // FIRST GEMINI REQUEST
+      // ============================================================
+
+      let result = await runGemini();
+
+      let finalResponse = result.response;
+
+      let calls = [];
+
+      try {
+        const detectedCalls =
+          finalResponse?.functionCalls?.();
+
+        if (Array.isArray(detectedCalls)) {
+          calls = detectedCalls;
+        }
+      } catch (e) {
+        console.warn(
+          "[Tool] Không đọc được functionCalls():",
+          e?.message || e,
+        );
+        calls = [];
       }
 
-      // Xử lý Tool Calling
-      while (calls && calls.length > 0) {
-        const call = calls[0];
-        let toolResponse = { success: false };
-        // FIX #1: web_search (dòng ~1138)
-        if (call.name === "web_search") {
-          const query = String(call.args?.query || "").trim();
-          const result = await searchDuckDuckGo(query);
-          toolResponse = {
-            text: result,  // ✅ ĐÚNG: key là 'text', không 'result'
+      // ============================================================
+      // TOOL LOOP
+      // ============================================================
+
+      while (calls.length > 0) {
+        /*
+         * QUAN TRỌNG:
+         *
+         * Lưu nguyên content của MODEL response.
+         *
+         * Không sửa:
+         *   thoughtSignature
+         *   thought_signature
+         *   functionCall.id
+         *   functionCall.args
+         *
+         * Không tạo signature giả.
+         */
+
+        const modelContent =
+          finalResponse?.candidates?.[0]?.content;
+
+        if (
+          modelContent &&
+          Array.isArray(modelContent.parts)
+        ) {
+          contents.push({
+            role: "model",
+            parts: modelContent.parts.map((part) => ({
+              ...part,
+            })),
+          });
+        }
+
+        // ==========================================================
+        // EXECUTE ALL FUNCTION CALLS
+        // ==========================================================
+
+        const functionResponseParts = [];
+
+        for (const call of calls) {
+          const callName = String(call?.name || "");
+
+          let toolResponse = {
+            success: false,
           };
-        }
-        
-        // FIX #2: get_weather (dòng ~1144)
-        else if (call.name === "get_weather") {
-          const location = String(call.args?.location || "").trim();
-          const result = await getWeather(location);
-          toolResponse = {
-            text: result,  // ✅ ĐÚNG
-          };
-        }
-        
-        // FIX #3: react_message (dòng ~1150)
-        else if (call.name === "react_message") {
-          const emoji = String(call.args?.emoji || "👍");
-          await setMessageReaction(chatId, originalMessageId, emoji);
-          toolResponse = {
-            text: `Đã thả cảm xúc ${emoji}`,  // ✅ ĐÚNG
-          };
-        }
-        
-        // FIX #4: send_sticker (dòng ~1158)
-        else if (call.name === "send_sticker") {
-          const fileId = String(call.args?.file_id || "").trim();
-        
-          await sendSticker(chatId, fileId, originalMessageId);
-        
-          toolResponse = {
-            text: "Đã gửi sticker",  // ✅ ĐÚNG
-          };
-        
-          await onToolOnlyResponse();
-        }
-        
-        // FIX #5: send_favorite_sticker (dòng ~1167)
-        else if (call.name === "send_favorite_sticker") {
-          const stickers = await getFavoriteStickers();
-        
-          if (stickers.length === 0) {
-            toolResponse = {
-              text: "Không có sticker pack yêu thích.",  // ✅ ĐÚNG
-            };
-          } else {
-            const shuffled = [...stickers].sort(() => Math.random() - 0.5);
-        
-            let sent = false;
-            let lastError = null;
-        
-            for (const sticker of shuffled) {
-              try {
-                await sendSticker(chatId, sticker.file_id, originalMessageId);
-        
-                toolResponse = {
-                  text: `Đã gửi sticker từ pack ${sticker.pack}`,  // ✅ ĐÚNG
-                  emoji: sticker.emoji,
-                };
-        
-                sent = true;
-        
-                // Xóa message đang hiển thị trước đó
-                await onToolOnlyResponse();
-        
-                break;
-              } catch (error) {
-                lastError = error;
-              }
-            }
-        
-            if (!sent) {
-              toolResponse = {
-                text: "Toàn bộ sticker trong pack yêu thích đều không gửi được.",  // ✅ ĐÚNG
-                error: lastError?.message || "Unknown sticker error",
-              };
-            }
-          }
-        }
-        
-        // FIX #6: mute_user (dòng ~1209)
-        else if (call.name === "mute_user") {
-          const targetUserId = Number(call.args?.user_id);
-        
-          const duration = Number(
-            call.args?.duration_seconds || call.args?.duration || 60,
+
+          console.log(
+            `[Tool] Executing ${callName}${
+              call?.id ? ` | id=${call.id}` : ""
+            }`,
           );
-        
-          if (!targetUserId) {
+
+          // ========================================================
+          // web_search
+          // ========================================================
+
+          if (callName === "web_search") {
+            const query = String(
+              call?.args?.query || "",
+            ).trim();
+
+            const searchResult =
+              await searchDuckDuckGo(query);
+
             toolResponse = {
-              text: "Thất bại: ID người dùng không hợp lệ.",  // ✅ ĐÚNG
+              text: searchResult,
             };
-          } else {
-            try {
-              const mutedSecs = await muteUser(
-                chatId,
-                targetUserId,
-                duration,
-              );
-        
-              toolResponse = {
-                text: `Đã mute thành công user ID ${targetUserId} trong ${mutedSecs} giây.`,  // ✅ ĐÚNG
-              };
-            } catch (muteErr) {
-              toolResponse = {
-                text: `Không thể mute user ID ${targetUserId}: ${muteErr.message}`,  // ✅ ĐÚNG
-              };
-            }
           }
-        }
-        
-        // FIX #7: create_file (dòng ~1239)
-        else if (call.name === "create_file") {
-          const filename = String(call.args?.filename || "output.txt").trim();
-        
-          const content = String(call.args?.content || "");
-        
-          if (!content) {
+
+          // ========================================================
+          // get_weather
+          // ========================================================
+
+          else if (callName === "get_weather") {
+            const location = String(
+              call?.args?.location || "",
+            ).trim();
+
+            const weatherResult =
+              await getWeather(location);
+
             toolResponse = {
-              text: "Nội dung file trống.",  // ✅ ĐÚNG
+              text: weatherResult,
             };
-          } else {
-            let safeFilename = filename
-              .replace(/[\/\\:*?"<>|]/g, "_")
-              .slice(0, 150);
-        
-            if (!safeFilename) {
-              safeFilename = "output.txt";
-            }
-        
-            const buffer = Buffer.from(content, "utf8");
-        
-            if (buffer.length >= MAX_GENERATED_FILE_SIZE) {
+          }
+
+          // ========================================================
+          // react_message
+          // ========================================================
+
+          else if (callName === "react_message") {
+            const emoji = String(
+              call?.args?.emoji || "👍",
+            );
+
+            await setMessageReaction(
+              chatId,
+              originalMessageId,
+              emoji,
+            );
+
+            toolResponse = {
+              text: `Đã thả cảm xúc ${emoji}`,
+            };
+          }
+
+          // ========================================================
+          // send_sticker
+          // ========================================================
+
+          else if (callName === "send_sticker") {
+            const fileId = String(
+              call?.args?.file_id || "",
+            ).trim();
+
+            await sendSticker(
+              chatId,
+              fileId,
+              originalMessageId,
+            );
+
+            toolResponse = {
+              text: "Đã gửi sticker",
+            };
+
+            await onToolOnlyResponse();
+          }
+
+          // ========================================================
+          // send_favorite_sticker
+          // ========================================================
+
+          else if (
+            callName === "send_favorite_sticker"
+          ) {
+            const stickers =
+              await getFavoriteStickers();
+
+            if (!Array.isArray(stickers) || stickers.length === 0) {
               toolResponse = {
-                text: "File tạo ra vượt quá giới hạn 10 MB.",  // ✅ ĐÚNG
+                text: "Không có sticker pack yêu thích.",
               };
             } else {
-              await sendDocumentBuffer(
-                chatId,
-                buffer,
-                safeFilename,
-                "",
-                originalMessageId,
+              const shuffled = [...stickers].sort(
+                () => Math.random() - 0.5,
               );
-        
-              toolResponse = {
-                text: `Đã tạo và gửi file ${safeFilename}.`,  // ✅ ĐÚNG
-              };
-        
-              await onToolOnlyResponse();
+
+              let sent = false;
+              let lastStickerError = null;
+
+              for (const sticker of shuffled) {
+                try {
+                  await sendSticker(
+                    chatId,
+                    sticker.file_id,
+                    originalMessageId,
+                  );
+
+                  toolResponse = {
+                    text: `Đã gửi sticker từ pack ${sticker.pack}`,
+                    emoji: sticker.emoji,
+                  };
+
+                  sent = true;
+
+                  await onToolOnlyResponse();
+
+                  break;
+                } catch (error) {
+                  lastStickerError = error;
+                }
+              }
+
+              if (!sent) {
+                toolResponse = {
+                  text:
+                    "Toàn bộ sticker trong pack yêu thích đều không gửi được.",
+                  error:
+                    lastStickerError?.message ||
+                    "Unknown sticker error",
+                };
+              }
             }
           }
-        }
-        
-        // FIX #8: text_to_speech (dòng ~1282)
-        else if (call.name === "text_to_speech") {
-          const text = String(call.args?.text || "").trim();
-          const language = String(call.args?.language || "vi").trim();
-        
-          if (!text) {
+
+          // ========================================================
+          // mute_user
+          // ========================================================
+
+          else if (callName === "mute_user") {
+            const targetUserId = Number(
+              call?.args?.user_id,
+            );
+
+            const duration = Number(
+              call?.args?.duration_seconds ||
+                call?.args?.duration ||
+                60,
+            );
+
+            if (!targetUserId) {
+              toolResponse = {
+                text:
+                  "Thất bại: ID người dùng không hợp lệ.",
+              };
+            } else {
+              try {
+                const mutedSecs = await muteUser(
+                  chatId,
+                  targetUserId,
+                  duration,
+                );
+
+                toolResponse = {
+                  text:
+                    `Đã mute thành công user ID ${targetUserId} trong ${mutedSecs} giây.`,
+                };
+              } catch (muteErr) {
+                toolResponse = {
+                  text:
+                    `Không thể mute user ID ${targetUserId}: ${muteErr.message}`,
+                };
+              }
+            }
+          }
+
+          // ========================================================
+          // create_file
+          // ========================================================
+
+          else if (callName === "create_file") {
+            const filename = String(
+              call?.args?.filename ||
+                "output.txt",
+            ).trim();
+
+            const content = String(
+              call?.args?.content || "",
+            );
+
+            if (!content) {
+              toolResponse = {
+                text: "Nội dung file trống.",
+              };
+            } else {
+              let safeFilename = filename
+                .replace(/[\/\\:*?"<>|]/g, "_")
+                .slice(0, 150);
+
+              if (!safeFilename) {
+                safeFilename = "output.txt";
+              }
+
+              const buffer = Buffer.from(
+                content,
+                "utf8",
+              );
+
+              if (
+                buffer.length >=
+                MAX_GENERATED_FILE_SIZE
+              ) {
+                toolResponse = {
+                  text:
+                    "File tạo ra vượt quá giới hạn 10 MB.",
+                };
+              } else {
+                await sendDocumentBuffer(
+                  chatId,
+                  buffer,
+                  safeFilename,
+                  "",
+                  originalMessageId,
+                );
+
+                toolResponse = {
+                  text:
+                    `Đã tạo và gửi file ${safeFilename}.`,
+                };
+
+                await onToolOnlyResponse();
+              }
+            }
+          }
+
+          // ========================================================
+          // text_to_speech
+          // ========================================================
+
+          else if (callName === "text_to_speech") {
+            const text = String(
+              call?.args?.text || "",
+            ).trim();
+
+            const language = String(
+              call?.args?.language || "vi",
+            ).trim();
+
+            if (!text) {
+              toolResponse = {
+                text: "Không có nội dung để đọc.",
+              };
+            } else {
+              try {
+                const audioBuffer =
+                  await googleTranslateTTS(
+                    text,
+                    language,
+                  );
+
+                await sendVoiceBuffer(
+                  chatId,
+                  audioBuffer,
+                  originalMessageId,
+                );
+
+                toolResponse = {
+                  text: "Đã tạo và gửi giọng nói.",
+                };
+
+                await onToolOnlyResponse();
+              } catch (error) {
+                toolResponse = {
+                  text:
+                    `Không thể tạo giọng nói: ${error.message}`,
+                };
+              }
+            }
+          }
+
+          // ========================================================
+          // UNKNOWN TOOL
+          // ========================================================
+
+          else {
             toolResponse = {
-              text: "Không có nội dung để đọc.",  // ✅ ĐÚNG
+              text: `Tool không tồn tại: ${callName}`,
+              success: false,
             };
-          } else {
-            try {
-              const audioBuffer = await googleTranslateTTS(text, language);
-        
-              await sendVoiceBuffer(chatId, audioBuffer, originalMessageId);
-        
-              toolResponse = {
-                text: "Đã tạo và gửi giọng nói.",  // ✅ ĐÚNG
-              };
-        
-              await onToolOnlyResponse();
-            } catch (error) {
-              toolResponse = {
-                text: `Không thể tạo giọng nói: ${error.message}`,  // ✅ ĐÚNG
-              };
-            }
           }
+
+          // ========================================================
+          // BUILD FUNCTION RESPONSE
+          // ========================================================
+
+          const functionResponse = {
+            name: callName,
+            response: toolResponse,
+          };
+
+          /*
+           * Gemini 3.x yêu cầu giữ function-call ID khi
+           * manual tool calling.
+           *
+           * Chỉ thêm id khi Gemini thực sự trả id.
+           * Không tự tạo id.
+           */
+
+          if (call?.id) {
+            functionResponse.id = call.id;
+          }
+
+          functionResponseParts.push({
+            functionResponse,
+          });
         }
 
+        // ==========================================================
+        // SEND TOOL RESULTS BACK TO GEMINI
+        // ==========================================================
+
         let toolSubmitSuccess = false;
-        
+        let nextResult = null;
+
         for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
           try {
             console.log(
-              `[Tool] Attempt ${toolRetry + 1}: Sending ${call.name}...`,
+              `[Tool] Attempt ${toolRetry + 1}: Sending ${
+                functionResponseParts.length
+              } function response(s)...`,
             );
-        
-            result = await chat.sendMessage([
-              {
-                functionResponse: {
-                  name: call.name,
-                  response: toolResponse,
-                },
-              },
-            ]);
-        
-            console.log(`[Tool] ${call.name} sent successfully`);
-        
+
+            /*
+             * QUAN TRỌNG:
+             *
+             * Không dùng:
+             *
+             *   chat.sendMessage([
+             *     { functionResponse: ... }
+             *   ])
+             *
+             * vì legacy SDK sẽ đổi role thành "function".
+             *
+             * Ở đây ép rõ:
+             *
+             *   role: "user"
+             */
+
+            contents.push({
+              role: "user",
+              parts: functionResponseParts,
+            });
+
+            nextResult = await runGemini();
+
+            console.log(
+              `[Tool] ${
+                calls.map((c) => c.name).join(", ")
+              } sent successfully`,
+            );
+
             toolSubmitSuccess = true;
             break;
           } catch (sendErr) {
-            const errorMessage = sendErr?.message || String(sendErr);
-            const statusCode = sendErr?.status || "unknown";
-        
-            console.error(`[Tool Error] ${call.name}:`);
-            console.error(`  Status: ${statusCode}`);
-            console.error(`  Message: ${errorMessage.slice(0, 300)}`);
-        
+            /*
+             * Nếu request thất bại, bỏ function-response vừa
+             * push để retry không tạo duplicate contents.
+             */
+
+            if (
+              contents.length > 0 &&
+              contents[contents.length - 1]?.role ===
+                "user" &&
+              contents[contents.length - 1]?.parts ===
+                functionResponseParts
+            ) {
+              contents.pop();
+            }
+
+            const errorMessage =
+              sendErr?.message || String(sendErr);
+
+            const statusCode =
+              sendErr?.status ||
+              sendErr?.response?.status ||
+              "unknown";
+
+            console.error(
+              `[Tool Error] ${
+                calls.map((c) => c.name).join(", ")
+              }:`,
+            );
+
+            console.error(
+              `  Status: ${statusCode}`,
+            );
+
+            console.error(
+              `  Message: ${errorMessage.slice(0, 500)}`,
+            );
+
             if (
               (statusCode === 429 ||
                 statusCode === 500 ||
                 statusCode === 503) &&
               toolRetry === 0
             ) {
-              console.warn(`[Tool] ${statusCode} - retrying...`);
-              await sleep(statusCode === 429 ? 3500 : 2000);
+              console.warn(
+                `[Tool] ${statusCode} - retrying...`,
+              );
+
+              await sleep(
+                statusCode === 429
+                  ? 3500
+                  : 2000,
+              );
             } else {
               toolSubmitSuccess = false;
               break;
             }
           }
         }
-        
-        if (!toolSubmitSuccess) {
-          console.warn(`[Tool] Failed to send ${call.name}`);
+
+        if (!toolSubmitSuccess || !nextResult) {
+          console.warn(
+            `[Tool] Failed to send ${
+              calls.map((c) => c.name).join(", ")
+            }`,
+          );
+
           break;
         }
-        
-        // ✅ Safe: Kiểm tra result trước khi access
-        if (result && result.response) {
-          // ✅ Safely call functionCalls() - có thể throw
-          let nextCalls = [];
-          try {
-            const callsResult = result.response.functionCalls?.();
-            if (callsResult && Array.isArray(callsResult)) {
-              nextCalls = callsResult;
-            }
-          } catch (e) {
-            console.warn("[Tool] Error calling functionCalls():", e.message);
-            nextCalls = [];
+
+        // ==========================================================
+        // GET NEXT MODEL RESPONSE
+        // ==========================================================
+
+        result = nextResult;
+        finalResponse = result.response;
+
+        let nextCalls = [];
+
+        try {
+          const callsResult =
+            finalResponse?.functionCalls?.();
+
+          if (Array.isArray(callsResult)) {
+            nextCalls = callsResult;
           }
-          calls = nextCalls;
-        
-          // ✅ Safely call text() - có thể throw hoặc undefined
-          try {
-            const textMethod = result.response.text;
-            if (typeof textMethod === "MODEL") {
-              const nextText = textMethod.call(result.response);
-              if (nextText) {
-                if (nextText !== fullText) {
-                  fullText += nextText;
-                  await onTextUpdate(fullText);
-                }
-              }
-            }
-          } catch (e) {
-            console.warn("[Tool] Error calling text():", e.message);
-            // Không sao - text có thể không có khi chỉ có tool call
-          }
-        } else {
-          console.warn("[Tool] Result or response is null/undefined after sendMessage");
-          calls = [];
+        } catch (e) {
+          console.warn(
+            "[Tool] Error calling functionCalls():",
+            e?.message || e,
+          );
+
+          nextCalls = [];
         }
+
+        calls = nextCalls;
       }
 
-      try {
-        if (!fullText) {
-          try {
-            fullText = finalResponse.text();
-          } catch (_) {}
-        }
-      } catch (_) {}
+      // ============================================================
+      // FINAL TEXT
+      // ============================================================
 
-      currentApiKeyIndex = (apiKeyIndex + 1) % GEMINI_API_KEYS.length;
-      currentModelIndex = (modelIndex + 1) % GEMINI_MODELS.length;
+      if (!fullText) {
+        try {
+          const finalText =
+            finalResponse?.text?.();
+
+          if (finalText) {
+            fullText = finalText;
+            await onTextUpdate(fullText);
+          }
+        } catch (_) {}
+      }
+
+      // ============================================================
+      // ROTATION SUCCESS
+      // ============================================================
+
+      currentApiKeyIndex =
+        (apiKeyIndex + 1) %
+        GEMINI_API_KEYS.length;
+
+      currentModelIndex =
+        (modelIndex + 1) %
+        GEMINI_MODELS.length;
 
       return fullText;
     } catch (error) {
@@ -1567,6 +1889,7 @@ async function generateGeminiWithRotation(
         console.warn(
           `[Gemini] ${modelName} đang có quota = 0, bỏ qua model này.`,
         );
+
         continue;
       }
 
@@ -1579,7 +1902,10 @@ async function generateGeminiWithRotation(
   }
 
   throw (
-    lastError || new Error("Tất cả Gemini API key và model đều không phản hồi.")
+    lastError ||
+    new Error(
+      "Tất cả Gemini API key và model đều không phản hồi.",
+    )
   );
 }
 
