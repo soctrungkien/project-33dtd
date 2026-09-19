@@ -1615,13 +1615,13 @@ async function handleUpdate(update) {
         `\n- Tên/đường dẫn: ${fileData.filePath}`;
     }
 
-    processGeminiResponse(
+    await processGeminiResponse(
       chatId,
       userParts,
       promptTextOnly,
       replyTargetId,
       senderHandle,
-    ).catch(console.error);
+    );
     
     return res.status(200).json({ ok: true });
   } finally {
