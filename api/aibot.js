@@ -1442,84 +1442,34 @@ async function generateGeminiWithRotation(
         }
 
         let toolSubmitSuccess = false;
-
+        
         for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
           try {
             console.log(
               `[Tool] Attempt ${toolRetry + 1}: Sending ${call.name}...`,
             );
-
-            // Lấy history nguyên bản từ chat.
-            // Quan trọng: KHÔNG tự dựng lại functionCall,
-            // để SDK giữ nguyên thought_signature Gemini đã trả về.
-            const currentHistory = await chat.getHistory();
-
-            const newContents = [
-              ...currentHistory,
-
-              // Tool result phải được gửi với role user.
+        
+            result = await chat.sendMessage([
               {
-                role: "user",
-                parts: [
-                  {
-                    functionResponse: {
-                      name: call.name,
-                      response: toolResponse,
-                    },
-                  },
-                ],
+                functionResponse: {
+                  name: call.name,
+                  response: toolResponse,
+                },
               },
-            ];
-
-            // Gửi lại toàn bộ history.
-            // functionCall + thought_signature của model response
-            // trước đó được giữ nguyên trong currentHistory.
-            result = await model.generateContent({
-              contents: newContents,
-            });
-
+            ]);
+        
             console.log(`[Tool] ${call.name} sent successfully`);
+        
             toolSubmitSuccess = true;
-
-            // Lấy model response mới nhất và tiếp tục vòng tool calling.
-            if (result?.response?.candidates?.[0]?.content) {
-              const modelReply = result.response.candidates[0].content;
-
-              chat = model.startChat({
-                history: [...newContents, modelReply],
-              });
-            }
-
             break;
           } catch (sendErr) {
             const errorMessage = sendErr?.message || String(sendErr);
             const statusCode = sendErr?.status || "unknown";
-
+        
             console.error(`[Tool Error] ${call.name}:`);
             console.error(`  Status: ${statusCode}`);
-            console.error(`  Message: ${errorMessage.slice(0, 200)}`);
-
-            if (sendErr.errorDetails) {
-              console.error(
-                `  Details: ${JSON.stringify(sendErr.errorDetails)}`,
-              );
-            }
-
-            if (statusCode === 400) {
-              console.error(`[400 Analysis]`);
-              console.error(`  History size: ${historyMessages.length}`);
-              console.error(`  Tool: ${call.name}`);
-              console.error(
-                `  Response keys: ${Object.keys(toolResponse).join(", ")}`,
-              );
-              console.error(
-                `  Response bytes: ${JSON.stringify(toolResponse).length}`,
-              );
-
-              toolSubmitSuccess = false;
-              break;
-            }
-
+            console.error(`  Message: ${errorMessage.slice(0, 300)}`);
+        
             if (
               (statusCode === 429 ||
                 statusCode === 500 ||
@@ -1529,7 +1479,6 @@ async function generateGeminiWithRotation(
               console.warn(`[Tool] ${statusCode} - retrying...`);
               await sleep(statusCode === 429 ? 3500 : 2000);
             } else {
-              console.error(`[Tool] ${statusCode} - not retrying`);
               toolSubmitSuccess = false;
               break;
             }
