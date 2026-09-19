@@ -1891,6 +1891,7 @@ async function generateGeminiWithRotation(
         }
         
         calls = nextCalls;
+      }
 
       // ============================================================
       // FINAL TEXT
