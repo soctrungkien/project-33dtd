@@ -939,35 +939,26 @@ async function getFreecamkKeybox() {
 
 // ==========================================================
 // GET DAVIDEPALMA
-// RAW XML - NO DATE
+// NO DATE
 // ==========================================================
 
-async function getDavidepalmaKeybox() {
-  const fileRes =
-    await fetch(DAVIDEPALMA_URL);
+export async function getDavidepalmaKeybox() {
+  try {
+    const { data } = await axios.get(DAVIDEPALMA_URL, {
+      responseType: 'text',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
 
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn DavidePalma'
-    );
+    return {
+      buffer: Buffer.from(data, 'utf-8'),
+      updateDate: 'Không có dữ liệu ngày',
+      filename: 'keybox-davidepalma.xml'
+    };
+  } catch (error) {
+    throw new Error(`Lỗi tải keybox: ${error.message}`);
   }
-
-  const xmlText =
-    await fileRes.text();
-
-  const buffer =
-    Buffer.from(
-      xmlText,
-      'utf-8'
-    );
-
-  return {
-    buffer,
-    updateDate:
-      'Không có dữ liệu ngày',
-    filename:
-      'keybox-davidepalma.xml'
-  };
 }
 
 // ==========================================================
@@ -1236,7 +1227,7 @@ bot.command('check', async (ctx) => {
         : '❌';
 
     message +=
-      `${icon} Keybox${item.name}\n`;
+      `> ${icon} ${item.name}\n`;
   });
 
   if (checkkeyboz) {
