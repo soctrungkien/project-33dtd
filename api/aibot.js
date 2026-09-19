@@ -1,5 +1,5 @@
 const https = require("https");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenAI } = require("@google/genai");
 const Redis = require("ioredis");
 
 const redis = new Redis(process.env.REDIS_URL, {
@@ -7,6 +7,7 @@ const redis = new Redis(process.env.REDIS_URL, {
   connectTimeout: 5000,
 });
 
+// Nạp danh sách GEMINI API KEYS
 const GEMINI_API_KEYS = (process.env.GEMINI_API_KEY_BOT || "")
   .split(",")
   .map((key) => key.trim())
@@ -16,8 +17,17 @@ if (GEMINI_API_KEYS.length === 0) {
   throw new Error("Chưa cấu hình GEMINI_API_KEYS");
 }
 
-const geminiClients = GEMINI_API_KEYS.map((key) => new GoogleGenerativeAI(key));
+// Khởi tạo SDK mới @google/genai
+const geminiClients = GEMINI_API_KEYS.map(
+  (key) => new GoogleGenAI({ apiKey: key }),
+);
 let currentApiKeyIndex = 0;
+
+// Nạp danh sách UID Admin từ ENV
+const ADMIN_UIDS = (process.env.OWNER_ID || "")
+  .split(",")
+  .map((id) => id.trim())
+  .filter(Boolean);
 
 const hide_text = "ㅤ";
 
@@ -36,6 +46,7 @@ const REDIS_TTL_SEC = 24 * 60 * 60; // Lưu 24h
 const MAX_MESSAGES = 15; // Giữ 15 tin nhắn gần nhất làm context
 
 const DEFAULT_FREE_TOKENS = 50;
+const RESET_DURATION_MS = 12 * 60 * 60 * 1000; // 12 Giờ
 
 const CUSTOM_PERSONALITY = process.env.BOT_PERSONALITY_AI || "";
 
@@ -65,30 +76,101 @@ const ramCache = new Map();
 let cachedBotInfo = null;
 
 // ============================================================
-// HỆ THỐNG QUẢN LÝ TOKEN / GIỚI HẠN TIN NHẮN
+// HỆ THỐNG KIỂM TRA ADMIN & RATE LIMIT & TOKEN
 // ============================================================
+
+function isAdmin(userId) {
+  if (!userId) return false;
+  return ADMIN_UIDS.includes(String(userId));
+}
+
+// Giới hạn 10 câu hỏi / 1 phút per user
+async function checkRateLimit(userId) {
+  try {
+    const key = `ratelimit:${userId}`;
+    const count = await redis.incr(key);
+    if (count === 1) {
+      await redis.expire(key, 60);
+    }
+    return count <= 10;
+  } catch (e) {
+    console.error("Lỗi rate limit Redis:", e);
+    return true;
+  }
+}
 
 async function getUserTokens(userId) {
   try {
-    const key = `user:${userId}:tokens`;
-    const tokens = await redis.get(key);
-    if (tokens === null) {
-      await redis.set(key, DEFAULT_FREE_TOKENS);
+    const tokenKey = `user:${userId}:tokens`;
+    const resetKey = `user:${userId}:reset_at`;
+    const now = Date.now();
+
+    let tokensStr = await redis.get(tokenKey);
+    let resetAtStr = await redis.get(resetKey);
+
+    if (tokensStr === null) {
+      await redis.set(tokenKey, DEFAULT_FREE_TOKENS);
       return DEFAULT_FREE_TOKENS;
     }
-    return parseInt(tokens, 10);
+
+    let tokens = parseInt(tokensStr, 10);
+    if (isNaN(tokens)) tokens = DEFAULT_FREE_TOKENS;
+
+    // Kiểm tra nếu đã qua thời gian 12h reset
+    if (resetAtStr) {
+      const resetAt = parseInt(resetAtStr, 10);
+      if (now >= resetAt) {
+        if (tokens < DEFAULT_FREE_TOKENS) {
+          tokens = DEFAULT_FREE_TOKENS;
+          await redis.set(tokenKey, tokens);
+        }
+        await redis.del(resetKey);
+      }
+    }
+
+    return tokens;
   } catch (e) {
     console.error("Lỗi đọc token Redis:", e);
     return DEFAULT_FREE_TOKENS;
   }
 }
 
+async function getResetRemainingTimeString(userId) {
+  try {
+    const resetKey = `user:${userId}:reset_at`;
+    const resetAtStr = await redis.get(resetKey);
+    if (!resetAtStr) return null;
+
+    const resetAt = parseInt(resetAtStr, 10);
+    const diff = resetAt - Date.now();
+    if (diff <= 0) return null;
+
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    return `${hours} giờ ${minutes} phút`;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function consumeUserToken(userId) {
   try {
-    const key = `user:${userId}:tokens`;
-    const current = await getUserTokens(userId);
-    if (current <= 0) return false;
-    await redis.decr(key);
+    const tokens = await getUserTokens(userId);
+    if (tokens <= 0) return false;
+
+    const tokenKey = `user:${userId}:tokens`;
+    const resetKey = `user:${userId}:reset_at`;
+
+    const newTokens = await redis.decr(tokenKey);
+
+    // Nếu token rơi xuống dưới 50 và chưa kích hoạt hẹn giờ 12h thì bật timer
+    if (newTokens < DEFAULT_FREE_TOKENS) {
+      const hasResetTimer = await redis.exists(resetKey);
+      if (!hasResetTimer) {
+        const resetTime = Date.now() + RESET_DURATION_MS;
+        await redis.set(resetKey, resetTime, "EX", 12 * 60 * 60 + 3600);
+      }
+    }
     return true;
   } catch (e) {
     console.error("Lỗi trừ token Redis:", e);
@@ -98,8 +180,16 @@ async function consumeUserToken(userId) {
 
 async function addTokens(userId, amount) {
   try {
-    const key = `user:${userId}:tokens`;
-    return await redis.incrby(key, amount);
+    const tokenKey = `user:${userId}:tokens`;
+    const resetKey = `user:${userId}:reset_at`;
+    const current = await getUserTokens(userId);
+    const newBalance = await redis.incrby(tokenKey, amount);
+
+    // Nếu sau khi cộng token >= 50 thì xóa đếm ngược reset
+    if (newBalance >= DEFAULT_FREE_TOKENS) {
+      await redis.del(resetKey);
+    }
+    return newBalance;
   } catch (e) {
     console.error("Lỗi cộng token Redis:", e);
     return 0;
@@ -731,12 +821,15 @@ async function sendMessageRaw(
   messageId = null,
   replyToMessageId = null,
   parseMode = "Markdown",
+  replyMarkup = null,
 ) {
   return new Promise((resolve, reject) => {
     const method = messageId ? "editMessageText" : "sendMessage";
     const payload = { chat_id: chatId, text: text };
 
     if (parseMode) payload.parse_mode = parseMode;
+    if (replyMarkup) payload.reply_markup = replyMarkup;
+
     if (messageId) {
       payload.message_id = messageId;
     } else if (replyToMessageId) {
@@ -779,6 +872,7 @@ async function sendMessageRaw(
                     null,
                     null,
                     parseMode,
+                    replyMarkup,
                   );
                   resolve(fallbackId);
                 } catch (fallbackErr) {
@@ -806,6 +900,7 @@ async function sendOrUpdateMessage(
   messageId = null,
   replyToMessageId = null,
   parseMode = "Markdown",
+  replyMarkup = null,
 ) {
   try {
     const safeText = text.slice(0, 4000);
@@ -818,6 +913,7 @@ async function sendOrUpdateMessage(
       messageId,
       replyToMessageId,
       parseMode,
+      replyMarkup,
     );
   } catch (error) {
     if (error.message?.includes("can't parse entities")) {
@@ -827,6 +923,7 @@ async function sendOrUpdateMessage(
         messageId,
         replyToMessageId,
         null,
+        replyMarkup,
       );
     }
     console.error("Lỗi sendOrUpdateMessage:", error.message);
@@ -886,12 +983,6 @@ function buildGeminiHistory(messages) {
             const newPart = { ...part };
             if (typeof newPart.text === "string") {
               newPart.text = newPart.text.slice(0, 30000);
-            }
-            if (part.thoughtSignature !== undefined) {
-              newPart.thoughtSignature = part.thoughtSignature;
-            }
-            if (part.thought_signature !== undefined) {
-              newPart.thought_signature = part.thought_signature;
             }
             return newPart;
           })
@@ -1142,7 +1233,7 @@ async function sendDocumentBuffer(
 }
 
 // ============================================================
-// XỬ LÝ GEMINI AI & TOOLS (ROTATION API KEYS)
+// XỬ LÝ GEMINI AI BẰNG SDK MỚI @google/genai & TOOLS ROTATION
 // ============================================================
 
 async function generateGeminiWithRotation(
@@ -1168,16 +1259,7 @@ async function generateGeminiWithRotation(
 
     try {
       console.log(
-        `[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | ${modelName}`,
-      );
-
-      const model = genAI.getGenerativeModel(
-        {
-          model: modelName,
-          systemInstruction: CUSTOM_PERSONALITY,
-          tools: GEMINI_TOOLS,
-        },
-        { apiVersion: "v1beta" },
+        `[GenAI] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | ${modelName}`,
       );
 
       const trimmedMessages = historyMessages.slice(-MAX_MESSAGES);
@@ -1202,53 +1284,52 @@ async function generateGeminiWithRotation(
       let fullText = "";
       let hasReceivedText = false;
 
-      const runGemini = async () => {
-        const result = await model.generateContentStream({ contents });
-        let streamedText = "";
+      const runGenAISystem = async () => {
+        // Sử dụng phương thức generateContentStream của SDK mới @google/genai
+        const responseStream = await genAI.models.generateContentStream({
+          model: modelName,
+          contents: contents,
+          config: {
+            systemInstruction: CUSTOM_PERSONALITY,
+            tools: GEMINI_TOOLS,
+          },
+        });
 
-        for await (const chunk of result.stream) {
-          try {
-            const chunkText = chunk.text();
-            if (chunkText) {
-              if (!hasReceivedText) {
-                fullText = "";
-                hasReceivedText = true;
-              }
-              streamedText += chunkText;
-              fullText += chunkText;
-              await onTextUpdate(fullText);
+        let streamedText = "";
+        let calls = [];
+
+        for await (const chunk of responseStream) {
+          if (chunk.text) {
+            if (!hasReceivedText) {
+              fullText = "";
+              hasReceivedText = true;
             }
-          } catch (_) {}
+            streamedText += chunk.text;
+            fullText += chunk.text;
+            await onTextUpdate(fullText);
+          }
+          if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+            calls.push(...chunk.functionCalls);
+          }
         }
 
-        const response = await result.response;
-        return { response, streamedText };
+        return { streamedText, calls };
       };
 
-      let result = await runGemini();
-      let finalResponse = result.response;
-      let calls = [];
-
-      const firstModelParts =
-        finalResponse?.candidates?.[0]?.content?.parts || [];
-      const firstFunctionParts = firstModelParts.filter(
-        (part) => part && part.functionCall,
-      );
-
-      if (firstFunctionParts.length > 0) {
-        calls = firstFunctionParts.map((part) => ({
-          ...part.functionCall,
-          thoughtSignature: part.thoughtSignature,
-          thought_signature: part.thought_signature,
-          id: part.functionCall.id,
-        }));
-      }
+      let result = await runGenAISystem();
+      let calls = result.calls;
 
       while (calls.length > 0) {
-        const modelContent = finalResponse?.candidates?.[0]?.content;
-        if (modelContent && Array.isArray(modelContent.parts)) {
-          contents.push(modelContent);
-        }
+        // Lưu phản hồi gọi hàm của mô hình
+        contents.push({
+          role: "model",
+          parts: calls.map((call) => ({
+            functionCall: {
+              name: call.name,
+              args: call.args,
+            },
+          })),
+        });
 
         const functionResponseParts = [];
 
@@ -1256,9 +1337,7 @@ async function generateGeminiWithRotation(
           const callName = String(call?.name || "");
           let toolResponse = { success: false };
 
-          console.log(
-            `[Tool] Executing ${callName}${call?.id ? ` | id=${call.id}` : ""}`,
-          );
+          console.log(`[Tool Exec] ${callName}`);
 
           if (callName === "web_search") {
             const query = String(call?.args?.query || "").trim();
@@ -1288,7 +1367,11 @@ async function generateGeminiWithRotation(
 
               for (const sticker of shuffled) {
                 try {
-                  await sendSticker(chatId, sticker.file_id, originalMessageId);
+                  await sendSticker(
+                    chatId,
+                    sticker.file_id,
+                    originalMessageId,
+                  );
                   toolResponse = {
                     text: `Đã gửi sticker từ pack ${sticker.pack}`,
                     emoji: sticker.emoji,
@@ -1318,7 +1401,11 @@ async function generateGeminiWithRotation(
               toolResponse = { text: "Thất bại: ID người dùng không hợp lệ." };
             } else {
               try {
-                const mutedSecs = await muteUser(chatId, targetUserId, duration);
+                const mutedSecs = await muteUser(
+                  chatId,
+                  targetUserId,
+                  duration,
+                );
                 toolResponse = {
                   text: `Đã mute thành công user ID ${targetUserId} trong ${mutedSecs} giây.`,
                 };
@@ -1329,7 +1416,9 @@ async function generateGeminiWithRotation(
               }
             }
           } else if (callName === "create_file") {
-            const filename = String(call?.args?.filename || "output.txt").trim();
+            const filename = String(
+              call?.args?.filename || "output.txt",
+            ).trim();
             const content = String(call?.args?.content || "");
 
             if (!content) {
@@ -1363,9 +1452,7 @@ async function generateGeminiWithRotation(
               toolResponse = { text: "Không có nội dung để đọc." };
             } else {
               try {
-                // Hiển thị trạng thái đang thu âm giọng nói trên Telegram
                 await sendChatAction(chatId, "record_audio");
-
                 const audioBuffer = await googleTranslateTTS(text, language);
                 await sendVoiceBuffer(chatId, audioBuffer, originalMessageId);
 
@@ -1384,87 +1471,21 @@ async function generateGeminiWithRotation(
             };
           }
 
-          const functionResponse = {
-            name: callName,
-            response: toolResponse,
-          };
-
-          if (call?.id) {
-            functionResponse.id = call.id;
-          }
-
-          functionResponseParts.push({ functionResponse });
+          functionResponseParts.push({
+            functionResponse: {
+              name: callName,
+              response: toolResponse,
+            },
+          });
         }
 
-        let toolSubmitSuccess = false;
-        let nextResult = null;
+        contents.push({
+          role: "user",
+          parts: functionResponseParts,
+        });
 
-        for (let toolRetry = 0; toolRetry < 2; toolRetry++) {
-          try {
-            contents.push({
-              role: "user",
-              parts: functionResponseParts,
-            });
-
-            nextResult = await runGemini();
-            toolSubmitSuccess = true;
-            break;
-          } catch (sendErr) {
-            if (
-              contents.length > 0 &&
-              contents[contents.length - 1]?.role === "user" &&
-              contents[contents.length - 1]?.parts === functionResponseParts
-            ) {
-              contents.pop();
-            }
-
-            const statusCode =
-              sendErr?.status || sendErr?.response?.status || "unknown";
-
-            if (
-              (statusCode === 429 || statusCode === 500 || statusCode === 503) &&
-              toolRetry === 0
-            ) {
-              await sleep(statusCode === 429 ? 3500 : 2000);
-            } else {
-              toolSubmitSuccess = false;
-              break;
-            }
-          }
-        }
-
-        if (!toolSubmitSuccess || !nextResult) break;
-
-        result = nextResult;
-        finalResponse = result.response;
-        let nextCalls = [];
-
-        try {
-          const nextModelParts =
-            finalResponse?.candidates?.[0]?.content?.parts || [];
-          nextCalls = nextModelParts
-            .filter((part) => part && part.functionCall)
-            .map((part) => ({
-              ...part.functionCall,
-              thoughtSignature: part.thoughtSignature,
-              thought_signature: part.thought_signature,
-              id: part.functionCall?.id,
-            }));
-        } catch (e) {
-          nextCalls = [];
-        }
-
-        calls = nextCalls;
-      }
-
-      if (!fullText) {
-        try {
-          const finalText = finalResponse?.text?.();
-          if (finalText) {
-            fullText = finalText;
-            await onTextUpdate(fullText);
-          }
-        } catch (_) {}
+        const nextResult = await runGenAISystem();
+        calls = nextResult.calls;
       }
 
       currentApiKeyIndex = (apiKeyIndex + 1) % GEMINI_API_KEYS.length;
@@ -1473,7 +1494,7 @@ async function generateGeminiWithRotation(
       return fullText;
     } catch (error) {
       console.warn(
-        `[Gemini] Key ${apiKeyIndex + 1} | ${modelName} lỗi: ${error.message}`,
+        `[GenAI] Key ${apiKeyIndex + 1} | ${modelName} lỗi: ${error.message}`,
       );
 
       lastError = error;
@@ -1537,14 +1558,16 @@ async function processGeminiResponse(
       async () => {},
     );
 
-    if (aiResponseText && typeof aiResponseText === "string" && aiResponseText.trim()) {
-      // ✅ Lưu tin nhắn User kèm đẩy đủ Username & Tên vào lịch sử chat
+    if (
+      aiResponseText &&
+      typeof aiResponseText === "string" &&
+      aiResponseText.trim()
+    ) {
       historyMessages.push({
         role: "user",
         content: promptTextOnly,
       });
 
-      // ✅ Lưu tin nhắn Model trả lời
       historyMessages.push({
         role: "model",
         content: aiResponseText,
@@ -1572,6 +1595,50 @@ async function processGeminiResponse(
 // ============================================================
 
 async function handleUpdate(update) {
+  // 0. XỬ LÝ THANH TOÁN TELEGRAM STARS (CALLBACK, PRE_CHECKOUT, SUCCESSFUL_PAYMENT)
+  if (update.callback_query) {
+    const cb = update.callback_query;
+    const cbChatId = cb.message.chat.id;
+    const cbUserId = cb.from.id;
+
+    if (cb.data === "buy_tokens_100") {
+      await fetch(`${TELEGRAM_API_URL}/answerCallbackQuery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callback_query_id: cb.id }),
+      });
+
+      // Gửi Hóa đơn thanh toán bằng Telegram Stars (currency: XTR)
+      await fetch(`${TELEGRAM_API_URL}/sendInvoice`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: cbChatId,
+          title: "100 Token AI",
+          description: "Quy đổi 10 Telegram Stars thành 100 Tokens AI",
+          payload: `buy_tokens_100_${cbUserId}`,
+          provider_token: "", // Telegram Stars bắt buộc để chuỗi rỗng
+          currency: "XTR",
+          prices: [{ label: "100 Tokens", amount: 10 }],
+        }),
+      });
+    }
+    return;
+  }
+
+  if (update.pre_checkout_query) {
+    const pcq = update.pre_checkout_query;
+    await fetch(`${TELEGRAM_API_URL}/answerPreCheckoutQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pre_checkout_query_id: pcq.id,
+        ok: true,
+      }),
+    });
+    return;
+  }
+
   const message = update.message;
   if (!message) return;
 
@@ -1591,46 +1658,171 @@ async function handleUpdate(update) {
   const uid = message.from?.id;
   if (!uid) return;
 
+  const isPrivate = message.chat.type === "private";
+
+  // Xử lý nạp token thành công qua Telegram Stars
+  if (message.successful_payment) {
+    const sp = message.successful_payment;
+    const payload = sp.invoice_payload;
+    if (payload && payload.startsWith("buy_tokens_100_")) {
+      await addTokens(uid, 100);
+      const newBalance = await getUserTokens(uid);
+      await sendOrUpdateMessage(
+        chatId,
+        `🎉 *Thanh toán 10 Telegram Stars thành công!*\n` +
+          `✅ Bạn đã được cộng thêm *100 Token*.\n` +
+          `🪙 Số token hiện có: *${newBalance}* token.`,
+        null,
+        originalMessageId,
+      );
+    }
+    return;
+  }
+
   // 1. LỆNH NẠP / KIỂM TRA TOKEN (/token)
   if (rawText.startsWith("/token")) {
     const tokens = await getUserTokens(uid);
+    const resetRemaining = await getResetRemainingTimeString(uid);
+
+    let tokenMsg = `🪙 *SỐ TOKEN HIỆN CÓ CỦA BẠN:* \`${tokens}\` token\n`;
+    if (resetRemaining) {
+      tokenMsg += `⏳ *Tự động hồi 50 token sau:* ${resetRemaining}\n`;
+    }
+    tokenMsg +=
+      `\n📌 *Quy đổi Token:* 10 ⭐ (Telegram Stars) = 100 Token\n\n` +
+      `💡 Nhấn nút bên dưới để mua ngay 100 Token bằng Telegram Stars!`;
+
+    const replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: "⭐ Mua 100 Token (10 Stars)",
+            callback_data: "buy_tokens_100",
+          },
+        ],
+      ],
+    };
+
     await sendOrUpdateMessage(
       chatId,
-      `🪙 *SỐ TOKEN HIỆN CÓ CỦA BẠN:* \`${tokens}\` token\n\n` +
-        `📌 *Quy đổi Token:* 10 ⭐ (Telegram Stars) = 100 Token\n\n` +
-        `💡 *Cách mua thêm Token:*\n` +
-        `1. Mua Sao (Stars) trực tiếp từ Telegram.\n` +
-        `2. Chuyển 10 Stars cho Bot để tự động quy đổi thành 100 Tokens dùng tiếp!`,
+      tokenMsg,
       null,
       originalMessageId,
+      "Markdown",
+      replyMarkup,
     );
     return;
   }
 
-  // 2. LỆNH START & CLEAR MEMORY
+  // 2. LỆNH ADMIN (/addtoken & /checktoken)
+  // ĐẶC BIỆT: Chỉ chạy trong chat riêng VÀ là Admin
+  if (rawText.startsWith("/addtoken") || rawText.startsWith("/checktoken")) {
+    if (!isPrivate || !isAdmin(uid)) {
+      if (isPrivate && !isAdmin(uid)) {
+        await sendOrUpdateMessage(
+          chatId,
+          "⛔ *Bạn không có quyền quản trị viên để dùng lệnh này!*",
+          null,
+          originalMessageId,
+        );
+      }
+      return;
+    }
+
+    if (rawText.startsWith("/addtoken")) {
+      const parts = rawText.split(/\s+/);
+      if (parts.length < 3) {
+        await sendOrUpdateMessage(
+          chatId,
+          "⚠️ *Cú pháp không đúng!*\nSử dụng: `/addtoken <uid> <số_lượng>`",
+          null,
+          originalMessageId,
+        );
+        return;
+      }
+
+      const targetUid = parts[1];
+      const amount = parseInt(parts[2], 10);
+
+      if (isNaN(amount)) {
+        await sendOrUpdateMessage(
+          chatId,
+          "⚠️ Số lượng token phải là số nguyên hợp lệ!",
+          null,
+          originalMessageId,
+        );
+        return;
+      }
+
+      const newBalance = await addTokens(targetUid, amount);
+      await sendOrUpdateMessage(
+        chatId,
+        `✅ *Đã cộng ${amount} token* cho UID \`${targetUid}\`.\n🪙 Số token hiện tại của user: *${newBalance}*`,
+        null,
+        originalMessageId,
+      );
+      return;
+    }
+
+    if (rawText.startsWith("/checktoken")) {
+      const parts = rawText.split(/\s+/);
+      if (parts.length < 2) {
+        await sendOrUpdateMessage(
+          chatId,
+          "⚠️ *Cú pháp không đúng!*\nSử dụng: `/checktoken <uid>`",
+          null,
+          originalMessageId,
+        );
+        return;
+      }
+
+      const targetUid = parts[1];
+      const targetTokens = await getUserTokens(targetUid);
+      const resetRemaining = await getResetRemainingTimeString(targetUid);
+
+      let msg = `🪙 *Số token còn lại của UID \`${targetUid}\`:* ${targetTokens} token`;
+      if (resetRemaining) {
+        msg += `\n⏳ *Hồi phục 50 token sau:* ${resetRemaining}`;
+      }
+
+      await sendOrUpdateMessage(chatId, msg, null, originalMessageId);
+      return;
+    }
+  }
+
+  // 3. LỆNH START & CLEAR MEMORY
   if (rawText.startsWith("/start") || rawText.startsWith("/clearmy")) {
     const command = rawText.split(/\s+/)[0];
 
     if (
-      message.chat.type !== "private" &&
+      !isPrivate &&
       command.includes("@") &&
-      command.toLowerCase() !== `${command.split("@")[0].toLowerCase()}@${botUsername}`
+      command.toLowerCase() !==
+        `${command.split("@")[0].toLowerCase()}@${botUsername}`
     ) {
       return;
     }
 
     if (rawText.startsWith("/start")) {
       const tokens = await getUserTokens(uid);
-      await sendOrUpdateMessage(
-        chatId,
+      const userIsAdmin = isAdmin(uid);
+
+      let startMsg =
         "👋 *Xin chào!*\n> Tôi là Bot AI tên là chan.\n\n" +
-          `🪙 Bạn đang có: *${tokens} token*\n` +
-          "💬 *Các lệnh khả dụng:*\n" +
-          "- `/clearmy` : Xóa bộ nhớ trò chuyện\n" +
-          "- `/token` : Kiểm tra và mua thêm token",
-        null,
-        originalMessageId,
-      );
+        `🪙 Bạn đang có: *${tokens} token*\n` +
+        "💬 *Các lệnh khả dụng:*\n" +
+        "- `/clearmy` : Xóa bộ nhớ trò chuyện\n" +
+        "- `/token` : Kiểm tra và mua thêm token";
+
+      // ĐẶC BIỆT: Chỉ hiện lệnh Admin khi trong chat riêng VÀ là Admin
+      if (isPrivate && userIsAdmin) {
+        startMsg +=
+          "\n\n🛠️ *Lệnh Quản Trị Viên (Admin):*\n" +
+          "- `/addtoken <uid> <số_lượng>` : Cộng token cho người dùng\n" +
+          "- `/checktoken <uid>` : Xem số token còn lại của người dùng";
+      }
+
+      await sendOrUpdateMessage(chatId, startMsg, null, originalMessageId);
       return;
     }
 
@@ -1648,13 +1840,25 @@ async function handleUpdate(update) {
     return;
   }
 
-  // 3. KIỂM TRA & TRỪ TOKEN CỦA NGƯỜI DÙNG
+  // 4. KIỂM TRA RATE LIMIT (Tối đa 10 câu hỏi / 1 phút)
+  const isWithinRateLimit = await checkRateLimit(uid);
+  if (!isWithinRateLimit) {
+    await sendOrUpdateMessage(
+      chatId,
+      `⏳ *Bạn đã gửi câu hỏi quá nhanh!*\nGiới hạn tối đa là 10 câu hỏi trong 1 phút. Vui lòng đợi một chút rồi thử lại.`,
+      null,
+      originalMessageId,
+    );
+    return;
+  }
+
+  // 5. KIỂM TRA & TRỪ TOKEN CỦA NGƯỜI DÙNG
   const userTokens = await getUserTokens(uid);
   if (userTokens <= 0) {
     await sendOrUpdateMessage(
       chatId,
       `⚠️ *Bạn đã hết token sử dụng!* (0/50 token)\n\n` +
-        `Vui lòng sử dụng lệnh \`/token\` để xem hướng dẫn mua thêm token (10 Stars = 100 Token).`,
+        `Vui lòng sử dụng lệnh \`/token\` để mua thêm token bằng Telegram Stars (10 Stars = 100 Token).`,
       null,
       originalMessageId,
     );
@@ -1668,7 +1872,7 @@ async function handleUpdate(update) {
   }
 
   try {
-    // Trừ 1 token khi bắt đầu xử lý tin nhắn
+    // Trừ 1 token khi bắt đầu xử lý tin nhắn thành công
     await consumeUserToken(uid);
 
     const firstName = message.from?.first_name || "";
@@ -1737,7 +1941,6 @@ async function handleUpdate(update) {
       stickerInfo = ` [Gửi Sticker file_id: "${message.sticker.file_id}", Emoji: "${message.sticker.emoji || "N/A"}"]`;
     }
 
-    // LẤY TÊN VÀ USERNAME CHO AI BIẾT RÕ AI ĐANG NHẮN TRONG LỊCH SỬ
     const userHeader =
       `[Thời gian hiện tại ở Việt Nam: ${getVietnamTimeString()}]\n` +
       `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole}]` +
@@ -1787,7 +1990,7 @@ async function handleUpdate(update) {
 module.exports = async (req, res) => {
   if (req.method === "POST") {
     try {
-      if (req.body?.update_id) {
+      if (req.body) {
         await handleUpdate(req.body);
       }
       res.status(200).json({ ok: true });
