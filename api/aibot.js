@@ -1817,7 +1817,7 @@ async function handleUpdate(update) {
 
       let startMsg =
         "👋 *Xin chào!*\n> Tôi là Bot AI tên là chan.\n\n" +
-        `🪙 Bạn đang có: *$`{tokens}` token*\n` +
+        `🪙 Bạn đang có: *`${tokens}` token*\n` +
         "💬 *Các lệnh khả dụng:*\n" +
         "- /clearmy : Xóa bộ nhớ trò chuyện\n" +
         "- /token : Kiểm tra và mua thêm token";
