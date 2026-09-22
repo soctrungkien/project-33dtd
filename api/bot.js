@@ -95,15 +95,66 @@ async function removeApkFromCache(messageId) {
 }
 
 async function getMaxMessageId(client, channelPeer) {
-  const probeIds = [10, 50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000];
+  const probeIds = [
+    10,
+    50,
+    100,
+    200,
+    250,
+    500,
+    750,
+    1000,
+    1500,
+    2000,
+    3000,
+    5000,
+    7500,
+    10000,
+    15000,
+    20000,
+    30000,
+    50000,
+    75000,
+    100000
+  ];
+
   try {
-    const msgs = await client.getMessages(channelPeer, { ids: probeIds });
-    const validMsgs = (Array.isArray(msgs) ? msgs : []).filter((m) => m && m.id);
-    if (validMsgs.length === 0) return 500;
-    const highestFound = Math.max(...validMsgs.map((m) => m.id));
-    return highestFound + 100;
+    let highestFound = 0;
+
+    for (const id of probeIds) {
+      try {
+        const msgs = await client.getMessages(channelPeer, {
+          ids: [id]
+        });
+
+        if (Array.isArray(msgs) && msgs.length > 0) {
+          const msg = msgs[0];
+
+          if (msg && msg.id) {
+            highestFound = Math.max(
+              highestFound,
+              Number(msg.id)
+            );
+          }
+        }
+      } catch (e) {
+        // ID không tồn tại thì bỏ qua
+      }
+    }
+
+    if (highestFound > 0) {
+      return highestFound + 100;
+    }
+
+    return 500;
   } catch (e) {
-    return 2000;
+    logError(
+      "MAX_ID",
+      "Không xác định được message ID lớn nhất",
+      e
+    );
+
+    return 500;
   }
 }
 
