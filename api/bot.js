@@ -6,8 +6,6 @@ const Redis = require("ioredis");
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const STORAGE_CHANNEL = process.env.STORAGE_CHANNEL_ID;
 const OWNER_ID = process.env.OWNER_ID;
-const API_ID = Number(process.env.API_ID || 0);
-const API_HASH = process.env.API_HASH || "";
 
 const MAX_RAM_CACHE = 50000;
 const INITIAL_SCAN_LIMIT = 50000;
