@@ -24,7 +24,7 @@ module.exports = async (req, res) => {
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    res.setHeader("Cache-Control", "public, max-age=600");
 
     return res.status(200).send(content);
   } catch (error) {
