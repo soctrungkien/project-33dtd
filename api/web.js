@@ -44,7 +44,7 @@ module.exports = async (req, res) => {
 
     const content = await fetchRaw(rawUrl);
 
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=60");
 
     return res.status(200).send(content);
