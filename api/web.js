@@ -1,33 +1,3 @@
-const https = require("https");
-
-function fetchRaw(url) {
-  return new Promise((resolve, reject) => {
-    https
-      .get(url, (res) => {
-        let data = "";
-
-        res.setEncoding("utf8");
-
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
-
-        res.on("end", () => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            return fetchRaw(res.headers.location).then(resolve).catch(reject);
-          }
-
-          if (res.statusCode !== 200) {
-            return reject(new Error(`HTTP Error: ${res.statusCode}`));
-          }
-
-          resolve(data);
-        });
-      })
-      .on("error", reject);
-  });
-}
-
 module.exports = async (req, res) => {
   try {
     const id = String(req.query?.id || "").trim();
@@ -42,7 +12,13 @@ module.exports = async (req, res) => {
 
     const rawUrl = `https://pastefy.app/${encodeURIComponent(id)}/raw`;
 
-    const content = await fetchRaw(rawUrl);
+    const response = await fetch(rawUrl);
+
+    if (!response.ok) {
+      throw new Error(`HTTP Error: ${response.status}`);
+    }
+
+    const content = await response.text();
 
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=60");
