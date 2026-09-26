@@ -5,7 +5,6 @@ const net = require("net");
 const http = require("http");
 const https = require("https");
 
-const axios = require("axios");
 const cors = require("cors");
 const { http: followHttp, https: followHttps } = require("follow-redirects");
 const httpProxy = require("http-proxy");
@@ -14,9 +13,9 @@ const { request: undiciRequest, Agent: UndiciAgent } = require("undici");
 
 dns.setServers(["1.1.1.1", "1.0.0.1"]);
 
-const MAX_BODY = 50 * 1024 * 1024;
 const TIMEOUT = 30000;
 const MAX_REDIRECTS = 10;
+const BODY_LIMIT = 1024 * 1024 * 1024; // 1 GB
 
 const hopHeaders = new Set([
   "connection",
@@ -188,12 +187,22 @@ function readBody(req, id) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let rejected = false;
 
     req.on("data", chunk => {
+      if (rejected) return;
+
       size += chunk.length;
 
-      if (size > MAX_BODY) {
-        reject(new Error("Request body exceeds 50 MB"));
+      if (size > BODY_LIMIT) {
+        rejected = true;
+
+        const error = new Error(
+          "Request body exceeds 1 GB"
+        );
+
+        reject(error);
+
         req.destroy();
         return;
       }
@@ -202,6 +211,8 @@ function readBody(req, id) {
     });
 
     req.on("end", () => {
+      if (rejected) return;
+
       const body = chunks.length
         ? Buffer.concat(chunks)
         : null;
@@ -215,7 +226,11 @@ function readBody(req, id) {
       resolve(body);
     });
 
-    req.on("error", reject);
+    req.on("error", error => {
+      if (!rejected) {
+        reject(error);
+      }
+    });
   });
 }
 
@@ -265,6 +280,7 @@ function sendJSON(res, status, data) {
   }
 
   res.statusCode = status;
+
   res.setHeader(
     "Content-Type",
     "application/json; charset=utf-8"
@@ -293,12 +309,18 @@ function streamNode(res, stream, id) {
 
     stream.on("end", () => {
       log(id, "RESPONSE", `Streamed ${bytes} bytes`);
+
       res.end();
       resolve();
     });
 
     stream.on("error", error => {
-      log(id, "ERROR", "Response stream error", error.message);
+      log(
+        id,
+        "ERROR",
+        "Response stream error",
+        error.message
+      );
 
       try {
         res.end();
@@ -328,7 +350,12 @@ async function streamUndici(res, body, id) {
       }
     }
   } finally {
-    log(id, "RESPONSE", `Streamed ${bytes} bytes`);
+    log(
+      id,
+      "RESPONSE",
+      `Streamed ${bytes} bytes`
+    );
+
     res.end();
   }
 }
@@ -386,40 +413,6 @@ async function engineUndici(
   } finally {
     await dispatcher.close().catch(() => {});
   }
-}
-
-async function engineAxios(
-  target,
-  method,
-  headers,
-  body,
-  id
-) {
-  log(id, "ENGINE", "Trying AXIOS");
-
-  const response = await axios({
-    url: target.toString(),
-    method,
-    headers,
-    data: body || undefined,
-    responseType: "stream",
-    maxRedirects: MAX_REDIRECTS,
-    timeout: TIMEOUT,
-    validateStatus: () => true,
-    decompress: false,
-    httpAgent,
-    httpsAgent,
-    maxContentLength: Infinity,
-    maxBodyLength: MAX_BODY
-  });
-
-  log(
-    id,
-    "UPSTREAM",
-    `AXIOS ${response.status}`
-  );
-
-  return response;
 }
 
 function engineFollow(
@@ -757,45 +750,6 @@ module.exports = async function handler(req, res) {
 
     try {
       upstream =
-        await engineAxios(
-          target,
-          req.method,
-          headers,
-          body,
-          id
-        );
-
-      res.statusCode =
-        upstream.status;
-
-      setResponseHeaders(
-        res,
-        upstream.headers
-      );
-
-      await streamNode(
-        res,
-        upstream.data,
-        id
-      );
-
-      log(
-        id,
-        "DONE",
-        `${Date.now() - started}ms`
-      );
-
-      return;
-    } catch (error) {
-      log(
-        id,
-        "FALLBACK",
-        `AXIOS failed: ${error.message}`
-      );
-    }
-
-    try {
-      upstream =
         await engineFollow(
           target,
           req.method,
@@ -876,7 +830,7 @@ module.exports = async function handler(req, res) {
 
     const status =
       error.message ===
-      "Request body exceeds 50 MB"
+      "Request body exceeds 1 GB"
         ? 413
         : error.message.includes(
             "Private IP"
