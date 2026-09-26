@@ -20,13 +20,17 @@ module.exports = async (req, res) => {
 
     const content = await response.text();
 
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Cache-Control", "public, max-age=60");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
 
     return res.status(200).send(content);
   } catch (error) {
     console.error("WEB ERROR:", error);
 
+    res.setHeader("Access-Control-Allow-Origin", "*");
     return res.status(500).send("Failed to fetch content");
   }
 };
