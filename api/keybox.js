@@ -696,13 +696,13 @@ function renderPixelKeyboard(devices, page = 0, userId) {
 
 bot.command('start', async (ctx) => {
   await ctx.reply(
-    "👋 **Hệ Thống Phân Tích Keybox & Play Integrity Fix (PIF)**\n\n" +
-    "📖 **Danh sách lệnh:**\n" +
-    "• /keybox - Tải Keybox (Hiển thị icon trạng thái `${icon}${name}` & Auto-Fix)\n" +
-    "• /pif - Tải file PIF (`pif.json` & `pif.prop`) chọn dòng máy Pixel\n" +
+    "👋 <b>Hệ Thống Phân Tích Keybox & Play Integrity Fix (PIF)</b>\n\n" +
+    "📖 <b>Danh sách lệnh:</b>\n" +
+    "• /keybox - Tải Keybox (Hiển thị icon trạng thái `${icon} ${name}` & Auto-Fix)\n" +
+    "• /pif - Tải file PIF (<code>pif.json</code> & <code>pif.prop</code>) chọn dòng máy Pixel\n" +
     "• /security_patch - Lấy thông tin bản vá bảo mật mới nhất từ Google\n" +
     "• /check - Kiểm tra trạng thái toàn bộ nguồn Keybox",
-    { parse_mode: 'Markdown' }
+    { parse_mode: 'HTML' }
   );
 });
 
