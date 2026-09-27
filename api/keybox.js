@@ -139,22 +139,6 @@ const SOURCES = [
   }
 ];
 
-const FALLBACK_PIXELS = [
-  { model: "Pixel 6", product: "oriole_beta" },
-  { model: "Pixel 6 Pro", product: "raven_beta" },
-  { model: "Pixel 6a", product: "bluejay_beta" },
-  { model: "Pixel 7", product: "panther_beta" },
-  { model: "Pixel 7 Pro", product: "cheetah_beta" },
-  { model: "Pixel 7a", product: "lynx_beta" },
-  { model: "Pixel 8", product: "shiba_beta" },
-  { model: "Pixel 8 Pro", product: "husky_beta" },
-  { model: "Pixel 8a", product: "akita_beta" },
-  { model: "Pixel 9", product: "tokay_beta" },
-  { model: "Pixel 9 Pro", product: "caiman_beta" },
-  { model: "Pixel 9 Pro XL", product: "komodo_beta" },
-  { model: "Pixel Fold", product: "felix_beta" }
-];
-
 const PEM_KEYS = {
   google: `-----BEGIN PUBLIC KEY-----\nMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xU\nFmOr75gvMsd/dTEDDJdSSxtf6An7xyqpRR90PL2abxM1dEqlXnf2tqw1Ne4Xwl5j\nlRfdnJLmN0pTy/4lj4/7tv0Sk3iiKkypnEUtR6WfMgH0QZfKHM1+di+y9TFRtv6y\n//0rb+T+W8a9nsNL/ggjnar86461qO0rOs2cXjp3kOG1FEJ5MVmFmBGtnrKpa73X\npXyTqRxB/M0n1n/W9nGqC4FSYa04T6N5RIZGBN2z2MT5IKGbFlbC8UrW0DxW7AYI\nmQQcHtGl/m00QLVWutHQoVJYnFPlXTcHYvASLu+RhhsbDmxMgJJ0mcDpvsC4PjvB\n+TxywElgS70vE0XmLD+OJtvsBslHZvPBKCOdT0MS+tgSOIfga+z1Z1g7+DVagf7q\nuvmag8jfPioyKvxnK/EgsTUVi2ghzq8wm27ud/mIM7AY2qEORR8Go3TVB4HzWQgp\nZrt3i5MIlCaY504LzSRiigHCzAPlHws+W0rB5N+er5/2pJKnfBSDiCiFAVtCLOZ7\ngLiMm0jhO2B6tUXHI/+MRPjy02i59lINMRRev56GKtcd9qO/0kUJWdZTdA2XoS82\nixPvZtXQpUpuL12ab+9EaDK8Z4RHJYYfCT3Q5vNAXaiWQ+8PTWm2QgBR/bkwSWc+\nNpUFgNPN9PvQi8WEg5UmAGMCAwEAAQ==\n-----END PUBLIC KEY-----`,
   aosp_ec: `-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7l1ex+HA220Dpn7mthvsTWpdamgu\nD/9/SQ59dx9EIm29sa/6FsvHrcV30lacqrewLVQBXT5DKyqO107sSHVBpA==\n-----END PUBLIC KEY-----`,
@@ -578,63 +562,135 @@ function formatAnalysisReport(analysis, fixesApplied = []) {
 
 async function fetchPixelDeviceList() {
   try {
-    // Trích xuất danh sách thiết bị trực tiếp từ trang Official Factory Images
-    const factoryRes = await safeFetch('https://developers.google.com/android/images');
-    if (factoryRes.ok) {
-      const html = factoryRes.text();
-      const matches = [...html.matchAll(/<tr id="([^"]+)">[\s\S]*?<th[^>]*>(.*?)<\/th>/g)];
+    const versionsRes = await safeFetch('https://developer.android.com/about/versions');
+
+    if (!versionsRes.ok) {
+      throw new Error('Không thể tải danh sách Android versions');
+    }
+
+    const versionsHtml = versionsRes.text();
+
+    let latestBeta = versionsHtml.match(
+      /href="(\/about\/versions\/[^"]*[0-9])"[^>]*>[\s\S]*?data-icon="preview"/i
+    )?.[1];
+
+    if (!latestBeta) {
+      const matches = [
+        ...versionsHtml.matchAll(
+          /href="(\/about\/versions\/[0-9]{2})"/g
+        )
+      ];
+
       if (matches.length > 0) {
-        return matches.map(m => {
-          const product = m[1].trim();
-          const rawModel = m[2].replace(/<[^>]+>/g, '').trim();
+        latestBeta = matches
+          .map(m => m[1])
+          .sort()
+          .reverse()[0];
+      }
+    }
+
+    if (!latestBeta) {
+      throw new Error('Không tìm thấy Android Preview mới nhất');
+    }
+
+    const latestRes = await safeFetch(
+      `https://developer.android.com${latestBeta}`
+    );
+
+    if (!latestRes.ok) {
+      throw new Error('Không thể tải trang Android Preview');
+    }
+
+    const latestHtml = latestRes.text();
+
+    const downloadLinks = [
+      ...latestHtml.matchAll(/href="([^"]*download[^"]*)"/gi)
+    ].map(m => m[1]);
+
+    const fiUrl = downloadLinks.find(url =>
+      !/download-ota/i.test(url)
+    );
+
+    const otaUrl = downloadLinks.find(url =>
+      /download-ota/i.test(url)
+    );
+
+    const fiRes = fiUrl
+      ? await safeFetch(
+          fiUrl.startsWith('http')
+            ? fiUrl
+            : `https://developer.android.com${fiUrl}`
+        )
+      : null;
+
+    const otaRes = otaUrl
+      ? await safeFetch(
+          otaUrl.startsWith('http')
+            ? otaUrl
+            : `https://developer.android.com${otaUrl}`
+        )
+      : null;
+
+    const fiHtml = fiRes?.ok ? fiRes.text() : '';
+    const otaHtml = otaRes?.ok ? otaRes.text() : '';
+
+    function extractDevices(html) {
+      if (!html) return [];
+
+      const rows = [
+        ...html.matchAll(
+          /<tr[^>]*id="([^"]+)"[^>]*>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/gi
+        )
+      ];
+
+      return rows
+        .map(match => {
+          const product = match[1]
+            .trim()
+            .replace(/^"+|"+$/g, '');
+
+          const model = match[2]
+            .replace(/<[^>]+>/g, '')
+            .replace(/&amp;/g, '&')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .trim();
+
+          if (!product || !model) return null;
+
           return {
             product: `${product}_beta`,
-            model: rawModel || product
+            model
           };
-        });
-      }
+        })
+        .filter(Boolean);
     }
 
-    // Nguồn dự phòng 2 từ developer.android.com
-    const res = await safeFetch('https://developer.android.com/about/versions');
-    if (res.ok) {
-      const html = res.text();
-      let betaPath = html.match(/href="(\/about\/versions\/[^"]*preview[^"]*)"/i)?.[1];
-      if (!betaPath) {
-        const matches = [...html.matchAll(/href="(\/about\/versions\/[0-9]{2})"/g)];
-        if (matches.length > 0) betaPath = matches[matches.length - 1][1];
-      }
+    const fiDevices = extractDevices(fiHtml);
+    const otaDevices = extractDevices(otaHtml);
 
-      if (betaPath) {
-        const betaRes = await safeFetch(`https://developer.android.com${betaPath}`);
-        const betaHtml = betaRes.text();
+    // Giống logic trong script shell:
+    // chọn nguồn có danh sách thiết bị dài hơn.
+    const devices =
+      fiDevices.length >= otaDevices.length
+        ? fiDevices
+        : otaDevices;
 
-        const fiUrlMatch = betaHtml.match(/href="([^"]*download[^"]*)"/i)?.[1];
-        const otaUrlMatch = betaHtml.match(/href="([^"]*download-ota[^"]*)"/i)?.[1];
-
-        const fiRes = fiUrlMatch ? await safeFetch(`https://developer.android.com${fiUrlMatch}`) : null;
-        const otaRes = otaUrlMatch ? await safeFetch(`https://developer.android.com${otaUrlMatch}`) : null;
-
-        const fiHtml = fiRes ? fiRes.text() : '';
-        const otaHtml = otaRes ? otaRes.text() : '';
-
-        const fiCount = (fiHtml.match(/tr id=/g) || []).length;
-        const otaCount = (otaHtml.match(/tr id=/g) || []).length;
-        const targetHtml = fiCount >= otaCount ? fiHtml : otaHtml;
-
-        const matches = [...targetHtml.matchAll(/<tr id="([^"]+)">[\s\S]*?<td>(.*?)<\/td>/g)];
-        if (matches.length > 0) {
-          return matches.map(m => ({
-            product: `${m[1]}_beta`,
-            model: m[2].replace(/<[^>]+>/g, '').trim()
-          }));
-        }
-      }
+    if (devices.length > 0) {
+      return devices;
     }
+
+    throw new Error('Không lấy được danh sách Pixel từ FI/OTA');
   } catch (e) {
-    console.error('Lỗi khi cào danh sách Pixel từ Google:', e.message);
+    console.error(
+      '[PIF] Lỗi khi lấy danh sách Pixel:',
+      e.message
+    );
+
+    return [];
   }
-  return FALLBACK_PIXELS;
 }
 
 async function getFlashStationBuild(product) {
@@ -802,6 +858,13 @@ bot.command('pif', async (ctx) => {
   await ctx.sendChatAction('typing');
 
   const devices = await fetchPixelDeviceList();
+
+  if (!devices.length) {
+    return ctx.reply(
+      '❌ Không thể lấy danh sách Pixel Canary từ Google.'
+    );
+  }
+
   const keyboard = renderPixelKeyboard(devices, 0, userId);
 
   await ctx.reply('📱 <b>Chọn dòng máy Pixel:</b>', {
