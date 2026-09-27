@@ -139,7 +139,7 @@ const SOURCES = [
   }
 ];
 
-// DANH SÁCH PIXEL DỰ PHÒNG (FALLBACK)
+// DANH SÁCH PIXEL DỰ PHÒNG (FALLBACK KHI GOOGLE BLOCK HTTP)
 const FALLBACK_PIXELS = [
   { model: "Pixel 6", product: "oriole_beta" },
   { model: "Pixel 6 Pro", product: "raven_beta" },
@@ -240,12 +240,21 @@ export function parseKeyboxXml(xmlText) {
     while ((keyMatch = keyRe.exec(body))) {
       const [, keyAttrs, keyBody] = keyMatch;
       const chain = firstText(keyBody, 'CertificateChain') || keyBody;
+
+      const numCertsMatch = chain.match(/<NumberOfCertificates\b[^>]*>(\d+)<\/NumberOfCertificates>/i);
+      const numCertsTag = numCertsMatch ? parseInt(numCertsMatch[1], 10) : 0;
+
       const certs = [];
       const certRe = /<Certificate\b[^>]*format\s*=\s*(["'])pem\1[^>]*>([\s\S]*?)<\/Certificate>/gi;
       let certMatch;
 
       while ((certMatch = certRe.exec(chain))) {
         certs.push(certMatch[2].trim());
+      }
+
+      // NẾU NUMBEROFCERTIFICATES HOẶC ĐỘ DÀI LÀ 4 THÌ BỎ ROOT CERTIFICATE (BẢN GHI CUỐI)
+      if (numCertsTag === 4 || certs.length === 4) {
+        certs.pop();
       }
 
       keys.push({
@@ -565,48 +574,66 @@ function formatAnalysisReport(analysis, fixesApplied = []) {
 }
 
 // ==========================================================
-// PIF & FLASHSTATION UTILS (THAY THẾ TOÀN BỘ SHELL SCRIPT)
+// PIF & FLASHSTATION UTILS (CÀO TRỰC TIẾP TỪ GOOGLE)
 // ==========================================================
 
 async function fetchPixelDeviceList() {
   try {
-    const res = await safeFetch('https://developer.android.com/about/versions');
-    if (!res.ok) throw new Error('Failed to fetch version list');
-    const html = res.text();
-
-    let betaPath = html.match(/href="(\/about\/versions\/[^"]*preview[^"]*)"/i)?.[1];
-    if (!betaPath) {
-      const matches = [...html.matchAll(/href="(\/about\/versions\/[0-9]{2})"/g)];
-      if (matches.length > 0) betaPath = matches[matches.length - 1][1];
+    // Trích xuất danh sách thiết bị trực tiếp từ trang Official Factory Images
+    const factoryRes = await safeFetch('https://developers.google.com/android/images');
+    if (factoryRes.ok) {
+      const html = factoryRes.text();
+      const matches = [...html.matchAll(/<tr id="([^"]+)">[\s\S]*?<th[^>]*>(.*?)<\/th>/g)];
+      if (matches.length > 0) {
+        return matches.map(m => {
+          const product = m[1].trim();
+          const rawModel = m[2].replace(/<[^>]+>/g, '').trim();
+          return {
+            product: `${product}_beta`,
+            model: rawModel || product
+          };
+        });
+      }
     }
 
-    if (betaPath) {
-      const betaRes = await safeFetch(`https://developer.android.com${betaPath}`);
-      const betaHtml = betaRes.text();
+    // Nguồn dự phòng 2 từ developer.android.com
+    const res = await safeFetch('https://developer.android.com/about/versions');
+    if (res.ok) {
+      const html = res.text();
+      let betaPath = html.match(/href="(\/about\/versions\/[^"]*preview[^"]*)"/i)?.[1];
+      if (!betaPath) {
+        const matches = [...html.matchAll(/href="(\/about\/versions\/[0-9]{2})"/g)];
+        if (matches.length > 0) betaPath = matches[matches.length - 1][1];
+      }
 
-      const fiUrlMatch = betaHtml.match(/href="([^"]*download[^"]*)"/i)?.[1];
-      const otaUrlMatch = betaHtml.match(/href="([^"]*download-ota[^"]*)"/i)?.[1];
+      if (betaPath) {
+        const betaRes = await safeFetch(`https://developer.android.com${betaPath}`);
+        const betaHtml = betaRes.text();
 
-      const fiRes = fiUrlMatch ? await safeFetch(`https://developer.android.com${fiUrlMatch}`) : null;
-      const otaRes = otaUrlMatch ? await safeFetch(`https://developer.android.com${otaUrlMatch}`) : null;
+        const fiUrlMatch = betaHtml.match(/href="([^"]*download[^"]*)"/i)?.[1];
+        const otaUrlMatch = betaHtml.match(/href="([^"]*download-ota[^"]*)"/i)?.[1];
 
-      const fiHtml = fiRes ? fiRes.text() : '';
-      const otaHtml = otaRes ? otaRes.text() : '';
+        const fiRes = fiUrlMatch ? await safeFetch(`https://developer.android.com${fiUrlMatch}`) : null;
+        const otaRes = otaUrlMatch ? await safeFetch(`https://developer.android.com${otaUrlMatch}`) : null;
 
-      const fiCount = (fiHtml.match(/tr id=/g) || []).length;
-      const otaCount = (otaHtml.match(/tr id=/g) || []).length;
-      const targetHtml = fiCount >= otaCount ? fiHtml : otaHtml;
+        const fiHtml = fiRes ? fiRes.text() : '';
+        const otaHtml = otaRes ? otaRes.text() : '';
 
-      const matches = [...targetHtml.matchAll(/<tr id="([^"]+)">[\s\S]*?<td>(.*?)<\/td>/g)];
-      if (matches.length > 0) {
-        return matches.map(m => ({
-          product: `${m[1]}_beta`,
-          model: m[2].replace(/<[^>]+>/g, '').trim()
-        }));
+        const fiCount = (fiHtml.match(/tr id=/g) || []).length;
+        const otaCount = (otaHtml.match(/tr id=/g) || []).length;
+        const targetHtml = fiCount >= otaCount ? fiHtml : otaHtml;
+
+        const matches = [...targetHtml.matchAll(/<tr id="([^"]+)">[\s\S]*?<td>(.*?)<\/td>/g)];
+        if (matches.length > 0) {
+          return matches.map(m => ({
+            product: `${m[1]}_beta`,
+            model: m[2].replace(/<[^>]+>/g, '').trim()
+          }));
+        }
       }
     }
   } catch (e) {
-    console.error('Lỗi khi cào danh sách Pixel:', e.message);
+    console.error('Lỗi khi cào danh sách Pixel từ Google:', e.message);
   }
   return FALLBACK_PIXELS;
 }
@@ -670,7 +697,6 @@ function renderPixelKeyboard(devices, page = 0, userId) {
     buttons.push(row);
   }
 
-  // Điều hướng bằng 2 mũi tên qua lại
   const navRow = [];
   if (currentPage > 0) {
     navRow.push(Markup.button.callback('⬅️ Trước', `pif_page:${currentPage - 1}:${userId}`));
@@ -698,15 +724,14 @@ bot.command('start', async (ctx) => {
   await ctx.reply(
     "👋 <b>Hệ Thống Phân Tích Keybox & Play Integrity Fix (PIF)</b>\n\n" +
     "📖 <b>Danh sách lệnh:</b>\n" +
-    "• /keybox - Tải Keybox (Hiển thị icon trạng thái ${icon}${name} & Auto-Fix)\n" +
-    "• /pif - Tải file PIF (<code>pif.json</code> & <code>pif.prop</code>) chọn dòng máy Pixel\n" +
-    "• /security_patch - Lấy thông tin bản vá bảo mật mới nhất từ Google\n" +
+    "• /keybox - Tải Keybox (Hiển thị icon trạng thái & Auto-Fix)\n" +
+    "• /pif - Tải file PIF (<code>pif.json</code>) chọn dòng máy Pixel\n" +
     "• /check - Kiểm tra trạng thái toàn bộ nguồn Keybox",
     { parse_mode: 'HTML' }
   );
 });
 
-// Lệnh /keybox với Icon "${icon}${name}"
+// Lệnh /keybox
 bot.command('keybox', async (ctx) => {
   const userId = ctx.from.id;
   await ctx.sendChatAction('typing');
@@ -772,7 +797,7 @@ bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
   }
 });
 
-// Lệnh /pif chọn Pixel có phân trang bằng 2 mũi tên qua lại
+// Lệnh /pif chọn Pixel cào trực tiếp từ Google
 bot.command('pif', async (ctx) => {
   const userId = ctx.from.id;
   await ctx.sendChatAction('typing');
@@ -821,82 +846,42 @@ bot.action(/^get_pif:([a-z0-9_]+):(\d+)$/, async (ctx) => {
   try {
     await ctx.sendChatAction('upload_document');
     const devices = await fetchPixelDeviceList();
-    const devInfo = devices.find(d => d.product === product) || { model: 'Pixel Canary', product };
+    const devInfo = devices.find(d => d.product === product) || { model: 'Pixel Device', product };
 
     const deviceName = product.replace(/_beta$/, '');
     const build = await getFlashStationBuild(product);
     const securityPatch = await getSecurityPatchLevel(build.canaryId);
 
-    const fingerprint = `google/${product}/${deviceName}:CANARY/${build.id}/${build.incremental}:user/release-keys`;
+    const fingerprint = `google/${deviceName}/${deviceName}:17/${build.id}/${build.incremental}:user/release-keys`;
 
-    // Tạo pif.json
+    // Cấu trúc file pif.json chuẩn
     const pifJsonData = {
-      PRODUCT: product,
+      BRAND: "google",
       DEVICE: deviceName,
+      FINGERPRINT: fingerprint,
+      ID: build.id,
       MANUFACTURER: "Google",
       MODEL: devInfo.model,
-      FINGERPRINT: fingerprint,
-      SECURITY_PATCH: securityPatch,
-      spoofBuild: true,
-      spoofProps: true,
-      spoofProvider: true,
-      spoofSignature: true,
-      spoofVendingBuild: true,
-      spoofVendingSdk: true
+      PRODUCT: deviceName,
+      DEVICE_INITIAL_SDK_INT: "32",
+      SECURITY_PATCH: securityPatch
     };
 
-    // Tạo pif.prop
-    const pifPropData =
-      `FINGERPRINT=${fingerprint}\n` +
-      `MANUFACTURER=Google\n` +
-      `MODEL=${devInfo.model}\n` +
-      `SECURITY_PATCH=${securityPatch}\n` +
-      `spoofBuild=true\n` +
-      `spoofProps=true\n` +
-      `spoofProvider=true\n` +
-      `spoofSignature=true\n` +
-      `spoofVendingBuild=true\n` +
-      `spoofVendingSdk=true\n` +
-      `DEBUG=false\n`;
-
     const jsonBuffer = Buffer.from(JSON.stringify(pifJsonData, null, 2), 'utf-8');
-    const propBuffer = Buffer.from(pifPropData, 'utf-8');
 
     const caption =
       `✅ <b>ĐÃ TẠO THÀNH CÔNG PIF (Play Integrity Fix)</b>\n\n` +
-      `📱 <b>Model:</b> <code>${devInfo.model}</code> (<code>${product}</code>)\n` +
+      `📱 <b>Model:</b> <code>${devInfo.model}</code> (<code>${deviceName}</code>)\n` +
       `🛡 <b>Security Patch:</b> <code>${securityPatch}</code>\n` +
       `📦 <b>ID Build:</b> <code>${build.id}</code> | Incremental: <code>${build.incremental}</code>\n` +
       `🔏 <b>Fingerprint:</b>\n<code>${fingerprint}</code>`;
 
-    await ctx.replyWithDocument({ source: jsonBuffer, filename: `pif_${deviceName}.json` });
     await ctx.replyWithDocument(
-      { source: propBuffer, filename: `pif_${deviceName}.prop` },
+      { source: jsonBuffer, filename: `pif_${deviceName}.json` },
       { caption, parse_mode: 'HTML' }
     );
   } catch (err) {
     await ctx.reply(`❌ Lỗi khi khởi tạo PIF: ${err.message}`);
-  }
-});
-
-// Lệnh /security_patch
-bot.command('security_patch', async (ctx) => {
-  await ctx.sendChatAction('typing');
-
-  try {
-    const build = await getFlashStationBuild('oriole_beta');
-    const patch = await getSecurityPatchLevel(build.canaryId);
-
-    const message =
-      `🛡 <b>BẢN VÁ BẢO MẬT (SECURITY PATCH LEVEL)</b>\n\n` +
-      `📅 <b>Mới nhất:</b> <code>${patch}</code>\n` +
-      `🆔 <b>Canary ID:</b> <code>${build.canaryId}</code>\n` +
-      `📦 <b>Build ID:</b> <code>${build.id}</code>\n` +
-      `📈 <b>Incremental:</b> <code>${build.incremental}</code>`;
-
-    await ctx.reply(message, { parse_mode: 'HTML' });
-  } catch (err) {
-    await ctx.reply(`❌ Không thể tra cứu bản vá bảo mật: ${err.message}`);
   }
 });
 
