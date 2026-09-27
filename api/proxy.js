@@ -11,7 +11,7 @@ const httpProxy = require("http-proxy");
 const { HttpsProxyAgent } = require("https-proxy-agent");
 const { request: undiciRequest, Agent: UndiciAgent } = require("undici");
 
-dns.setServers(["1.1.1.1", "1.0.0.1"]);
+dns.setServers(['1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4']);
 
 const TIMEOUT = 30000;
 const MAX_REDIRECTS = 10;
