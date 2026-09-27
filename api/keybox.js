@@ -1,1548 +1,984 @@
 import { Telegraf, Markup } from 'telegraf';
-import dns from 'dns';
 import axios from 'axios';
 import https from 'https';
+import dns from 'dns';
 import UserAgent from 'user-agents';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import { X509Certificate } from '@peculiar/x509';
 
-const bot = new Telegraf(process.env.BOT_TOKEN_KEYBOX);
-const checkkeyboz = process.env.USERNAME_BOT_CHECK_KEYBOX;
-
-dns.setServers(['1.1.1.1', '1.0.0.1']);
-
-const agent = new https.Agent({
-  rejectUnauthorized: false,
-  keepAlive: true
-});
-
 // ==========================================================
-// CONFIGURATION & SOURCES
+// CẤU HÌNH & KHỞI TẠO BOT
 // ==========================================================
 
-const GOOGLE_REVOCATION_URL =
-  'https://android.googleapis.com/attestation/status';
+const BOT_TOKEN = process.env.BOT_TOKEN_KEYBOX || process.env.TELEGRAM_BOT_TOKEN_CHECK_KEYBOX;
+const USERNAME_BOT_CHECK = process.env.USERNAME_BOT_CHECK_KEYBOX;
 
-// Yuri
-const YURI_URL =
-  'https://raw.githubusercontent.com/Yurii0307/yurikey/main/key';
+const bot = new Telegraf(BOT_TOKEN);
 
-const YURI_COMMIT_API =
-  'https://api.github.com/repos/Yurii0307/yurikey/commits?path=key&page=1&per_page=1';
+dns.setServers(['1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4']);
 
-// Kaorios
-const KAORIOS_URL =
-  'https://raw.githubusercontent.com/Wuang26/Kaorios-Toolbox/refs/heads/main/Toolbox-data/Keybox.xml';
+const PROXY_URL = process.env.PROXY_URL || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+const proxyAgent = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : null;
 
-const KAORIOS_COMMIT_API =
-  'https://api.github.com/repos/Wuang26/Kaorios-Toolbox/commits?path=Toolbox-data/Keybox.xml&page=1&per_page=1';
+function getRandomUserAgent() {
+  return new UserAgent().toString();
+}
 
-// Evoker
-const EVOKER_URL =
-  'https://evoker.qzz.io/key';
+async function safeFetch(url, extraHeaders = {}) {
+  const headers = {
+    'User-Agent': getRandomUserAgent(),
+    'Accept': '*/*',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    ...extraHeaders
+  };
 
-// KOW
-const KOW_URL =
-  'https://raw.githubusercontent.com/KOWX712/Tricky-Addon-Update-Target-List/keybox/.extra';
+  const config = {
+    headers,
+    timeout: 12000,
+    responseType: 'arraybuffer',
+    validateStatus: () => true
+  };
 
-const KOW_COMMIT_API =
-  'https://api.github.com/repos/KOWX712/Tricky-Addon-Update-Target-List/commits?path=.extra&ref=keybox&page=1&per_page=1';
+  if (proxyAgent) {
+    config.httpsAgent = proxyAgent;
+    config.httpAgent = proxyAgent;
+  } else {
+    config.httpsAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
+  }
 
-// HihiKeybox
-const HIHI_URL =
-  'https://raw.githubusercontent.com/soctrungkien/1HzH9Axaj/main/kezz';
+  const response = await axios.get(url, config);
+  const buffer = Buffer.from(response.data);
 
-const HIHI_COMMIT_API =
-  'https://api.github.com/repos/soctrungkien/1HzH9Axaj/commits?path=kezz&page=1&per_page=1';
+  return {
+    ok: response.status >= 200 && response.status < 300,
+    status: response.status,
+    buffer,
+    text: () => buffer.toString('utf-8'),
+    json: () => JSON.parse(buffer.toString('utf-8'))
+  };
+}
 
-// LoneMods - RAW XML
-const LONEMODS_URL =
-  'https://raw.githubusercontent.com/dare-devil-ex/keyboxxBot/main/keybox.xml';
-
-const LONEMODS_COMMIT_API =
-  'https://api.github.com/repos/dare-devil-ex/keyboxxBot/commits?path=keybox.xml&page=1&per_page=1';
-
-// FREECAMK - RAW XML
-const FREECAMK_URL =
-  'https://raw.githubusercontent.com/FREECAMK/Keybox-Play-Integrity-/main/keybox.xml';
-
-const FREECAMK_COMMIT_API =
-  'https://api.github.com/repos/FREECAMK/Keybox-Play-Integrity-/commits?path=keybox.xml&page=1&per_page=1';
-
-// DavidePalma - RAW XML, không có ngày
-const DAVIDEPALMA_URL =
-  'https://www.davidepalma.it/pib/keybox.xml';
-
-// TrickyBox - RAW Base64
-const TRICKYBOX_URL =
-  'https://raw.githubusercontent.com/GueRapii/randommodulesfiles/main/file.enc';
-
-const TRICKYBOX_COMMIT_API =
-  'https://api.github.com/repos/GueRapii/randommodulesfiles/commits?path=file.enc&page=1&per_page=1';
-
-// Zkos - RAW XML
-const ZKOS_URL =
-  'https://raw.githubusercontent.com/zuri1503/Toolbox-Database/refs/heads/main/keybox.xml';
-
-const ZKOS_COMMIT_API =
-  'https://api.github.com/repos/zuri1503/Toolbox-Database/commits?path=keybox.xml&page=1&per_page=1';
+// Cache trạng thái Keybox giúp load nút chọn nhanh
+const statusCache = new Map();
 
 // ==========================================================
-// HTTPS
+// DANH SÁCH NGUỒN KEYBOX
 // ==========================================================
 
-const httpsAgent = new https.Agent({
-  keepAlive: false,
-  timeout: 10000
-});
+const SOURCES = [
+  {
+    id: 'yuri',
+    name: 'Yuri',
+    type: 'base64',
+    url: 'https://raw.githubusercontent.com/Yurii0307/yurikey/main/key',
+    commitApi: 'https://api.github.com/repos/Yurii0307/yurikey/commits?path=key&page=1&per_page=1'
+  },
+  {
+    id: 'kaorios',
+    name: 'Kaorios',
+    type: 'xml',
+    url: 'https://raw.githubusercontent.com/Wuang26/Kaorios-Toolbox/refs/heads/main/Toolbox-data/Keybox.xml',
+    commitApi: 'https://api.github.com/repos/Wuang26/Kaorios-Toolbox/commits?path=Toolbox-data/Keybox.xml&page=1&per_page=1'
+  },
+  {
+    id: 'evoker',
+    name: 'Evoker',
+    type: 'base64',
+    url: 'https://evoker.qzz.io/key',
+    commitApi: null
+  },
+  {
+    id: 'kow',
+    name: 'KOW',
+    type: 'hex-base64',
+    url: 'https://raw.githubusercontent.com/KOWX712/Tricky-Addon-Update-Target-List/keybox/.extra',
+    commitApi: 'https://api.github.com/repos/KOWX712/Tricky-Addon-Update-Target-List/commits?path=.extra&ref=keybox&page=1&per_page=1'
+  },
+  {
+    id: 'hihi',
+    name: 'HihiKeybox',
+    type: 'base64',
+    url: 'https://raw.githubusercontent.com/soctrungkien/1HzH9Axaj/main/kezz',
+    commitApi: 'https://api.github.com/repos/soctrungkien/1HzH9Axaj/commits?path=kezz&page=1&per_page=1'
+  },
+  {
+    id: 'lonemods',
+    name: 'LoneMods',
+    type: 'xml',
+    url: 'https://raw.githubusercontent.com/dare-devil-ex/keyboxxBot/main/keybox.xml',
+    commitApi: 'https://api.github.com/repos/dare-devil-ex/keyboxxBot/commits?path=keybox.xml&page=1&per_page=1'
+  },
+  {
+    id: 'freecamk',
+    name: 'FREECAMK',
+    type: 'xml',
+    url: 'https://raw.githubusercontent.com/FREECAMK/Keybox-Play-Integrity-/main/keybox.xml',
+    commitApi: 'https://api.github.com/repos/FREECAMK/Keybox-Play-Integrity-/commits?path=keybox.xml&page=1&per_page=1'
+  },
+  {
+    id: 'davide',
+    name: 'DavidePalma',
+    type: 'xml',
+    url: 'https://www.davidepalma.it/pib/keybox.xml',
+    commitApi: null,
+    extraHeaders: { 'Upgrade-Insecure-Requests': '1' }
+  },
+  {
+    id: 'tricky',
+    name: 'TrickyBox',
+    type: 'base64',
+    url: 'https://raw.githubusercontent.com/GueRapii/randommodulesfiles/main/file.enc',
+    commitApi: 'https://api.github.com/repos/GueRapii/randommodulesfiles/commits?path=file.enc&page=1&per_page=1'
+  },
+  {
+    id: 'zkos',
+    name: 'Zkos',
+    type: 'xml',
+    url: 'https://raw.githubusercontent.com/zuri1503/Toolbox-Database/refs/heads/main/keybox.xml',
+    commitApi: 'https://api.github.com/repos/zuri1503/Toolbox-Database/commits?path=keybox.xml&page=1&per_page=1'
+  }
+];
 
-// ==========================================================
-// ROOT PUBLIC KEYS
-// ==========================================================
+// DANH SÁCH PIXEL DỰ PHÒNG (FALLBACK)
+const FALLBACK_PIXELS = [
+  { model: "Pixel 6", product: "oriole_beta" },
+  { model: "Pixel 6 Pro", product: "raven_beta" },
+  { model: "Pixel 6a", product: "bluejay_beta" },
+  { model: "Pixel 7", product: "panther_beta" },
+  { model: "Pixel 7 Pro", product: "cheetah_beta" },
+  { model: "Pixel 7a", product: "lynx_beta" },
+  { model: "Pixel 8", product: "shiba_beta" },
+  { model: "Pixel 8 Pro", product: "husky_beta" },
+  { model: "Pixel 8a", product: "akita_beta" },
+  { model: "Pixel 9", product: "tokay_beta" },
+  { model: "Pixel 9 Pro", product: "caiman_beta" },
+  { model: "Pixel 9 Pro XL", product: "komodo_beta" },
+  { model: "Pixel Fold", product: "felix_beta" }
+];
 
 const PEM_KEYS = {
-  google: `-----BEGIN PUBLIC KEY-----
-MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xU
-FmOr75gvMsd/dTEDDJdSSxtf6An7xyqpRR90PL2abxM1dEqlXnf2tqw1Ne4Xwl5j
-lRfdnJLmN0pTy/4lj4/7tv0Sk3iiKkypnEUtR6WfMgH0QZfKHM1+di+y9TFRtv6y
-//0rb+T+W8a9nsNL/ggjnar86461qO0rOs2cXjp3kOG1FEJ5MVmFmBGtnrKpa73X
-pXyTqRxB/M0n1n/W9nGqC4FSYa04T6N5RIZGBN2z2MT5IKGbFlbC8UrW0DxW7AYI
-mQQcHtGl/m00QLVWutHQoVJYnFPlXTcHYvASLu+RhhsbDmxMgJJ0mcDpvsC4PjvB
-+TxywElgS70vE0XmLD+OJtvsBslHZvPBKCOdT0MS+tgSOIfga+z1Z1g7+DVagf7q
-uvmag8jfPioyKvxnK/EgsTUVi2ghzq8wm27ud/mIM7AY2qEORR8Go3TVB4HzWQgp
-Zrt3i5MIlCaY504LzSRiigHCzAPlHws+W0rB5N+er5/2pJKnfBSDiCiFAVtCLOZ7
-gLiMm0jhO2B6tUXHI/+MRPjy02i59lINMRRev56GKtcd9qO/0kUJWdZTdA2XoS82
-ixPvZtXQpUpuL12ab+9EaDK8Z4RHJYYfCT3Q5vNAXaiWQ+8PTWm2QgBR/bkwSWc+
-NpUFgNPN9PvQi8WEg5UmAGMCAwEAAQ==
------END PUBLIC KEY-----`,
-
-  aosp_ec: `-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7l1ex+HA220Dpn7mthvsTWpdamgu
-D/9/SQ59dx9EIm29sa/6FsvHrcV30lacqrewLVQBXT5DKyqO107sSHVBpA==
------END PUBLIC KEY-----`,
-
-  aosp_rsa: `-----BEGIN PUBLIC KEY-----
-MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCia63rbi5EYe/VDoLmt5TRdSMf
-d5tjkWP/96r/C3JHTsAsQ+wzfNes7UA+jCigZtX3hwszl94OuE4TQKuvpSe/lWmg
-MdsGUmX4RFlXYfC78hdLt0GAZMAoDo9Sd47b0ke2RekZyOmLw9vCkT/X11DEHTVm
-+Vfkl5YLCazOkjWFmwIDAQAB
------END PUBLIC KEY-----`,
-
-  knox: `-----BEGIN PUBLIC KEY-----
-MIGbMBAGByqGSM49AgEGBSuBBAAjA4GGAAQBhbGuLrpql5I2WJmrE5kEVZOo+dgA
-46mKrVJf/sgzfzs2u7M9c1Y9ZkCEiiYkhTFE9vPbasmUfXybwgZ2EM30A1ABPd12
-4n3JbEDfsB/wnMH1AcgsJyJFPbETZiy42Fhwi+2BCA5bcHe7SrdkRIYSsdBRaKBo
-ZsapxB0gAOs0jSPRX5M=
------END PUBLIC KEY-----`
+  google: `-----BEGIN PUBLIC KEY-----\nMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xU\nFmOr75gvMsd/dTEDDJdSSxtf6An7xyqpRR90PL2abxM1dEqlXnf2tqw1Ne4Xwl5j\nlRfdnJLmN0pTy/4lj4/7tv0Sk3iiKkypnEUtR6WfMgH0QZfKHM1+di+y9TFRtv6y\n//0rb+T+W8a9nsNL/ggjnar86461qO0rOs2cXjp3kOG1FEJ5MVmFmBGtnrKpa73X\npXyTqRxB/M0n1n/W9nGqC4FSYa04T6N5RIZGBN2z2MT5IKGbFlbC8UrW0DxW7AYI\nmQQcHtGl/m00QLVWutHQoVJYnFPlXTcHYvASLu+RhhsbDmxMgJJ0mcDpvsC4PjvB\n+TxywElgS70vE0XmLD+OJtvsBslHZvPBKCOdT0MS+tgSOIfga+z1Z1g7+DVagf7q\nuvmag8jfPioyKvxnK/EgsTUVi2ghzq8wm27ud/mIM7AY2qEORR8Go3TVB4HzWQgp\nZrt3i5MIlCaY504LzSRiigHCzAPlHws+W0rB5N+er5/2pJKnfBSDiCiFAVtCLOZ7\ngLiMm0jhO2B6tUXHI/+MRPjy02i59lINMRRev56GKtcd9qO/0kUJWdZTdA2XoS82\nixPvZtXQpUpuL12ab+9EaDK8Z4RHJYYfCT3Q5vNAXaiWQ+8PTWm2QgBR/bkwSWc+\nNpUFgNPN9PvQi8WEg5UmAGMCAwEAAQ==\n-----END PUBLIC KEY-----`,
+  aosp_ec: `-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7l1ex+HA220Dpn7mthvsTWpdamgu\nD/9/SQ59dx9EIm29sa/6FsvHrcV30lacqrewLVQBXT5DKyqO107sSHVBpA==\n-----END PUBLIC KEY-----`,
+  aosp_rsa: `-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCia63rbi5EYe/VDoLmt5TRdSMf\nd5tjkWP/96r/C3JHTsAsQ+wzfNes7UA+jCigZtX3hwszl94OuE4TQKuvpSe/lWmg\nMdsGUmX4RFlXYfC78hdLt0GAZMAoDo9Sd47b0ke2RekZyOmLw9vCkT/X11DEHTVm\n+Vfkl5YLCazOkjWFmwIDAQAB\n-----END PUBLIC KEY-----`,
+  knox: `-----BEGIN PUBLIC KEY-----\nMIGbMBAGByqGSM49AgEGBSuBBAAjA4GGAAQBhbGuLrpql5I2WJmrE5kEVZOo+dgA\n46mKrVJf/sgzfzs2u7M9c1Y9ZkCEiiYkhTFE9vPbasmUfXybwgZ2EM30A1ABPd12\n4n3JbEDfsB/wnMH1AcgsJyJFPbETZiy42Fhwi+2BCA5bcHe7SrdkRIYSsdBRaKBo\nZsapxB0gAOs0jSPRX5M=\n-----END PUBLIC KEY-----`
 };
 
 // ==========================================================
-// HELPERS
+// MODULE TRUST MANAGER, DECODER, PARSER, REPAIRER & ANALYZER
 // ==========================================================
 
-function formatDate(isoString) {
-  if (!isoString) return 'Không xác định';
-
-  return new Date(isoString).toLocaleString('vi-VN', {
-    timeZone: 'Asia/Ho_Chi_Minh'
-  });
-}
-
-function sanitizeXmlContent(xmlString) {
-  if (!xmlString) return '';
-
-  return xmlString
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .trim();
-}
-
-function formatPem(rawPem) {
-  if (!rawPem) return '';
-
-  let base64 = rawPem
-    .replace(/-----BEGIN CERTIFICATE-----/g, '')
-    .replace(/-----END CERTIFICATE-----/g, '')
-    .replace(/\s+/g, '');
-
-  if (!base64) return '';
-
-  const lines = base64.match(/.{1,64}/g) || [];
-
-  return `-----BEGIN CERTIFICATE-----
-${lines.join('\n')}
------END CERTIFICATE-----`;
-}
-
-function parseNumberOfCertificates(xmlString) {
-  const match = xmlString.match(
-    /<NumberOfCertificates>(\d+)<\/NumberOfCertificates>/
-  );
-
-  if (!match) {
-    throw new Error(
-      'Không tìm thấy thẻ NumberOfCertificates'
-    );
+class TrustManager {
+  constructor() {
+    this.trustData = null;
+    this.lastRefreshTime = 0;
   }
 
-  return parseInt(match[1], 10);
-}
-
-function parseCertificates(xmlString, pemNumber) {
-  const certRegex =
-    /<Certificate format="pem">([\s\S]*?)<\/Certificate>/g;
-
-  const certs = [];
-  let match;
-
-  while (
-    (match = certRegex.exec(xmlString)) !== null &&
-    certs.length < pemNumber
-  ) {
-    const cleanPem = formatPem(match[1]);
-
-    if (cleanPem) {
-      certs.push(cleanPem);
+  async refreshTrustData(force = false) {
+    const now = Date.now();
+    if (!force && this.lastRefreshTime && now - this.lastRefreshTime < 15000) {
+      return this.trustData;
     }
+
+    try {
+      const res = await safeFetch('https://android.googleapis.com/attestation/status');
+      if (res.ok) {
+        this.trustData = {
+          status: res.json(),
+          fetchedAt: new Date().toISOString()
+        };
+        this.lastRefreshTime = now;
+      }
+    } catch (err) {
+      console.error('[TrustManager] Cập nhật CRL thất bại:', err.message);
+    }
+
+    return this.trustData || { status: { entries: {} } };
+  }
+}
+
+const trustManager = new TrustManager();
+
+export function decodeKeyboxBytes(bytes) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (data[0] === 0xff && data[1] === 0xfe) return new TextDecoder('utf-16le').decode(data.subarray(2));
+  if (data[0] === 0xfe && data[1] === 0xff) return new TextDecoder('utf-16be').decode(data.subarray(2));
+  if (data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf) return new TextDecoder('utf-8').decode(data.subarray(3));
+
+  let nulEven = 0, nulOdd = 0;
+  for (let i = 0; i < Math.min(data.length, 512); i++) {
+    if (data[i] === 0) (i % 2 === 0 ? nulEven++ : nulOdd++);
   }
 
-  if (certs.length === 0) {
-    throw new Error(
-      'Không tìm thấy Certificate hợp lệ'
-    );
+  if (nulOdd > 10 && nulOdd > nulEven * 3) return new TextDecoder('utf-16le').decode(data);
+  if (nulEven > 10 && nulEven > nulOdd * 3) return new TextDecoder('utf-16be').decode(data);
+
+  return new TextDecoder('utf-8').decode(data);
+}
+
+function attr(attrs, name) {
+  const m = attrs.match(new RegExp(`${name}\\s*=\\s*(["'])(.*?)\\1`, 'i'));
+  return m ? m[2] : undefined;
+}
+
+function firstText(xml, tag) {
+  const m = xml.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'i'));
+  return m ? m[1].trim() : undefined;
+}
+
+export function parseKeyboxXml(xmlText) {
+  const xml = xmlText.replace(/^\ufeff/, '').replace(/<!--[\s\S]*?-->/g, '');
+  const keyboxes = [];
+  const keyboxRe = /<Keybox\b([^>]*)>([\s\S]*?)<\/Keybox>/gi;
+  let kbMatch;
+
+  while ((kbMatch = keyboxRe.exec(xml))) {
+    const [, attrs, body] = kbMatch;
+    const keys = [];
+    const keyRe = /<Key\b([^>]*)>([\s\S]*?)<\/Key>/gi;
+    let keyMatch;
+
+    while ((keyMatch = keyRe.exec(body))) {
+      const [, keyAttrs, keyBody] = keyMatch;
+      const chain = firstText(keyBody, 'CertificateChain') || keyBody;
+      const certs = [];
+      const certRe = /<Certificate\b[^>]*format\s*=\s*(["'])pem\1[^>]*>([\s\S]*?)<\/Certificate>/gi;
+      let certMatch;
+
+      while ((certMatch = certRe.exec(chain))) {
+        certs.push(certMatch[2].trim());
+      }
+
+      keys.push({
+        algorithm: attr(keyAttrs, 'algorithm') || 'ECDSA',
+        privateKeyPem: firstText(keyBody, 'PrivateKey') || '',
+        certificatesPem: certs
+      });
+    }
+
+    keyboxes.push({
+      deviceId: attr(attrs, 'DeviceID') || 'Unknown',
+      keys
+    });
   }
 
-  return certs;
+  return { keyboxes };
+}
+
+export function standardizeCertPem(rawPem) {
+  if (!rawPem) return '';
+  const m = rawPem.match(/-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/i)
+    || rawPem.match(/-----BEGIN [^-]+-----([\s\S]*?)-----END [^-]+-----/i);
+
+  const b64 = m ? m[1] : rawPem;
+  const clean = b64.replace(/[\s\r\n]/g, '');
+  if (!clean) return '';
+
+  const lines = clean.match(/.{1,64}/g) || [];
+  return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
+}
+
+function rebuildXmlFromParsed(parsed) {
+  let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+  xml += '<KeyboxMetadata>\n';
+  xml += `  <NumberOfKeyboxes>${parsed.keyboxes.length}</NumberOfKeyboxes>\n`;
+
+  for (const keybox of parsed.keyboxes) {
+    xml += `  <Keybox DeviceID="${keybox.deviceId}">\n`;
+    for (const key of keybox.keys) {
+      xml += `    <Key algorithm="${key.algorithm}">\n`;
+      xml += `      <PrivateKey>\n${key.privateKeyPem.trim()}\n      </PrivateKey>\n`;
+      xml += `      <CertificateChain>\n`;
+      xml += `        <NumberOfCertificates>${key.certificatesPem.length}</NumberOfCertificates>\n`;
+      for (const cert of key.certificatesPem) {
+        xml += `        <Certificate format="pem">\n${cert.trim()}\n        </Certificate>\n`;
+      }
+      xml += `      </CertificateChain>\n`;
+      xml += `    </Key>\n`;
+    }
+    xml += `  </Keybox>\n`;
+  }
+
+  xml += '</KeyboxMetadata>';
+  return xml;
+}
+
+export async function repairKeybox(rawContent, trustData) {
+  let content = typeof rawContent === 'string' ? rawContent : decodeKeyboxBytes(rawContent);
+  const fixes = [];
+
+  try {
+    let parsed = parseKeyboxXml(content);
+
+    if (!parsed.keyboxes || parsed.keyboxes.length === 0) {
+      if (!content.includes('<KeyboxMetadata>')) {
+        content = `<?xml version="1.0" encoding="UTF-8"?>\n<KeyboxMetadata>\n${content}\n</KeyboxMetadata>`;
+        fixes.push('Tự động bổ sung thẻ bọc <KeyboxMetadata>');
+      }
+      parsed = parseKeyboxXml(content);
+    }
+
+    if (!parsed.keyboxes || parsed.keyboxes.length === 0) {
+      throw new Error('Cấu trúc XML không hợp lệ.');
+    }
+
+    for (const keybox of parsed.keyboxes) {
+      for (const key of keybox.keys) {
+        const newCerts = [];
+        for (const cert of key.certificatesPem) {
+          try {
+            const standardized = standardizeCertPem(cert);
+            newCerts.push(standardized);
+            if (standardized !== cert) {
+              fixes.push('Chuẩn hóa PEM (64 ký tự/dòng)');
+            }
+          } catch (err) {}
+        }
+        key.certificatesPem = newCerts;
+      }
+    }
+
+    const repairedXml = rebuildXmlFromParsed(parsed);
+    const analysis = await analyzeKeybox(repairedXml, trustData);
+
+    return {
+      success: true,
+      deviceId: parsed.keyboxes[0]?.deviceId || 'Unknown',
+      summary: `Đã sửa ${fixes.length} lỗi`,
+      fixesApplied: [...new Set(fixes)],
+      repairedXml,
+      analysis
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 }
 
 function comparePemKeys(pem1, pem2) {
-  return (
-    pem1.replace(/\s/g, '') ===
-    pem2.replace(/\s/g, '')
-  );
-}
-
-// ==========================================================
-// GOOGLE REVOCATION
-// ==========================================================
-
-async function loadRevocationList() {
-  try {
-    const response = await axios.get(
-      GOOGLE_REVOCATION_URL,
-      {
-        headers: {
-          'Cache-Control':
-            'max-age=0, no-cache, no-store, must-revalidate'
-        },
-        timeout: 5000,
-        httpsAgent
-      }
-    );
-
-    return response.data;
-  } catch (error) {
-    return {
-      entries: {}
-    };
-  }
-}
-
-// ==========================================================
-// CERTIFICATE VALIDATION
-// ==========================================================
-
-async function verifyCertificateChain(certs) {
-  if (certs.length < 2) {
-    return true;
-  }
-
-  try {
-    for (
-      let i = 0;
-      i < certs.length - 1;
-      i++
-    ) {
-      const child =
-        new X509Certificate(certs[i]);
-
-      const parent =
-        new X509Certificate(certs[i + 1]);
-
-      if (
-        child.issuer !==
-        parent.subject
-      ) {
-        return false;
-      }
-
-      const isValidSignature =
-        await child.verify({
-          publicKey:
-            await parent.publicKey.export()
-        });
-
-      if (!isValidSignature) {
-        return false;
-      }
-    }
-
-    return true;
-  } catch (error) {
-    return false;
-  }
+  return pem1.replace(/\s/g, '') === pem2.replace(/\s/g, '');
 }
 
 function identifyRootCert(pemCert) {
   try {
-    const cert =
-      new X509Certificate(pemCert);
+    const cert = new X509Certificate(pemCert);
+    const rootPublicKeyPem = cert.publicKey.toString('pem');
 
-    const rootPublicKeyPem =
-      cert.publicKey.toString('pem');
-
-    for (
-      const [name, key]
-      of Object.entries(PEM_KEYS)
-    ) {
-      if (
-        comparePemKeys(
-          rootPublicKeyPem,
-          key
-        )
-      ) {
-        if (name === 'google') {
-          return {
-            name,
-            type: 'Google Hardware',
-            isHardware: true
-          };
-        }
-
-        if (name === 'aosp_ec') {
-          return {
-            name,
-            type: 'AOSP EC',
-            isHardware: false
-          };
-        }
-
-        if (name === 'aosp_rsa') {
-          return {
-            name,
-            type: 'AOSP RSA',
-            isHardware: false
-          };
-        }
-
-        if (name === 'knox') {
-          return {
-            name,
-            type: 'Samsung Knox',
-            isHardware: true
-          };
-        }
+    for (const [name, key] of Object.entries(PEM_KEYS)) {
+      if (comparePemKeys(rootPublicKeyPem, key)) {
+        if (name === 'google') return { name, type: 'Google Hardware Attestation', isHardware: true };
+        if (name === 'aosp_ec') return { name, type: 'AOSP Software Attestation (EC)', isHardware: false };
+        if (name === 'aosp_rsa') return { name, type: 'AOSP Software Attestation (RSA)', isHardware: false };
+        if (name === 'knox') return { name, type: 'Samsung Knox Attestation', isHardware: true };
       }
     }
   } catch (e) {}
 
-  return {
-    name: 'unknown',
-    type: 'Unknown Root',
-    isHardware: false
-  };
+  return { name: 'unknown', type: 'Root chứng chỉ không xác định', isHardware: false };
 }
 
-async function validateKeyboxXml(rawXmlContent) {
+async function verifyCertificateChain(certs) {
+  if (certs.length < 2) return true;
   try {
-    const xmlContent =
-      sanitizeXmlContent(rawXmlContent);
-
-    const numCerts =
-      parseNumberOfCertificates(xmlContent);
-
-    const pemCerts =
-      parseCertificates(
-        xmlContent,
-        numCerts
-      );
-
-    if (pemCerts.length === 0) {
-      return false;
+    for (let i = 0; i < certs.length - 1; i++) {
+      const child = new X509Certificate(certs[i]);
+      const parent = new X509Certificate(certs[i + 1]);
+      if (child.issuer !== parent.subject) return false;
+      const isValid = await child.verify({ publicKey: await parent.publicKey.export() });
+      if (!isValid) return false;
     }
-
-    const cert =
-      new X509Certificate(pemCerts[0]);
-
-    const now = new Date();
-
-    const isValidPeriod =
-      cert.notBefore <= now &&
-      now <= cert.notAfter;
-
-    if (!isValidPeriod) {
-      return false;
-    }
-
-    const chainValid =
-      await verifyCertificateChain(
-        pemCerts
-      );
-
-    if (!chainValid) {
-      return false;
-    }
-
-    if (numCerts !== 4) {
-      const rootCertInfo =
-        identifyRootCert(
-          pemCerts[
-            pemCerts.length - 1
-          ]
-        );
-
-      if (
-        rootCertInfo.name === 'unknown'
-      ) {
-        return false;
-      }
-    }
-
-    const serialNumber =
-      cert.serialNumber
-        .replace(/^0x/i, '')
-        .toLowerCase();
-
-    const revocationList =
-      await loadRevocationList();
-
-    const isRevoked =
-      !!revocationList.entries?.[
-        serialNumber
-      ];
-
-    return !isRevoked;
+    return true;
   } catch (error) {
     return false;
   }
 }
 
-// ==========================================================
-// GET YURI
-// ==========================================================
+export async function analyzeKeybox(xmlContent, trustData) {
+  const parsed = parseKeyboxXml(xmlContent);
+  const analysis = {
+    overall: 'strong',
+    warnings: [],
+    errors: [],
+    serials: [],
+    keyboxes: []
+  };
 
-async function getYuriKeybox() {
-  const [
-    fileRes,
-    commitRes
-  ] = await Promise.all([
-    fetch(YURI_URL),
-    fetch(YURI_COMMIT_API, {
-      headers: {
-        'User-Agent': 'Telegram-Bot'
-      }
-    })
-  ]);
-
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn Yuri'
-    );
+  if (!parsed.keyboxes || parsed.keyboxes.length === 0) {
+    analysis.overall = 'banned';
+    analysis.errors.push('Không tìm thấy dữ liệu Keybox hợp lệ.');
+    return analysis;
   }
 
-  const base64Text =
-    await fileRes.text();
+  for (const keybox of parsed.keyboxes) {
+    for (const key of keybox.keys) {
+      if (!key.privateKeyPem) {
+        analysis.errors.push('Thiếu Private Key');
+        analysis.overall = 'banned';
+      }
 
-  const cleanBase64 =
-    base64Text
-      .replace(/\s+/g, '')
-      .trim();
+      if (key.certificatesPem.length === 0) {
+        analysis.errors.push('Thiếu chuỗi chứng chỉ');
+        analysis.overall = 'banned';
+        continue;
+      }
 
-  let buffer;
+      try {
+        const leafCert = new X509Certificate(key.certificatesPem[0]);
+        const serialNumber = leafCert.serialNumber.replace(/^0x/i, '').toLowerCase();
+        analysis.serials.push(serialNumber);
 
+        const now = new Date();
+        if (now < leafCert.notBefore || now > leafCert.notAfter) {
+          analysis.errors.push(`Chứng chỉ hết hạn (${serialNumber})`);
+          analysis.overall = 'banned';
+        }
+
+        const revocationList = trustData?.status?.entries || {};
+        if (revocationList[serialNumber]) {
+          const reason = revocationList[serialNumber].reason || 'Revoked by Google';
+          analysis.errors.push(`Serial \`${serialNumber}\` bị thu hồi (${reason})`);
+          analysis.overall = 'banned';
+        }
+      } catch (e) {
+        analysis.errors.push(`Lỗi đọc chứng chỉ: ${e.message}`);
+        analysis.overall = 'banned';
+      }
+
+      const chainValid = await verifyCertificateChain(key.certificatesPem);
+      if (!chainValid) {
+        analysis.errors.push('Chuỗi chữ ký Keychain không hợp lệ');
+        analysis.overall = 'banned';
+      }
+
+      const rootPem = key.certificatesPem[key.certificatesPem.length - 1];
+      const rootInfo = identifyRootCert(rootPem);
+
+      if (!rootInfo.isHardware && analysis.overall !== 'banned') {
+        analysis.overall = 'device';
+        analysis.warnings.push(`Sử dụng Root Software (${rootInfo.type})`);
+      }
+    }
+  }
+
+  return analysis;
+}
+
+async function getSourceStatus(source) {
+  if (statusCache.has(source.id)) {
+    const cached = statusCache.get(source.id);
+    if (Date.now() - cached.time < 300000) return cached.status;
+  }
   try {
-    buffer = Buffer.from(
-      cleanBase64,
-      'base64'
-    );
+    const { buffer } = await fetchAndFixKeyboxFromSource(source);
+    const trustData = await trustManager.refreshTrustData();
+    const analysis = await analyzeKeybox(buffer.toString('utf-8'), trustData);
 
-    if (!buffer.length) {
-      throw new Error(
-        'Base64 rỗng'
-      );
-    }
-  } catch (error) {
-    throw new Error(
-      `Không thể decode Base64: ${error.message}`
-    );
+    let icon = '✅';
+    if (analysis.overall === 'device') icon = '⚠️';
+    if (analysis.overall === 'banned') icon = '❌';
+
+    const status = { icon, overall: analysis.overall };
+    statusCache.set(source.id, { status, time: Date.now() });
+    return status;
+  } catch (e) {
+    const status = { icon: '❌', overall: 'banned' };
+    statusCache.set(source.id, { status, time: Date.now() });
+    return status;
+  }
+}
+
+async function fetchAndFixKeyboxFromSource(source) {
+  const promises = [safeFetch(source.url, source.extraHeaders || {})];
+  if (source.commitApi) promises.push(safeFetch(source.commitApi));
+
+  const [fileRes, commitRes] = await Promise.all(promises);
+  if (!fileRes || !fileRes.ok) throw new Error(`Không thể kết nối đến nguồn ${source.name}`);
+
+  let rawBuffer = fileRes.buffer;
+
+  if (source.type === 'base64') {
+    const cleanBase64 = rawBuffer.toString('utf-8').replace(/\s+/g, '').trim();
+    rawBuffer = Buffer.from(cleanBase64, 'base64');
+  } else if (source.type === 'hex-base64') {
+    const cleanHex = rawBuffer.toString('utf-8').replace(/[^0-9a-fA-F]/g, '');
+    const base64Text = Buffer.from(cleanHex, 'hex').toString('utf-8').trim();
+    rawBuffer = Buffer.from(base64Text, 'base64');
   }
 
-  let updateDate =
-    'Không xác định';
+  const trustData = await trustManager.refreshTrustData();
+  const repairResult = await repairKeybox(rawBuffer, trustData);
 
-  let fileDate =
-    new Date()
-      .toISOString()
-      .slice(0, 10);
-
-  if (commitRes.ok) {
-    const commits =
-      await commitRes.json();
-
-    if (
-      commits[0]?.commit?.committer?.date
-    ) {
-      const commitDate =
-        commits[0].commit.committer.date;
-
-      updateDate =
-        formatDate(commitDate);
-
-      const d =
-        new Date(commitDate);
-
-      fileDate =
-        `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
-    }
+  if (!repairResult.success) {
+    throw new Error(`Sửa lỗi thất bại: ${repairResult.error}`);
   }
 
-  const filename =
-    `keybox-yuri-${fileDate}.xml`;
+  let updateDate = 'Không xác định';
+  let fileDate = new Date().toISOString().slice(0, 10);
+
+  if (commitRes && commitRes.ok) {
+    const commits = commitRes.json();
+    if (commits[0]?.commit?.committer?.date) {
+      const commitDate = commits[0].commit.committer.date;
+      updateDate = new Date(commitDate).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+      const d = new Date(commitDate);
+      fileDate = `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
+    }
+  }
 
   return {
-    buffer,
+    buffer: Buffer.from(repairResult.repairedXml, 'utf-8'),
     updateDate,
-    filename
+    filename: `keybox-${source.id}-${fileDate}.xml`,
+    analysis: repairResult.analysis,
+    fixesApplied: repairResult.fixesApplied
   };
 }
 
-// ==========================================================
-// GET KAORIOS
-// ==========================================================
+function formatAnalysisReport(analysis, fixesApplied = []) {
+  let statusBadge = '';
+  let statusDetail = '';
 
-async function getKaoriosKeybox() {
-  const [
-    fileRes,
-    commitRes
-  ] = await Promise.all([
-    fetch(KAORIOS_URL),
-    fetch(KAORIOS_COMMIT_API, {
-      headers: {
-        'User-Agent': 'Telegram-Bot'
-      }
-    })
-  ]);
-
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn Kaorios'
-    );
+  if (analysis.overall === 'strong') {
+    statusBadge = '✅ **[STRONG] - Hoàn toàn hợp lệ**';
+    statusDetail = '• Chứng chỉ không bị thu hồi\n• Chuỗi chữ ký Keychain hợp lệ\n• Hardware Root Google/Knox';
+  } else if (analysis.overall === 'device') {
+    statusBadge = '⚠️ **[DEVICE] - Soft-ban / Cảnh báo**';
+    statusDetail = '• Dùng Software Attestation (AOSP)\n• Cần chú ý khi dùng cho app ngân hàng';
+  } else {
+    statusBadge = '❌ **[BANNED] - Không thể sử dụng**';
+    statusDetail = '• Đã bị Google thu hồi hoặc hỏng cấu trúc';
   }
 
-  const xmlText =
-    await fileRes.text();
+  let report = `${statusBadge}\n\n📝 **Chi tiết đánh giá:**\n${statusDetail}\n`;
 
-  const buffer =
-    Buffer.from(xmlText, 'utf-8');
-
-  let updateDate =
-    'Không xác định';
-
-  let fileDate =
-    new Date()
-      .toISOString()
-      .slice(0, 10);
-
-  if (commitRes.ok) {
-    const commits =
-      await commitRes.json();
-
-    if (
-      commits[0]?.commit?.committer?.date
-    ) {
-      const commitDate =
-        commits[0].commit.committer.date;
-
-      updateDate =
-        formatDate(commitDate);
-
-      const d =
-        new Date(commitDate);
-
-      fileDate =
-        `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
-    }
+  if (analysis.serials && analysis.serials.length > 0) {
+    report += `\n🔐 **Serial Number:** \`${analysis.serials.join(', ')}\``;
   }
 
-  const filename =
-    `keybox-kaorios-${fileDate}.xml`;
+  if (fixesApplied.length > 0) {
+    report += `\n\n🛠 **Đã tự động Auto-Fix:**\n` + fixesApplied.map(f => `• ${f}`).join('\n');
+  }
 
-  return {
-    buffer,
-    updateDate,
-    filename
-  };
+  if (analysis.errors.length > 0) {
+    report += `\n\n❌ **Lỗi phát hiện:**\n` + analysis.errors.map(e => `• ${e}`).join('\n');
+  }
+
+  return report;
 }
 
 // ==========================================================
-// GET EVOKER
+// PIF & FLASHSTATION UTILS (THAY THẾ TOÀN BỘ SHELL SCRIPT)
 // ==========================================================
 
-async function getEvokerKeybox() {
-  const fileRes =
-    await fetch(EVOKER_URL);
-
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn Evoker'
-    );
-  }
-
-  const base64Text =
-    await fileRes.text();
-
-  const cleanBase64 =
-    base64Text
-      .replace(/\s+/g, '')
-      .trim();
-
-  let buffer;
-
+async function fetchPixelDeviceList() {
   try {
-    buffer = Buffer.from(
-      cleanBase64,
-      'base64'
-    );
+    const res = await safeFetch('https://developer.android.com/about/versions');
+    if (!res.ok) throw new Error('Failed to fetch version list');
+    const html = res.text();
 
-    if (!buffer.length) {
-      throw new Error(
-        'Base64 rỗng'
-      );
+    let betaPath = html.match(/href="(\/about\/versions\/[^"]*preview[^"]*)"/i)?.[1];
+    if (!betaPath) {
+      const matches = [...html.matchAll(/href="(\/about\/versions\/[0-9]{2})"/g)];
+      if (matches.length > 0) betaPath = matches[matches.length - 1][1];
     }
-  } catch (error) {
-    throw new Error(
-      `Không thể decode Base64: ${error.message}`
-    );
-  }
 
-  return {
-    buffer,
-    updateDate: 'Không có dữ liệu ngày',
-    filename: 'keybox-evoker.xml'
-  };
+    if (betaPath) {
+      const betaRes = await safeFetch(`https://developer.android.com${betaPath}`);
+      const betaHtml = betaRes.text();
+
+      const fiUrlMatch = betaHtml.match(/href="([^"]*download[^"]*)"/i)?.[1];
+      const otaUrlMatch = betaHtml.match(/href="([^"]*download-ota[^"]*)"/i)?.[1];
+
+      const fiRes = fiUrlMatch ? await safeFetch(`https://developer.android.com${fiUrlMatch}`) : null;
+      const otaRes = otaUrlMatch ? await safeFetch(`https://developer.android.com${otaUrlMatch}`) : null;
+
+      const fiHtml = fiRes ? fiRes.text() : '';
+      const otaHtml = otaRes ? otaRes.text() : '';
+
+      const fiCount = (fiHtml.match(/tr id=/g) || []).length;
+      const otaCount = (otaHtml.match(/tr id=/g) || []).length;
+      const targetHtml = fiCount >= otaCount ? fiHtml : otaHtml;
+
+      const matches = [...targetHtml.matchAll(/<tr id="([^"]+)">[\s\S]*?<td>(.*?)<\/td>/g)];
+      if (matches.length > 0) {
+        return matches.map(m => ({
+          product: `${m[1]}_beta`,
+          model: m[2].replace(/<[^>]+>/g, '').trim()
+        }));
+      }
+    }
+  } catch (e) {
+    console.error('Lỗi khi cào danh sách Pixel:', e.message);
+  }
+  return FALLBACK_PIXELS;
 }
 
-// ==========================================================
-// GET KOW
-// ==========================================================
+async function getFlashStationBuild(product) {
+  const flashRes = await safeFetch('https://flash.android.com');
+  const flashHtml = flashRes.text();
+  const flashKeyMatch = flashHtml.match(/key=([^;&"'\s]+)/i) || flashHtml.match(/client-config=["']?.*?key=([^;&"'\s]+)/i);
+  const flashKey = flashKeyMatch ? flashKeyMatch[1] : '';
 
-async function getKowKeybox() {
-  const [
-    fileRes,
-    commitRes
-  ] = await Promise.all([
-    fetch(KOW_URL),
-    fetch(KOW_COMMIT_API, {
-      headers: {
-        'User-Agent': 'Telegram-Bot'
-      }
-    })
-  ]);
+  const apiUrl = `https://content-flashstation-pa.googleapis.com/v1/builds?product=${product}&key=${flashKey}`;
+  const buildRes = await safeFetch(apiUrl, { 'Referer': 'https://flash.android.com' });
+  const json = buildRes.json();
 
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn KOW'
-    );
-  }
+  const builds = Array.isArray(json) ? json : (json.builds || []);
+  let canaryBuild = builds.find(b => b.canary === true) || builds[0] || {};
 
-  const rawText =
-    await fileRes.text();
+  const id = canaryBuild.releaseCandidateName || canaryBuild.id || "UP1A.231005.007";
+  const incremental = canaryBuild.buildId || canaryBuild.incremental || "10839000";
+  const canaryId = canaryBuild.id || "canary202405";
 
-  const cleanHex =
-    rawText.replace(
-      /[^0-9a-fA-F]/g,
-      ''
-    );
-
-  const base64Text =
-    Buffer.from(
-      cleanHex,
-      'hex'
-    )
-      .toString('utf-8')
-      .trim();
-
-  const buffer =
-    Buffer.from(
-      base64Text,
-      'base64'
-    );
-
-  if (!buffer.length) {
-    throw new Error(
-      'File keybox KOW bị rỗng sau khi giải mã'
-    );
-  }
-
-  let updateDate =
-    'Không xác định';
-
-  let fileDate =
-    new Date()
-      .toISOString()
-      .slice(0, 10);
-
-  if (commitRes.ok) {
-    const commits =
-      await commitRes.json();
-
-    if (
-      commits[0]?.commit?.committer?.date
-    ) {
-      const commitDate =
-        commits[0].commit.committer.date;
-
-      updateDate =
-        formatDate(commitDate);
-
-      const d =
-        new Date(commitDate);
-
-      fileDate =
-        `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
-    }
-  }
-
-  return {
-    buffer,
-    updateDate,
-    filename:
-      `keybox-kow-${fileDate}.xml`
-  };
+  return { id, incremental, canaryId };
 }
 
-// ==========================================================
-// GET HIHI
-// ==========================================================
-
-async function getHihiKeybox() {
-  const [
-    fileRes,
-    commitRes
-  ] = await Promise.all([
-    fetch(HIHI_URL),
-    fetch(HIHI_COMMIT_API, {
-      headers: {
-        'User-Agent': 'Telegram-Bot'
-      }
-    })
-  ]);
-
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn HihiKeybox'
-    );
-  }
-
-  const base64Text =
-    await fileRes.text();
-
-  const cleanBase64 =
-    base64Text
-      .replace(/\s+/g, '')
-      .trim();
-
-  let buffer;
-
+async function getSecurityPatchLevel(canaryId = '') {
   try {
-    buffer = Buffer.from(
-      cleanBase64,
-      'base64'
-    );
+    const secRes = await safeFetch('https://source.android.com/docs/security/bulletin/pixel');
+    const secHtml = secRes.text();
 
-    if (!buffer.length) {
-      throw new Error(
-        'Base64 rỗng'
-      );
+    if (canaryId) {
+      const formattedCanaryId = canaryId.replace(/^canary-?/, '').replace(/^(\d{4})/, '$1-');
+      const match = secHtml.match(new RegExp(`<td>${formattedCanaryId}[\\s\\S]*?<td>(\\d{4}-\\d{2}-\\d{2})<\/td>`, 'i'));
+      if (match) return match[1];
     }
-  } catch (error) {
-    throw new Error(
-      `Không thể decode Base64 HihiKeybox: ${error.message}`
-    );
+
+    const latestMatch = secHtml.match(/<td>(\d{4}-\d{2}-05)<\/td>/i);
+    if (latestMatch) return latestMatch[1];
+  } catch (e) {}
+
+  const now = new Date();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  return `${now.getFullYear()}-${m}-05`;
+}
+
+function renderPixelKeyboard(devices, page = 0, userId) {
+  const ITEMS_PER_PAGE = 6;
+  const totalPages = Math.ceil(devices.length / ITEMS_PER_PAGE) || 1;
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+
+  const startIdx = currentPage * ITEMS_PER_PAGE;
+  const pageDevices = devices.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+
+  const buttons = [];
+  for (let i = 0; i < pageDevices.length; i += 2) {
+    const row = [
+      Markup.button.callback(`📱 ${pageDevices[i].model}`, `get_pif:${pageDevices[i].product}:${userId}`)
+    ];
+    if (pageDevices[i + 1]) {
+      row.push(Markup.button.callback(`📱 ${pageDevices[i + 1].model}`, `get_pif:${pageDevices[i + 1].product}:${userId}`));
+    }
+    buttons.push(row);
   }
 
-  let updateDate =
-    'Không xác định';
-
-  let fileDate =
-    new Date()
-      .toISOString()
-      .slice(0, 10);
-
-  if (commitRes.ok) {
-    const commits =
-      await commitRes.json();
-
-    if (
-      commits[0]?.commit?.committer?.date
-    ) {
-      const commitDate =
-        commits[0].commit.committer.date;
-
-      updateDate =
-        formatDate(commitDate);
-
-      const d =
-        new Date(commitDate);
-
-      fileDate =
-        `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
-    }
+  // Điều hướng bằng 2 mũi tên qua lại
+  const navRow = [];
+  if (currentPage > 0) {
+    navRow.push(Markup.button.callback('⬅️ Trước', `pif_page:${currentPage - 1}:${userId}`));
+  } else {
+    navRow.push(Markup.button.callback('⏹', 'noop'));
   }
 
-  return {
-    buffer,
-    updateDate,
-    filename:
-      `keybox-hihi-${fileDate}.xml`
-  };
+  navRow.push(Markup.button.callback(`📄 ${currentPage + 1}/${totalPages}`, 'noop'));
+
+  if (currentPage < totalPages - 1) {
+    navRow.push(Markup.button.callback('▶️ Sau', `pif_page:${currentPage + 1}:${userId}`));
+  } else {
+    navRow.push(Markup.button.callback('⏹', 'noop'));
+  }
+
+  buttons.push(navRow);
+  return Markup.inlineKeyboard(buttons);
 }
 
 // ==========================================================
-// GET LONEMODS
-// RAW XML
-// ==========================================================
-
-async function getLonemodsKeybox() {
-  const [
-    fileRes,
-    commitRes
-  ] = await Promise.all([
-    fetch(LONEMODS_URL),
-    fetch(LONEMODS_COMMIT_API, {
-      headers: {
-        'User-Agent': 'Telegram-Bot'
-      }
-    })
-  ]);
-
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn LoneMods'
-    );
-  }
-
-  const xmlText =
-    await fileRes.text();
-
-  const buffer =
-    Buffer.from(
-      xmlText,
-      'utf-8'
-    );
-
-  let updateDate =
-    'Không xác định';
-
-  let fileDate =
-    new Date()
-      .toISOString()
-      .slice(0, 10);
-
-  if (commitRes.ok) {
-    const commits =
-      await commitRes.json();
-
-    if (
-      commits[0]?.commit?.committer?.date
-    ) {
-      const commitDate =
-        commits[0].commit.committer.date;
-
-      updateDate =
-        formatDate(commitDate);
-
-      const d =
-        new Date(commitDate);
-
-      fileDate =
-        `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
-    }
-  }
-
-  return {
-    buffer,
-    updateDate,
-    filename:
-      `keybox-lonemods-${fileDate}.xml`
-  };
-}
-
-// ==========================================================
-// GET FREECAMK
-// RAW XML
-// ==========================================================
-
-async function getFreecamkKeybox() {
-  const [
-    fileRes,
-    commitRes
-  ] = await Promise.all([
-    fetch(FREECAMK_URL),
-    fetch(FREECAMK_COMMIT_API, {
-      headers: {
-        'User-Agent': 'Telegram-Bot'
-      }
-    })
-  ]);
-
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn FREECAMK'
-    );
-  }
-
-  const xmlText =
-    await fileRes.text();
-
-  const buffer =
-    Buffer.from(
-      xmlText,
-      'utf-8'
-    );
-
-  let updateDate =
-    'Không xác định';
-
-  let fileDate =
-    new Date()
-      .toISOString()
-      .slice(0, 10);
-
-  if (commitRes.ok) {
-    const commits =
-      await commitRes.json();
-
-    if (
-      commits[0]?.commit?.committer?.date
-    ) {
-      const commitDate =
-        commits[0].commit.committer.date;
-
-      updateDate =
-        formatDate(commitDate);
-
-      const d =
-        new Date(commitDate);
-
-      fileDate =
-        `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
-    }
-  }
-
-  return {
-    buffer,
-    updateDate,
-    filename:
-      `keybox-freecamk-${fileDate}.xml`
-  };
-}
-
-// ==========================================================
-// GET DAVIDEPALMA
-// NO DATE
-// ==========================================================
-
-export async function getDavidepalmaKeybox() {
-  const userAgent = new UserAgent({ deviceCategory: 'desktop' });
-  
-  try {
-    const { data } = await axios.get(DAVIDEPALMA_URL, {
-      responseType: 'text',
-      httpsAgent: agent,
-      headers: {
-        'User-Agent': userAgent.toString(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Cache-Control': 'no-cache'
-      }
-    });
-
-    return {
-      buffer: Buffer.from(data, 'utf-8'),
-      updateDate: 'Không có dữ liệu ngày',
-      filename: 'keybox-davidepalma.xml'
-    };
-  } catch (error) {
-    throw new Error(`Fetch fail: ${error.message}`);
-  }
-}
-
-// ==========================================================
-// GET TRICKYBOX
-// RAW + BASE64
-// ==========================================================
-
-async function getTrickyboxKeybox() {
-  const [
-    fileRes,
-    commitRes
-  ] = await Promise.all([
-    fetch(TRICKYBOX_URL),
-    fetch(TRICKYBOX_COMMIT_API, {
-      headers: {
-        'User-Agent': 'Telegram-Bot'
-      }
-    })
-  ]);
-
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn TrickyBox'
-    );
-  }
-
-  const base64Text =
-    await fileRes.text();
-
-  const cleanBase64 =
-    base64Text
-      .replace(/\s+/g, '')
-      .trim();
-
-  let buffer;
-
-  try {
-    buffer = Buffer.from(
-      cleanBase64,
-      'base64'
-    );
-
-    if (!buffer.length) {
-      throw new Error(
-        'Base64 rỗng'
-      );
-    }
-  } catch (error) {
-    throw new Error(
-      `Không thể decode Base64 TrickyBox: ${error.message}`
-    );
-  }
-
-  let updateDate =
-    'Không xác định';
-
-  let fileDate =
-    new Date()
-      .toISOString()
-      .slice(0, 10);
-
-  if (commitRes.ok) {
-    const commits =
-      await commitRes.json();
-
-    if (
-      commits[0]?.commit?.committer?.date
-    ) {
-      const commitDate =
-        commits[0].commit.committer.date;
-
-      updateDate =
-        formatDate(commitDate);
-
-      const d =
-        new Date(commitDate);
-
-      fileDate =
-        `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
-    }
-  }
-
-  return {
-    buffer,
-    updateDate,
-    filename:
-      `keybox-trickybox-${fileDate}.xml`
-  };
-}
-
-// ==========================================================
-// GET ZKOS
-// RAW XML
-// ==========================================================
-
-async function getZkosKeybox() {
-  const [
-    fileRes,
-    commitRes
-  ] = await Promise.all([
-    fetch(ZKOS_URL),
-    fetch(ZKOS_COMMIT_API, {
-      headers: {
-        'User-Agent': 'Telegram-Bot'
-      }
-    })
-  ]);
-
-  if (!fileRes.ok) {
-    throw new Error(
-      'Không thể kết nối đến nguồn Zkos'
-    );
-  }
-
-  const xmlText =
-    await fileRes.text();
-
-  const buffer =
-    Buffer.from(
-      xmlText,
-      'utf-8'
-    );
-
-  let updateDate =
-    'Không xác định';
-
-  let fileDate =
-    new Date()
-      .toISOString()
-      .slice(0, 10);
-
-  if (commitRes.ok) {
-    const commits =
-      await commitRes.json();
-
-    if (
-      commits[0]?.commit?.committer?.date
-    ) {
-      const commitDate =
-        commits[0].commit.committer.date;
-
-      updateDate =
-        formatDate(commitDate);
-
-      const d =
-        new Date(commitDate);
-
-      fileDate =
-        `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
-    }
-  }
-
-  return {
-    buffer,
-    updateDate,
-    filename:
-      `keybox-zkos-${fileDate}.xml`
-  };
-}
-
-// ==========================================================
-// /START
+// TELEGRAM BOT COMMANDS & ACTIONS
 // ==========================================================
 
 bot.command('start', async (ctx) => {
-  await ctx.sendChatAction('typing');
-
   await ctx.reply(
-    "👋 **Keybox Telegram Bot**\n\n" +
+    "👋 **Hệ Thống Phân Tích Keybox & Play Integrity Fix (PIF)**\n\n" +
     "📖 **Danh sách lệnh:**\n" +
-    "• /keybox - Tải file keybox từ danh sách nguồn hỗ trợ\n" +
-    "• /check - Kiểm tra trạng thái toàn bộ Keybox\n" +
-    "• /start - Hiển thị menu trợ giúp",
-    {
-      parse_mode: 'Markdown'
-    }
+    "• /keybox - Tải Keybox (Hiển thị icon trạng thái `${icon}${name}` & Auto-Fix)\n" +
+    "• /pif - Tải file PIF (`pif.json` & `pif.prop`) chọn dòng máy Pixel\n" +
+    "• /security_patch - Lấy thông tin bản vá bảo mật mới nhất từ Google\n" +
+    "• /check - Kiểm tra trạng thái toàn bộ nguồn Keybox",
+    { parse_mode: 'Markdown' }
   );
 });
 
-// ==========================================================
-// /CHECK
-// ==========================================================
+// Lệnh /keybox với Icon "${icon} ${name}"
+bot.command('keybox', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.sendChatAction('typing');
+
+  const sourceStatuses = await Promise.all(
+    SOURCES.map(async (src) => {
+      const st = await getSourceStatus(src);
+      return { ...src, icon: st.icon };
+    })
+  );
+
+  const buttons = [];
+  for (let i = 0; i < sourceStatuses.length; i += 2) {
+    const s1 = sourceStatuses[i];
+    const s2 = sourceStatuses[i + 1];
+    const row = [Markup.button.callback(`${s1.icon}${s1.name}`, `get_keybox:${s1.id}:${userId}`)];
+    if (s2) {
+      row.push(Markup.button.callback(`${s2.icon}${s2.name}`, `get_keybox:${s2.id}:${userId}`));
+    }
+    buttons.push(row);
+  }
+
+  await ctx.reply('🔑 **Vui lòng chọn nguồn Keybox (Kèm trạng thái thực tế):**', Markup.inlineKeyboard(buttons));
+});
+
+bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
+  const sourceId = ctx.match[1];
+  const ownerId = Number(ctx.match[2]);
+
+  if (ctx.from.id !== ownerId) {
+    return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery('⏳ Đang xử lý và sửa lỗi file Keybox...').catch(() => {});
+  try {
+    await ctx.editMessageText('⏳ *Đang giải mã, sửa lỗi XML/PEM và phân tích...*', { parse_mode: 'Markdown' });
+  } catch (e) {}
+
+  try {
+    const source = SOURCES.find(s => s.id === sourceId);
+    if (!source) throw new Error('Không tìm thấy nguồn Keybox này');
+
+    const { buffer, updateDate, filename, analysis, fixesApplied } = await fetchAndFixKeyboxFromSource(source);
+    const reportText = formatAnalysisReport(analysis, fixesApplied);
+
+    await ctx.replyWithDocument(
+      { source: buffer, filename },
+      {
+        caption:
+          `🔑 **File Keybox (${source.name})**\n` +
+          `📅 Cập nhật: \`${updateDate}\`\n\n` +
+          `${reportText}`,
+        parse_mode: 'Markdown'
+      }
+    );
+  } catch (error) {
+    await ctx.reply(`❌ Lỗi khi xử lý Keybox: ${error.message}`);
+  } finally {
+    await ctx.deleteMessage().catch(() => {});
+  }
+});
+
+// Lệnh /pif chọn Pixel có phân trang bằng 2 mũi tên qua lại
+bot.command('pif', async (ctx) => {
+  const userId = ctx.from.id;
+  await ctx.sendChatAction('typing');
+
+  const devices = await fetchPixelDeviceList();
+  const keyboard = renderPixelKeyboard(devices, 0, userId);
+
+  await ctx.reply('📱 **Chọn dòng máy Pixel để tạo file PIF (Play Integrity Fix):**', keyboard);
+});
+
+bot.action(/^pif_page:(\d+):(\d+)$/, async (ctx) => {
+  const page = parseInt(ctx.match[1], 10);
+  const ownerId = Number(ctx.match[2]);
+
+  if (ctx.from.id !== ownerId) {
+    return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery().catch(() => {});
+  const devices = await fetchPixelDeviceList();
+  const keyboard = renderPixelKeyboard(devices, page, ownerId);
+
+  try {
+    await ctx.editMessageText('📱 **Chọn dòng máy Pixel để tạo file PIF (Play Integrity Fix):**', keyboard);
+  } catch (e) {}
+});
+
+bot.action('noop', (ctx) => ctx.answerCbQuery().catch(() => {}));
+
+bot.action(/^get_pif:([a-z0-9_]+):(\d+)$/, async (ctx) => {
+  const product = ctx.match[1];
+  const ownerId = Number(ctx.match[2]);
+
+  if (ctx.from.id !== ownerId) {
+    return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery('⏳ Đang lấy thông tin Build từ Google FlashStation...').catch(() => {});
+
+  try {
+    await ctx.sendChatAction('upload_document');
+    const devices = await fetchPixelDeviceList();
+    const devInfo = devices.find(d => d.product === product) || { model: 'Pixel Canary', product };
+
+    const deviceName = product.replace(/_beta$/, '');
+    const build = await getFlashStationBuild(product);
+    const securityPatch = await getSecurityPatchLevel(build.canaryId);
+
+    const fingerprint = `google/${product}/${deviceName}:CANARY/${build.id}/${build.incremental}:user/release-keys`;
+
+    // Tạo pif.json
+    const pifJsonData = {
+      PRODUCT: product,
+      DEVICE: deviceName,
+      MANUFACTURER: "Google",
+      MODEL: devInfo.model,
+      FINGERPRINT: fingerprint,
+      SECURITY_PATCH: securityPatch,
+      spoofBuild: true,
+      spoofProps: true,
+      spoofProvider: true,
+      spoofSignature: true,
+      spoofVendingBuild: true,
+      spoofVendingSdk: true
+    };
+
+    // Tạo pif.prop
+    const pifPropData =
+      `FINGERPRINT=${fingerprint}\n` +
+      `MANUFACTURER=Google\n` +
+      `MODEL=${devInfo.model}\n` +
+      `SECURITY_PATCH=${securityPatch}\n` +
+      `spoofBuild=true\n` +
+      `spoofProps=true\n` +
+      `spoofProvider=true\n` +
+      `spoofSignature=true\n` +
+      `spoofVendingBuild=true\n` +
+      `spoofVendingSdk=true\n` +
+      `DEBUG=false\n`;
+
+    const jsonBuffer = Buffer.from(JSON.stringify(pifJsonData, null, 2), 'utf-8');
+    const propBuffer = Buffer.from(pifPropData, 'utf-8');
+
+    const caption =
+      `✅ **ĐÃ TẠO THÀNH CÔNG PIF (Play Integrity Fix)**\n\n` +
+      `📱 **Model:** \`${devInfo.model}\` (\`${product}\`)\n` +
+      `🛡 **Security Patch:** \`${securityPatch}\`\n` +
+      `📦 **ID Build:** \`${build.id}\` | Incremental: \`${build.incremental}\`\n` +
+      `🔏 **Fingerprint:**\n\`${fingerprint}\``;
+
+    await ctx.replyWithDocument({ source: jsonBuffer, filename: `pif_${deviceName}.json` });
+    await ctx.replyWithDocument(
+      { source: propBuffer, filename: `pif_${deviceName}.prop` },
+      { caption, parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    await ctx.reply(`❌ Lỗi khi khởi tạo PIF: ${err.message}`);
+  }
+});
+
+// Lệnh /security_patch
+bot.command('security_patch', async (ctx) => {
+  await ctx.sendChatAction('typing');
+
+  try {
+    const build = await getFlashStationBuild('oriole_beta');
+    const patch = await getSecurityPatchLevel(build.canaryId);
+
+    const message =
+      `🛡 **BẢN VÁ BẢO MẬT (SECURITY PATCH LEVEL)**\n\n` +
+      `📅 **Mới nhất:** \`${patch}\`\n` +
+      `🆔 **Canary ID:** \`${build.canaryId}\`\n` +
+      `📦 **Build ID:** \`${build.id}\`\n` +
+      `📈 **Incremental:** \`${build.incremental}\``;
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (err) {
+    await ctx.reply(`❌ Không thể tra cứu bản vá bảo mật: ${err.message}`);
+  }
+});
 
 bot.command('check', async (ctx) => {
+  const replyTo = ctx.message?.reply_to_message;
+  if (replyTo?.document) return handleDocumentValidation(ctx, replyTo.document);
+
   await ctx.sendChatAction('typing');
+  const trustData = await trustManager.refreshTrustData();
 
-  const sources = [
-    {
-      name: 'Yuri',
-      fetcher: getYuriKeybox
-    },
-    {
-      name: 'Kaorios',
-      fetcher: getKaoriosKeybox
-    },
-    {
-      name: 'Evoker',
-      fetcher: getEvokerKeybox
-    },
-    {
-      name: 'KOW',
-      fetcher: getKowKeybox
-    },
-    {
-      name: 'HihiKeybox',
-      fetcher: getHihiKeybox
-    },
-    {
-      name: 'LoneMods',
-      fetcher: getLonemodsKeybox
-    },
-    {
-      name: 'FREECAMK',
-      fetcher: getFreecamkKeybox
-    },
-    {
-      name: 'DavidePalma',
-      fetcher: getDavidepalmaKeybox
-    },
-    {
-      name: 'TrickyBox',
-      fetcher: getTrickyboxKeybox
-    },
-    {
-      name: 'Zkos',
-      fetcher: getZkosKeybox
-    }
-  ];
+  const results = await Promise.all(
+    SOURCES.map(async (src) => {
+      try {
+        const { buffer } = await fetchAndFixKeyboxFromSource(src);
+        const analysis = await analyzeKeybox(buffer.toString('utf-8'), trustData);
 
-  const results =
-    await Promise.all(
-      sources.map(async (src) => {
-        try {
-          const {
-            buffer
-          } = await src.fetcher();
+        let icon = '✅';
+        if (analysis.overall === 'device') icon = '⚠️';
+        if (analysis.overall === 'banned') icon = '❌';
 
-          const xmlContent =
-            buffer.toString('utf-8');
+        return { name: src.name, status: analysis.overall, icon };
+      } catch (err) {
+        return { name: src.name, status: 'banned', icon: '❌' };
+      }
+    })
+  );
 
-          const isPassed =
-            await validateKeyboxXml(
-              xmlContent
-            );
-
-          return {
-            name: src.name,
-            passed: isPassed
-          };
-        } catch (err) {
-          return {
-            name: src.name,
-            passed: false
-          };
-        }
-      })
-    );
-
-  let message =
-    'Kết quả check keybox:\n';
-
+  let message = '📊 **KẾT QUẢ KIỂM TRA TOÀN BỘ NGUỒN KEYBOX:**\n\n';
   results.forEach((item) => {
-    const icon =
-      item.passed
-        ? '✅'
-        : '❌';
-
-    message +=
-      `> ${icon} ${item.name}\n`;
+    message += `> ${item.icon} **${item.name}**: \`${item.status.toUpperCase()}\`\n`;
   });
 
-  if (checkkeyboz) {
-    message += `@${checkkeyboz}`;
-  }
-
-  await ctx.reply(
-    message.trim()
-  );
+  if (USERNAME_BOT_CHECK) message += `\n@${USERNAME_BOT_CHECK}`;
+  await ctx.reply(message.trim(), { parse_mode: 'Markdown' });
 });
 
-// ==========================================================
-// /KEYBOX
-// ==========================================================
-
-bot.command('keybox', async (ctx) => {
-  const userId =
-    ctx.from.id;
-
-  await ctx.reply(
-    '🔑 Vui lòng chọn nguồn Keybox muốn tải:',
-
-    Markup.inlineKeyboard([
-      [
-        Markup.button.callback(
-          'Yuri',
-          `get_keybox:yuri:${userId}`
-        ),
-
-        Markup.button.callback(
-          'Kaorios',
-          `get_keybox:kaorios:${userId}`
-        )
-      ],
-
-      [
-        Markup.button.callback(
-          'Evoker',
-          `get_keybox:evoker:${userId}`
-        ),
-
-        Markup.button.callback(
-          'KOW',
-          `get_keybox:kow:${userId}`
-        )
-      ],
-
-      [
-        Markup.button.callback(
-          'HihiKeybox',
-          `get_keybox:hihi:${userId}`
-        ),
-
-        Markup.button.callback(
-          'LoneMods',
-          `get_keybox:lonemods:${userId}`
-        )
-      ],
-
-      [
-        Markup.button.callback(
-          'FREECAMK',
-          `get_keybox:freecamk:${userId}`
-        ),
-
-        Markup.button.callback(
-          'DavidePalma',
-          `get_keybox:davide:${userId}`
-        )
-      ],
-
-      [
-        Markup.button.callback(
-          'TrickyBox',
-          `get_keybox:tricky:${userId}`
-        ),
-
-        Markup.button.callback(
-          'Zkos',
-          `get_keybox:zkos:${userId}`
-        )
-      ]
-    ])
-  );
+bot.on('document', async (ctx) => {
+  if (ctx.chat.type === 'private') {
+    await handleDocumentValidation(ctx, ctx.message.document);
+  }
 });
 
-// ==========================================================
-// BUTTON HANDLER
-// ==========================================================
-
-bot.action(
-  /^get_keybox:(yuri|kaorios|evoker|kow|hihi|lonemods|freecamk|davide|tricky|zkos):(\d+)$/,
-  async (ctx) => {
-
-    const source =
-      ctx.match[1];
-
-    const ownerId =
-      Number(ctx.match[2]);
-
-    const clickedUserId =
-      ctx.from.id;
-
-    // Chỉ người tạo menu mới được bấm
-    if (
-      clickedUserId !== ownerId
-    ) {
-      return ctx
-        .answerCbQuery(
-          '눈⁠‸⁠눈 Đừng làm phiền người ta',
-          {
-            show_alert: true
-          }
-        )
-        .catch(() => {});
-    }
-
-    await ctx
-      .answerCbQuery(
-        '⏳ Đang xử lý...'
-      )
-      .catch(() => {});
-
-    try {
-      await ctx.editMessageText(
-        '⏳ *Đang tải file keybox, vui lòng chờ...*',
-        {
-          parse_mode: 'Markdown'
-        }
-      );
-    } catch (e) {}
-
-    try {
-      await ctx.sendChatAction(
-        'upload_document'
-      );
-
-      let keyData;
-      let sourceName = '';
-
-      // ------------------------------------------------------
-      // SOURCE
-      // ------------------------------------------------------
-
-      if (source === 'yuri') {
-        keyData =
-          await getYuriKeybox();
-
-        sourceName =
-          'Yuri';
-
-      } else if (source === 'kaorios') {
-        keyData =
-          await getKaoriosKeybox();
-
-        sourceName =
-          'Kaorios';
-
-      } else if (source === 'evoker') {
-        keyData =
-          await getEvokerKeybox();
-
-        sourceName =
-          'Evoker';
-
-      } else if (source === 'kow') {
-        keyData =
-          await getKowKeybox();
-
-        sourceName =
-          'KOW';
-
-      } else if (source === 'hihi') {
-        keyData =
-          await getHihiKeybox();
-
-        sourceName =
-          'HihiKeybox';
-
-      } else if (source === 'lonemods') {
-        keyData =
-          await getLonemodsKeybox();
-
-        sourceName =
-          'LoneMods';
-
-      } else if (source === 'freecamk') {
-        keyData =
-          await getFreecamkKeybox();
-
-        sourceName =
-          'FREECAMK';
-
-      } else if (source === 'davide') {
-        keyData =
-          await getDavidepalmaKeybox();
-
-        sourceName =
-          'DavidePalma';
-
-      } else if (source === 'tricky') {
-        keyData =
-          await getTrickyboxKeybox();
-
-        sourceName =
-          'TrickyBox';
-
-      } else if (source === 'zkos') {
-        keyData =
-          await getZkosKeybox();
-
-        sourceName =
-          'Zkos';
-      }
-
-      if (!keyData) {
-        throw new Error(
-          'Không tìm thấy nguồn Keybox'
-        );
-      }
-
-      const {
-        buffer,
-        updateDate,
-        filename
-      } = keyData;
-
-      // ------------------------------------------------------
-      // SEND FILE
-      // ------------------------------------------------------
-
-      await ctx.replyWithDocument(
-        {
-          source: buffer,
-          filename
-        },
-        {
-          caption:
-            `🔑 **File Keybox (${sourceName})**\n` +
-            `📅 Ngày cập nhật: \`${updateDate}\`\n` +
-            `📄 Tên file: \`${filename}\``,
-
-          parse_mode: 'Markdown'
-        }
-      );
-
-    } catch (error) {
-      console.error(
-        `Lỗi tải keybox (${source}):`,
-        error
-      );
-
-      await ctx.reply(
-        `❌ Có lỗi xảy ra khi lấy file keybox: ${
-          error.message ||
-          'Lỗi không xác định'
-        }`
-      );
-
-    } finally {
-      await ctx
-        .deleteMessage()
-        .catch(() => {});
-    }
+async function handleDocumentValidation(ctx, doc) {
+  const fileName = doc.file_name || '';
+  if (!fileName.endsWith('.xml') && doc.mime_type !== 'text/xml' && doc.mime_type !== 'application/xml') {
+    return ctx.reply('❌ Vui lòng gửi file định dạng XML (`.xml`).');
   }
-);
 
-// ==========================================================
-// VERCEL HANDLER
-// ==========================================================
+  await ctx.sendChatAction('upload_document');
 
-export default async function handler(
-  req,
-  res
-) {
+  try {
+    const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+    const res = await axios.get(fileLink.href, { responseType: 'arraybuffer' });
+    const rawBuffer = Buffer.from(res.data);
+
+    const trustData = await trustManager.refreshTrustData();
+    const repairResult = await repairKeybox(rawBuffer, trustData);
+
+    if (!repairResult.success) {
+      return ctx.reply(`❌ **Không thể phân tích file XML:** ${repairResult.error}`);
+    }
+
+    const reportText = formatAnalysisReport(repairResult.analysis, repairResult.fixesApplied);
+    const fixedBuffer = Buffer.from(repairResult.repairedXml, 'utf-8');
+
+    await ctx.replyWithDocument(
+      { source: fixedBuffer, filename: `fixed_${fileName}` },
+      {
+        caption: `🛠 **Đã phân tích & Tự động Auto-Fix File:**\n\n${reportText}`,
+        parse_mode: 'Markdown'
+      }
+    );
+  } catch (err) {
+    await ctx.reply(`❌ Lỗi khi xử lý file: ${err.message}`);
+  }
+}
+
+// Handler cho Vercel / Express
+export default async function handler(req, res) {
   if (req.method === 'POST') {
     try {
-      await bot.handleUpdate(
-        req.body
-      );
-
-      return res
-        .status(200)
-        .send('OK');
-
+      await bot.handleUpdate(req.body);
+      return res.status(200).send('OK');
     } catch (error) {
-      console.error(
-        'Telegram update error:',
-        error
-      );
-
-      return res
-        .status(200)
-        .send('OK');
+      console.error('Lỗi Telegram Update:', error);
+      return res.status(200).send('OK');
     }
   }
 
-  return res
-    .status(200)
-    .send('Bot đang hoạt động.');
+  return res.status(200).json({
+    status: 'Keybox & PIF Bot API đang hoạt động',
+    time: new Date().toISOString()
+  });
 }
