@@ -139,7 +139,6 @@ const SOURCES = [
   }
 ];
 
-// DANH SÁCH PIXEL DỰ PHÒNG (FALLBACK KHI GOOGLE BLOCK HTTP)
 const FALLBACK_PIXELS = [
   { model: "Pixel 6", product: "oriole_beta" },
   { model: "Pixel 6 Pro", product: "raven_beta" },
@@ -563,7 +562,7 @@ function formatAnalysisReport(analysis, fixesApplied = []) {
   }
 
   if (fixesApplied.length > 0) {
-    report += `\n\n🛠 <b>Đã tự động Auto-Fix:</b>\n` + fixesApplied.map(f => `• ${f}`).join('\n');
+    report += `\n\n🛠 <b>Auto-Fix:</b>\n` + fixesApplied.map(f => `• ${f}`).join('\n');
   }
 
   if (analysis.errors.length > 0) {
@@ -722,9 +721,9 @@ function renderPixelKeyboard(devices, page = 0, userId) {
 
 bot.command('start', async (ctx) => {
   await ctx.reply(
-    "👋 <b>Hệ Thống Phân Tích Keybox & Play Integrity Fix (PIF)</b>\n\n" +
+    "👋 <b>Hệ Thống Keybox & Play Integrity Fix (PIF)</b>\n\n" +
     "📖 <b>Danh sách lệnh:</b>\n" +
-    "• /keybox - Tải Keybox (Hiển thị icon trạng thái & Auto-Fix)\n" +
+    "• /keybox - Tải Keybox\n" +
     "• /pif - Tải file PIF (<code>pif.json</code>) chọn dòng máy Pixel\n" +
     "• /check - Kiểm tra trạng thái toàn bộ nguồn Keybox",
     { parse_mode: 'HTML' }
@@ -747,14 +746,14 @@ bot.command('keybox', async (ctx) => {
   for (let i = 0; i < sourceStatuses.length; i += 2) {
     const s1 = sourceStatuses[i];
     const s2 = sourceStatuses[i + 1];
-    const row = [Markup.button.callback(`${s1.icon}${s1.name}`, `get_keybox:${s1.id}:${userId}`)];
+    const row = [Markup.button.callback(`${s1.icon} ${s1.name}`, `get_keybox:${s1.id}:${userId}`)];
     if (s2) {
-      row.push(Markup.button.callback(`${s2.icon}${s2.name}`, `get_keybox:${s2.id}:${userId}`));
+      row.push(Markup.button.callback(`${s2.icon} ${s2.name}`, `get_keybox:${s2.id}:${userId}`));
     }
     buttons.push(row);
   }
 
-  await ctx.reply('🔑 <b>Vui lòng chọn nguồn Keybox (Kèm trạng thái thực tế):</b>', {
+  await ctx.reply('🔑 <b>Vui lòng chọn nguồn Keybox:</b>', {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard(buttons)
   });
@@ -768,9 +767,9 @@ bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
     return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
   }
 
-  await ctx.answerCbQuery('⏳ Đang xử lý và sửa lỗi file Keybox...').catch(() => {});
+  await ctx.answerCbQuery('⏳ Đang xử lý file Keybox...').catch(() => {});
   try {
-    await ctx.editMessageText('⏳ <i>Đang giải mã, sửa lỗi XML/PEM và phân tích...</i>', { parse_mode: 'HTML' });
+    await ctx.editMessageText('⏳ <i>Đang xử lí file Keybox...</i>', { parse_mode: 'HTML' });
   } catch (e) {}
 
   try {
@@ -805,7 +804,7 @@ bot.command('pif', async (ctx) => {
   const devices = await fetchPixelDeviceList();
   const keyboard = renderPixelKeyboard(devices, 0, userId);
 
-  await ctx.reply('📱 <b>Chọn dòng máy Pixel để tạo file PIF (Play Integrity Fix):</b>', {
+  await ctx.reply('📱 <b>Chọn dòng máy Pixel:</b>', {
     parse_mode: 'HTML',
     ...keyboard
   });
@@ -824,7 +823,7 @@ bot.action(/^pif_page:(\d+):(\d+)$/, async (ctx) => {
   const keyboard = renderPixelKeyboard(devices, page, ownerId);
 
   try {
-    await ctx.editMessageText('📱 <b>Chọn dòng máy Pixel để tạo file PIF (Play Integrity Fix):</b>', {
+    await ctx.editMessageText('📱 <b>Chọn dòng máy Pixel:</b>', {
       parse_mode: 'HTML',
       ...keyboard
     });
@@ -841,7 +840,7 @@ bot.action(/^get_pif:([a-z0-9_]+):(\d+)$/, async (ctx) => {
     return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
   }
 
-  await ctx.answerCbQuery('⏳ Đang lấy thông tin Build từ Google FlashStation...').catch(() => {});
+  await ctx.answerCbQuery('⏳ Đang lấy thông tin Build...').catch(() => {});
 
   try {
     await ctx.sendChatAction('upload_document');
@@ -870,7 +869,7 @@ bot.action(/^get_pif:([a-z0-9_]+):(\d+)$/, async (ctx) => {
     const jsonBuffer = Buffer.from(JSON.stringify(pifJsonData, null, 2), 'utf-8');
 
     const caption =
-      `✅ <b>ĐÃ TẠO THÀNH CÔNG PIF (Play Integrity Fix)</b>\n\n` +
+      `✅ <b>ĐÃ TẠO THÀNH CÔNG</b>\n\n` +
       `📱 <b>Model:</b> <code>${devInfo.model}</code> (<code>${deviceName}</code>)\n` +
       `🛡 <b>Security Patch:</b> <code>${securityPatch}</code>\n` +
       `📦 <b>ID Build:</b> <code>${build.id}</code> | Incremental: <code>${build.incremental}</code>\n` +
@@ -950,7 +949,7 @@ async function handleDocumentValidation(ctx, doc) {
     await ctx.replyWithDocument(
       { source: fixedBuffer, filename: `fixed_${fileName}` },
       {
-        caption: `🛠 <b>Đã phân tích & Tự động Auto-Fix File:</b>\n\n${reportText}`,
+        caption: `🛠 <b>Đã phân tích & Auto-Fix File:</b>\n\n${reportText}`,
         parse_mode: 'HTML'
       }
     );
