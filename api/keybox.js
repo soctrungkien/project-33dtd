@@ -434,7 +434,7 @@ export async function analyzeKeybox(xmlContent, trustData) {
         const revocationList = trustData?.status?.entries || {};
         if (revocationList[serialNumber]) {
           const reason = revocationList[serialNumber].reason || 'Revoked by Google';
-          analysis.errors.push(`Serial \`${serialNumber}\` bị thu hồi (${reason})`);
+          analysis.errors.push(`Serial <code>${serialNumber}</code> bị thu hồi (${reason})`);
           analysis.overall = 'banned';
         }
       } catch (e) {
@@ -537,28 +537,28 @@ function formatAnalysisReport(analysis, fixesApplied = []) {
   let statusDetail = '';
 
   if (analysis.overall === 'strong') {
-    statusBadge = '✅ **[STRONG] - Hoàn toàn hợp lệ**';
+    statusBadge = '✅ <b>[STRONG] - Hoàn toàn hợp lệ</b>';
     statusDetail = '• Chứng chỉ không bị thu hồi\n• Chuỗi chữ ký Keychain hợp lệ\n• Hardware Root Google/Knox';
   } else if (analysis.overall === 'device') {
-    statusBadge = '⚠️ **[DEVICE] - Soft-ban / Cảnh báo**';
+    statusBadge = '⚠️ <b>[DEVICE] - Soft-ban / Cảnh báo</b>';
     statusDetail = '• Dùng Software Attestation (AOSP)\n• Cần chú ý khi dùng cho app ngân hàng';
   } else {
-    statusBadge = '❌ **[BANNED] - Không thể sử dụng**';
+    statusBadge = '❌ <b>[BANNED] - Không thể sử dụng</b>';
     statusDetail = '• Đã bị Google thu hồi hoặc hỏng cấu trúc';
   }
 
-  let report = `${statusBadge}\n\n📝 **Chi tiết đánh giá:**\n${statusDetail}\n`;
+  let report = `${statusBadge}\n\n📝 <b>Chi tiết đánh giá:</b>\n${statusDetail}\n`;
 
   if (analysis.serials && analysis.serials.length > 0) {
-    report += `\n🔐 **Serial Number:** \`${analysis.serials.join(', ')}\``;
+    report += `\n🔐 <b>Serial Number:</b> <code>${analysis.serials.join(', ')}</code>`;
   }
 
   if (fixesApplied.length > 0) {
-    report += `\n\n🛠 **Đã tự động Auto-Fix:**\n` + fixesApplied.map(f => `• ${f}`).join('\n');
+    report += `\n\n🛠 <b>Đã tự động Auto-Fix:</b>\n` + fixesApplied.map(f => `• ${f}`).join('\n');
   }
 
   if (analysis.errors.length > 0) {
-    report += `\n\n❌ **Lỗi phát hiện:**\n` + analysis.errors.map(e => `• ${e}`).join('\n');
+    report += `\n\n❌ <b>Lỗi phát hiện:</b>\n` + analysis.errors.map(e => `• ${e}`).join('\n');
   }
 
   return report;
@@ -698,7 +698,7 @@ bot.command('start', async (ctx) => {
   await ctx.reply(
     "👋 <b>Hệ Thống Phân Tích Keybox & Play Integrity Fix (PIF)</b>\n\n" +
     "📖 <b>Danh sách lệnh:</b>\n" +
-    "• /keybox - Tải Keybox (Hiển thị icon trạng thái `${icon} ${name}` & Auto-Fix)\n" +
+    "• /keybox - Tải Keybox (Hiển thị icon trạng thái ${icon}${name} & Auto-Fix)\n" +
     "• /pif - Tải file PIF (<code>pif.json</code> & <code>pif.prop</code>) chọn dòng máy Pixel\n" +
     "• /security_patch - Lấy thông tin bản vá bảo mật mới nhất từ Google\n" +
     "• /check - Kiểm tra trạng thái toàn bộ nguồn Keybox",
@@ -706,7 +706,7 @@ bot.command('start', async (ctx) => {
   );
 });
 
-// Lệnh /keybox với Icon "${icon} ${name}"
+// Lệnh /keybox với Icon "${icon}${name}"
 bot.command('keybox', async (ctx) => {
   const userId = ctx.from.id;
   await ctx.sendChatAction('typing');
@@ -729,7 +729,10 @@ bot.command('keybox', async (ctx) => {
     buttons.push(row);
   }
 
-  await ctx.reply('🔑 **Vui lòng chọn nguồn Keybox (Kèm trạng thái thực tế):**', Markup.inlineKeyboard(buttons));
+  await ctx.reply('🔑 <b>Vui lòng chọn nguồn Keybox (Kèm trạng thái thực tế):</b>', {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(buttons)
+  });
 });
 
 bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
@@ -742,7 +745,7 @@ bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
 
   await ctx.answerCbQuery('⏳ Đang xử lý và sửa lỗi file Keybox...').catch(() => {});
   try {
-    await ctx.editMessageText('⏳ *Đang giải mã, sửa lỗi XML/PEM và phân tích...*', { parse_mode: 'Markdown' });
+    await ctx.editMessageText('⏳ <i>Đang giải mã, sửa lỗi XML/PEM và phân tích...</i>', { parse_mode: 'HTML' });
   } catch (e) {}
 
   try {
@@ -756,10 +759,10 @@ bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
       { source: buffer, filename },
       {
         caption:
-          `🔑 **File Keybox (${source.name})**\n` +
-          `📅 Cập nhật: \`${updateDate}\`\n\n` +
+          `🔑 <b>File Keybox (${source.name})</b>\n` +
+          `📅 Cập nhật: <code>${updateDate}</code>\n\n` +
           `${reportText}`,
-        parse_mode: 'Markdown'
+        parse_mode: 'HTML'
       }
     );
   } catch (error) {
@@ -777,7 +780,10 @@ bot.command('pif', async (ctx) => {
   const devices = await fetchPixelDeviceList();
   const keyboard = renderPixelKeyboard(devices, 0, userId);
 
-  await ctx.reply('📱 **Chọn dòng máy Pixel để tạo file PIF (Play Integrity Fix):**', keyboard);
+  await ctx.reply('📱 <b>Chọn dòng máy Pixel để tạo file PIF (Play Integrity Fix):</b>', {
+    parse_mode: 'HTML',
+    ...keyboard
+  });
 });
 
 bot.action(/^pif_page:(\d+):(\d+)$/, async (ctx) => {
@@ -793,7 +799,10 @@ bot.action(/^pif_page:(\d+):(\d+)$/, async (ctx) => {
   const keyboard = renderPixelKeyboard(devices, page, ownerId);
 
   try {
-    await ctx.editMessageText('📱 **Chọn dòng máy Pixel để tạo file PIF (Play Integrity Fix):**', keyboard);
+    await ctx.editMessageText('📱 <b>Chọn dòng máy Pixel để tạo file PIF (Play Integrity Fix):</b>', {
+      parse_mode: 'HTML',
+      ...keyboard
+    });
   } catch (e) {}
 });
 
@@ -854,16 +863,16 @@ bot.action(/^get_pif:([a-z0-9_]+):(\d+)$/, async (ctx) => {
     const propBuffer = Buffer.from(pifPropData, 'utf-8');
 
     const caption =
-      `✅ **ĐÃ TẠO THÀNH CÔNG PIF (Play Integrity Fix)**\n\n` +
-      `📱 **Model:** \`${devInfo.model}\` (\`${product}\`)\n` +
-      `🛡 **Security Patch:** \`${securityPatch}\`\n` +
-      `📦 **ID Build:** \`${build.id}\` | Incremental: \`${build.incremental}\`\n` +
-      `🔏 **Fingerprint:**\n\`${fingerprint}\``;
+      `✅ <b>ĐÃ TẠO THÀNH CÔNG PIF (Play Integrity Fix)</b>\n\n` +
+      `📱 <b>Model:</b> <code>${devInfo.model}</code> (<code>${product}</code>)\n` +
+      `🛡 <b>Security Patch:</b> <code>${securityPatch}</code>\n` +
+      `📦 <b>ID Build:</b> <code>${build.id}</code> | Incremental: <code>${build.incremental}</code>\n` +
+      `🔏 <b>Fingerprint:</b>\n<code>${fingerprint}</code>`;
 
     await ctx.replyWithDocument({ source: jsonBuffer, filename: `pif_${deviceName}.json` });
     await ctx.replyWithDocument(
       { source: propBuffer, filename: `pif_${deviceName}.prop` },
-      { caption, parse_mode: 'Markdown' }
+      { caption, parse_mode: 'HTML' }
     );
   } catch (err) {
     await ctx.reply(`❌ Lỗi khi khởi tạo PIF: ${err.message}`);
@@ -879,13 +888,13 @@ bot.command('security_patch', async (ctx) => {
     const patch = await getSecurityPatchLevel(build.canaryId);
 
     const message =
-      `🛡 **BẢN VÁ BẢO MẬT (SECURITY PATCH LEVEL)**\n\n` +
-      `📅 **Mới nhất:** \`${patch}\`\n` +
-      `🆔 **Canary ID:** \`${build.canaryId}\`\n` +
-      `📦 **Build ID:** \`${build.id}\`\n` +
-      `📈 **Incremental:** \`${build.incremental}\``;
+      `🛡 <b>BẢN VÁ BẢO MẬT (SECURITY PATCH LEVEL)</b>\n\n` +
+      `📅 <b>Mới nhất:</b> <code>${patch}</code>\n` +
+      `🆔 <b>Canary ID:</b> <code>${build.canaryId}</code>\n` +
+      `📦 <b>Build ID:</b> <code>${build.id}</code>\n` +
+      `📈 <b>Incremental:</b> <code>${build.incremental}</code>`;
 
-    await ctx.reply(message, { parse_mode: 'Markdown' });
+    await ctx.reply(message, { parse_mode: 'HTML' });
   } catch (err) {
     await ctx.reply(`❌ Không thể tra cứu bản vá bảo mật: ${err.message}`);
   }
@@ -915,13 +924,13 @@ bot.command('check', async (ctx) => {
     })
   );
 
-  let message = '📊 **KẾT QUẢ KIỂM TRA TOÀN BỘ NGUỒN KEYBOX:**\n\n';
+  let message = '📊 <b>KẾT QUẢ KIỂM TRA TOÀN BỘ NGUỒN KEYBOX:</b>\n\n';
   results.forEach((item) => {
-    message += `> ${item.icon} **${item.name}**: \`${item.status.toUpperCase()}\`\n`;
+    message += `<blockquote>${item.icon} <b>${item.name}</b>: <code>${item.status.toUpperCase()}</code></blockquote>\n`;
   });
 
   if (USERNAME_BOT_CHECK) message += `\n@${USERNAME_BOT_CHECK}`;
-  await ctx.reply(message.trim(), { parse_mode: 'Markdown' });
+  await ctx.reply(message.trim(), { parse_mode: 'HTML' });
 });
 
 bot.on('document', async (ctx) => {
@@ -933,7 +942,7 @@ bot.on('document', async (ctx) => {
 async function handleDocumentValidation(ctx, doc) {
   const fileName = doc.file_name || '';
   if (!fileName.endsWith('.xml') && doc.mime_type !== 'text/xml' && doc.mime_type !== 'application/xml') {
-    return ctx.reply('❌ Vui lòng gửi file định dạng XML (`.xml`).');
+    return ctx.reply('❌ Vui lòng gửi file định dạng XML (<code>.xml</code>).', { parse_mode: 'HTML' });
   }
 
   await ctx.sendChatAction('upload_document');
@@ -947,7 +956,7 @@ async function handleDocumentValidation(ctx, doc) {
     const repairResult = await repairKeybox(rawBuffer, trustData);
 
     if (!repairResult.success) {
-      return ctx.reply(`❌ **Không thể phân tích file XML:** ${repairResult.error}`);
+      return ctx.reply(`❌ <b>Không thể phân tích file XML:</b> ${repairResult.error}`, { parse_mode: 'HTML' });
     }
 
     const reportText = formatAnalysisReport(repairResult.analysis, repairResult.fixesApplied);
@@ -956,8 +965,8 @@ async function handleDocumentValidation(ctx, doc) {
     await ctx.replyWithDocument(
       { source: fixedBuffer, filename: `fixed_${fileName}` },
       {
-        caption: `🛠 **Đã phân tích & Tự động Auto-Fix File:**\n\n${reportText}`,
-        parse_mode: 'Markdown'
+        caption: `🛠 <b>Đã phân tích & Tự động Auto-Fix File:</b>\n\n${reportText}`,
+        parse_mode: 'HTML'
       }
     );
   } catch (err) {
