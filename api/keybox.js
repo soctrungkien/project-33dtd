@@ -20,6 +20,10 @@ dns.setServers(['1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4']);
 const PROXY_URL = process.env.PROXY_URL || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 const proxyAgent = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : null;
 
+// Khóa chống spam & Quản lý trạng thái nút
+const activeLocks = new Set();
+const processedMessages = new Set();
+
 function getRandomUserAgent() {
   return new UserAgent().toString();
 }
@@ -56,6 +60,28 @@ async function safeFetch(url, extraHeaders = {}) {
     text: () => buffer.toString('utf-8'),
     json: () => JSON.parse(buffer.toString('utf-8'))
   };
+}
+
+// Hàm gửi menu tự động xóa sau 1 phút (60000 ms)
+async function sendTemporaryMenu(ctx, text, extra, timeoutMs = 60000) {
+  const sentMsg = await ctx.reply(text, {
+    reply_parameters: { message_id: ctx.message.message_id },
+    ...extra
+  });
+
+  const chatId = sentMsg.chat.id;
+  const messageId = sentMsg.message_id;
+
+  setTimeout(async () => {
+    if (!processedMessages.has(messageId)) {
+      processedMessages.add(messageId);
+      try {
+        await ctx.telegram.deleteMessage(chatId, messageId);
+      } catch (e) {}
+    }
+  }, timeoutMs);
+
+  return sentMsg;
 }
 
 // Cache trạng thái Keybox giúp load nút chọn nhanh
@@ -147,7 +173,7 @@ const PEM_KEYS = {
 };
 
 // ==========================================================
-// MODULE TRUST MANAGER, DECODER, PARSER, REPAIRER & ANALYZER
+// MODULE TRUST MANAGER, DECODER, PARSER & ANALYZER
 // ==========================================================
 
 class TrustManager {
@@ -235,7 +261,6 @@ export function parseKeyboxXml(xmlText) {
         certs.push(certMatch[2].trim());
       }
 
-      // NẾU NUMBEROFCERTIFICATES HOẶC ĐỘ DÀI LÀ 4 THÌ BỎ ROOT CERTIFICATE (BẢN GHI CUỐI)
       if (numCertsTag === 4 || certs.length === 4) {
         certs.pop();
       }
@@ -267,82 +292,6 @@ export function standardizeCertPem(rawPem) {
 
   const lines = clean.match(/.{1,64}/g) || [];
   return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
-}
-
-function rebuildXmlFromParsed(parsed) {
-  let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
-  xml += '<KeyboxMetadata>\n';
-  xml += `  <NumberOfKeyboxes>${parsed.keyboxes.length}</NumberOfKeyboxes>\n`;
-
-  for (const keybox of parsed.keyboxes) {
-    xml += `  <Keybox DeviceID="${keybox.deviceId}">\n`;
-    for (const key of keybox.keys) {
-      xml += `    <Key algorithm="${key.algorithm}">\n`;
-      xml += `      <PrivateKey>\n${key.privateKeyPem.trim()}\n      </PrivateKey>\n`;
-      xml += `      <CertificateChain>\n`;
-      xml += `        <NumberOfCertificates>${key.certificatesPem.length}</NumberOfCertificates>\n`;
-      for (const cert of key.certificatesPem) {
-        xml += `        <Certificate format="pem">\n${cert.trim()}\n        </Certificate>\n`;
-      }
-      xml += `      </CertificateChain>\n`;
-      xml += `    </Key>\n`;
-    }
-    xml += `  </Keybox>\n`;
-  }
-
-  xml += '</KeyboxMetadata>';
-  return xml;
-}
-
-export async function repairKeybox(rawContent, trustData) {
-  let content = typeof rawContent === 'string' ? rawContent : decodeKeyboxBytes(rawContent);
-  const fixes = [];
-
-  try {
-    let parsed = parseKeyboxXml(content);
-
-    if (!parsed.keyboxes || parsed.keyboxes.length === 0) {
-      if (!content.includes('<KeyboxMetadata>')) {
-        content = `<?xml version="1.0" encoding="UTF-8"?>\n<KeyboxMetadata>\n${content}\n</KeyboxMetadata>`;
-        fixes.push('Tự động bổ sung thẻ bọc <KeyboxMetadata>');
-      }
-      parsed = parseKeyboxXml(content);
-    }
-
-    if (!parsed.keyboxes || parsed.keyboxes.length === 0) {
-      throw new Error('Cấu trúc XML không hợp lệ.');
-    }
-
-    for (const keybox of parsed.keyboxes) {
-      for (const key of keybox.keys) {
-        const newCerts = [];
-        for (const cert of key.certificatesPem) {
-          try {
-            const standardized = standardizeCertPem(cert);
-            newCerts.push(standardized);
-            if (standardized !== cert) {
-              fixes.push('Chuẩn hóa PEM (64 ký tự/dòng)');
-            }
-          } catch (err) {}
-        }
-        key.certificatesPem = newCerts;
-      }
-    }
-
-    const repairedXml = rebuildXmlFromParsed(parsed);
-    const analysis = await analyzeKeybox(repairedXml, trustData);
-
-    return {
-      success: true,
-      deviceId: parsed.keyboxes[0]?.deviceId || 'Unknown',
-      summary: `Đã sửa ${fixes.length} lỗi`,
-      fixesApplied: [...new Set(fixes)],
-      repairedXml,
-      analysis
-    };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
 }
 
 function comparePemKeys(pem1, pem2) {
@@ -413,7 +362,8 @@ export async function analyzeKeybox(xmlContent, trustData) {
       }
 
       try {
-        const leafCert = new X509Certificate(key.certificatesPem[0]);
+        const stdLeafPem = standardizeCertPem(key.certificatesPem[0]);
+        const leafCert = new X509Certificate(stdLeafPem);
         const serialNumber = leafCert.serialNumber.replace(/^0x/i, '').toLowerCase();
         analysis.serials.push(serialNumber);
 
@@ -434,13 +384,14 @@ export async function analyzeKeybox(xmlContent, trustData) {
         analysis.overall = 'banned';
       }
 
-      const chainValid = await verifyCertificateChain(key.certificatesPem);
+      const stdCerts = key.certificatesPem.map(c => standardizeCertPem(c));
+      const chainValid = await verifyCertificateChain(stdCerts);
       if (!chainValid) {
         analysis.errors.push('Chuỗi chữ ký Keychain không hợp lệ');
         analysis.overall = 'banned';
       }
 
-      const rootPem = key.certificatesPem[key.certificatesPem.length - 1];
+      const rootPem = stdCerts[stdCerts.length - 1];
       const rootInfo = identifyRootCert(rootPem);
 
       if (!rootInfo.isHardware && analysis.overall !== 'banned') {
@@ -459,9 +410,9 @@ async function getSourceStatus(source) {
     if (Date.now() - cached.time < 300000) return cached.status;
   }
   try {
-    const { buffer } = await fetchAndFixKeyboxFromSource(source);
+    const { buffer } = await fetchKeyboxFromSource(source);
     const trustData = await trustManager.refreshTrustData();
-    const analysis = await analyzeKeybox(buffer.toString('utf-8'), trustData);
+    const analysis = await analyzeKeybox(decodeKeyboxBytes(buffer), trustData);
 
     let icon = '✅';
     if (analysis.overall === 'device') icon = '⚠️';
@@ -477,7 +428,7 @@ async function getSourceStatus(source) {
   }
 }
 
-async function fetchAndFixKeyboxFromSource(source) {
+async function fetchKeyboxFromSource(source) {
   const promises = [safeFetch(source.url, source.extraHeaders || {})];
   if (source.commitApi) promises.push(safeFetch(source.commitApi));
 
@@ -496,11 +447,8 @@ async function fetchAndFixKeyboxFromSource(source) {
   }
 
   const trustData = await trustManager.refreshTrustData();
-  const repairResult = await repairKeybox(rawBuffer, trustData);
-
-  if (!repairResult.success) {
-    throw new Error(`Sửa lỗi thất bại: ${repairResult.error}`);
-  }
+  const xmlString = decodeKeyboxBytes(rawBuffer);
+  const analysis = await analyzeKeybox(xmlString, trustData);
 
   let updateDate = 'Không xác định';
   let fileDate = new Date().toISOString().slice(0, 10);
@@ -516,15 +464,14 @@ async function fetchAndFixKeyboxFromSource(source) {
   }
 
   return {
-    buffer: Buffer.from(repairResult.repairedXml, 'utf-8'),
+    buffer: rawBuffer,
     updateDate,
     filename: `keybox-${source.id}-${fileDate}.xml`,
-    analysis: repairResult.analysis,
-    fixesApplied: repairResult.fixesApplied
+    analysis
   };
 }
 
-function formatAnalysisReport(analysis, fixesApplied = []) {
+function formatAnalysisReport(analysis) {
   let statusBadge = '';
   let statusDetail = '';
 
@@ -543,10 +490,6 @@ function formatAnalysisReport(analysis, fixesApplied = []) {
 
   if (analysis.serials && analysis.serials.length > 0) {
     report += `\n🔐 <b>Serial Number:</b> <code>${analysis.serials.join(', ')}</code>`;
-  }
-
-  if (fixesApplied.length > 0) {
-    report += `\n\n🛠 <b>Auto-Fix:</b>\n` + fixesApplied.map(f => `• ${f}`).join('\n');
   }
 
   if (analysis.errors.length > 0) {
@@ -671,8 +614,6 @@ async function fetchPixelDeviceList() {
     const fiDevices = extractDevices(fiHtml);
     const otaDevices = extractDevices(otaHtml);
 
-    // Giống logic trong script shell:
-    // chọn nguồn có danh sách thiết bị dài hơn.
     const devices =
       fiDevices.length >= otaDevices.length
         ? fiDevices
@@ -744,10 +685,10 @@ function renderPixelKeyboard(devices, page = 0, userId) {
   const buttons = [];
   for (let i = 0; i < pageDevices.length; i += 2) {
     const row = [
-      Markup.button.callback(`📱 ${pageDevices[i].model}`, `get_pif:${pageDevices[i].product}:${userId}`)
+      Markup.button.callback(`📄 ${pageDevices[i].model}`, `get_pif:${pageDevices[i].product}:${userId}`)
     ];
     if (pageDevices[i + 1]) {
-      row.push(Markup.button.callback(`📱 ${pageDevices[i + 1].model}`, `get_pif:${pageDevices[i + 1].product}:${userId}`));
+      row.push(Markup.button.callback(`📄 ${pageDevices[i + 1].model}`, `get_pif:${pageDevices[i + 1].product}:${userId}`));
     }
     buttons.push(row);
   }
@@ -759,7 +700,8 @@ function renderPixelKeyboard(devices, page = 0, userId) {
     navRow.push(Markup.button.callback('⏹', 'noop'));
   }
 
-  navRow.push(Markup.button.callback(`📄 ${currentPage + 1}/${totalPages}`, 'noop'));
+  // Nút hiển thị số trang 📄 1/3 - Bấm vào sẽ tắt/xóa bảng chọn
+  navRow.push(Markup.button.callback(`📄 ${currentPage + 1}/${totalPages}`, `close_menu:${userId}`));
 
   if (currentPage < totalPages - 1) {
     navRow.push(Markup.button.callback('▶️ Sau', `pif_page:${currentPage + 1}:${userId}`));
@@ -782,13 +724,15 @@ bot.command('start', async (ctx) => {
     "• /keybox - Tải Keybox\n" +
     "• /pif - Tải file PIF (<code>pif.json</code>) chọn dòng máy Pixel\n" +
     "• /check - Kiểm tra trạng thái toàn bộ nguồn Keybox",
-    { parse_mode: 'HTML' }
+    {
+      parse_mode: 'HTML',
+      reply_parameters: { message_id: ctx.message.message_id }
+    }
   );
 });
 
 // Lệnh /keybox
 bot.command('keybox', async (ctx) => {
-  const userId = ctx.from.id;
   await ctx.sendChatAction('typing');
 
   const sourceStatuses = await Promise.all(
@@ -802,14 +746,14 @@ bot.command('keybox', async (ctx) => {
   for (let i = 0; i < sourceStatuses.length; i += 2) {
     const s1 = sourceStatuses[i];
     const s2 = sourceStatuses[i + 1];
-    const row = [Markup.button.callback(`${s1.icon} ${s1.name}`, `get_keybox:${s1.id}:${userId}`)];
+    const row = [Markup.button.callback(`${s1.icon} ${s1.name}`, `get_keybox:${s1.id}:${ctx.from.id}`)];
     if (s2) {
-      row.push(Markup.button.callback(`${s2.icon} ${s2.name}`, `get_keybox:${s2.id}:${userId}`));
+      row.push(Markup.button.callback(`${s2.icon} ${s2.name}`, `get_keybox:${s2.id}:${ctx.from.id}`));
     }
     buttons.push(row);
   }
 
-  await ctx.reply('🔑 <b>Vui lòng chọn nguồn Keybox:</b>', {
+  await sendTemporaryMenu(ctx, '🔑 <b>Vui lòng chọn nguồn Keybox:</b>', {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard(buttons)
   });
@@ -818,23 +762,41 @@ bot.command('keybox', async (ctx) => {
 bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
   const sourceId = ctx.match[1];
   const ownerId = Number(ctx.match[2]);
+  const msgId = ctx.callbackQuery.message?.message_id;
 
   if (ctx.from.id !== ownerId) {
     return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
   }
 
-  await ctx.answerCbQuery('⏳ Đang xử lý file Keybox...').catch(() => {});
-  try {
-    await ctx.editMessageText('⏳ <i>Đang xử lí file Keybox...</i>', { parse_mode: 'HTML' });
-  } catch (e) {}
+  if (processedMessages.has(msgId)) {
+    return ctx.answerCbQuery('⚠️ Thao tác đã thực hiện hoặc menu đã hết hạn!', { show_alert: true }).catch(() => {});
+  }
+
+  if (activeLocks.has(msgId)) {
+    return ctx.answerCbQuery('⏳ Đang xử lý, vui lòng không ấn liên tục!', { show_alert: true }).catch(() => {});
+  }
+
+  activeLocks.add(msgId);
+  processedMessages.add(msgId);
+
+  await ctx.answerCbQuery('⏳ Đang lấy file Keybox...').catch(() => {});
+
+  const targetChatId = ctx.chat?.id;
+  const replyToMsgId = ctx.callbackQuery.message?.reply_to_message?.message_id;
+
+  if (msgId && targetChatId) {
+    await ctx.telegram.deleteMessage(targetChatId, msgId).catch(() => {});
+  }
 
   try {
+    await ctx.sendChatAction('typing');
     const source = SOURCES.find(s => s.id === sourceId);
     if (!source) throw new Error('Không tìm thấy nguồn Keybox này');
 
-    const { buffer, updateDate, filename, analysis, fixesApplied } = await fetchAndFixKeyboxFromSource(source);
-    const reportText = formatAnalysisReport(analysis, fixesApplied);
+    const { buffer, updateDate, filename, analysis } = await fetchKeyboxFromSource(source);
+    const reportText = formatAnalysisReport(analysis);
 
+    await ctx.sendChatAction('upload_document');
     await ctx.replyWithDocument(
       { source: buffer, filename },
       {
@@ -842,17 +804,20 @@ bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
           `🔑 <b>File Keybox (${source.name})</b>\n` +
           `📅 Cập nhật: <code>${updateDate}</code>\n\n` +
           `${reportText}`,
-        parse_mode: 'HTML'
+        parse_mode: 'HTML',
+        ...(replyToMsgId ? { reply_parameters: { message_id: replyToMsgId } } : {})
       }
     );
   } catch (error) {
-    await ctx.reply(`❌ Lỗi khi xử lý Keybox: ${error.message}`);
+    await ctx.reply(`❌ Lỗi khi xử lý Keybox: ${error.message}`, {
+      ...(replyToMsgId ? { reply_parameters: { message_id: replyToMsgId } } : {})
+    });
   } finally {
-    await ctx.deleteMessage().catch(() => {});
+    activeLocks.delete(msgId);
   }
 });
 
-// Lệnh /pif chọn Pixel cào trực tiếp từ Google
+// Lệnh /pif
 bot.command('pif', async (ctx) => {
   const userId = ctx.from.id;
   await ctx.sendChatAction('typing');
@@ -860,14 +825,14 @@ bot.command('pif', async (ctx) => {
   const devices = await fetchPixelDeviceList();
 
   if (!devices.length) {
-    return ctx.reply(
-      '❌ Không thể lấy danh sách Pixel Canary từ Google.'
-    );
+    return ctx.reply('❌ Không thể lấy danh sách Pixel Canary từ Google.', {
+      reply_parameters: { message_id: ctx.message.message_id }
+    });
   }
 
   const keyboard = renderPixelKeyboard(devices, 0, userId);
 
-  await ctx.reply('📱 <b>Chọn dòng máy Pixel:</b>', {
+  await sendTemporaryMenu(ctx, '📱 <b>Chọn dòng máy Pixel:</b>', {
     parse_mode: 'HTML',
     ...keyboard
   });
@@ -876,21 +841,47 @@ bot.command('pif', async (ctx) => {
 bot.action(/^pif_page:(\d+):(\d+)$/, async (ctx) => {
   const page = parseInt(ctx.match[1], 10);
   const ownerId = Number(ctx.match[2]);
+  const msgId = ctx.callbackQuery.message?.message_id;
 
   if (ctx.from.id !== ownerId) {
     return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
   }
 
+  if (processedMessages.has(msgId)) {
+    return ctx.answerCbQuery('⚠️ Menu đã hết hạn hoặc đã được chọn!', { show_alert: true }).catch(() => {});
+  }
+
+  if (activeLocks.has(msgId)) {
+    return ctx.answerCbQuery('⏳ Đang chuyển trang, vui lòng chờ...').catch(() => {});
+  }
+
+  activeLocks.add(msgId);
   await ctx.answerCbQuery().catch(() => {});
-  const devices = await fetchPixelDeviceList();
-  const keyboard = renderPixelKeyboard(devices, page, ownerId);
 
   try {
+    await ctx.sendChatAction('typing');
+    const devices = await fetchPixelDeviceList();
+    const keyboard = renderPixelKeyboard(devices, page, ownerId);
+
     await ctx.editMessageText('📱 <b>Chọn dòng máy Pixel:</b>', {
       parse_mode: 'HTML',
       ...keyboard
     });
-  } catch (e) {}
+  } catch (e) {
+  } finally {
+    activeLocks.delete(msgId);
+  }
+});
+
+// Đóng/xóa bảng khi ấn nút 📄 1/3
+bot.action(/^close_menu:(\d+)$/, async (ctx) => {
+  const ownerId = Number(ctx.match[1]);
+  if (ctx.from.id !== ownerId) {
+    return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery('❌ Đã đóng menu').catch(() => {});
+  await ctx.deleteMessage().catch(() => {});
 });
 
 bot.action('noop', (ctx) => ctx.answerCbQuery().catch(() => {}));
@@ -898,15 +889,34 @@ bot.action('noop', (ctx) => ctx.answerCbQuery().catch(() => {}));
 bot.action(/^get_pif:([a-z0-9_]+):(\d+)$/, async (ctx) => {
   const product = ctx.match[1];
   const ownerId = Number(ctx.match[2]);
+  const msgId = ctx.callbackQuery.message?.message_id;
 
   if (ctx.from.id !== ownerId) {
     return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
   }
 
+  if (processedMessages.has(msgId)) {
+    return ctx.answerCbQuery('⚠️ Thao tác đã thực hiện hoặc menu đã hết hạn!', { show_alert: true }).catch(() => {});
+  }
+
+  if (activeLocks.has(msgId)) {
+    return ctx.answerCbQuery('⏳ Đang xử lý, vui lòng không ấn liên tục!', { show_alert: true }).catch(() => {});
+  }
+
+  activeLocks.add(msgId);
+  processedMessages.add(msgId);
+
   await ctx.answerCbQuery('⏳ Đang lấy thông tin Build...').catch(() => {});
 
+  const targetChatId = ctx.chat?.id;
+  const replyToMsgId = ctx.callbackQuery.message?.reply_to_message?.message_id;
+
+  if (msgId && targetChatId) {
+    await ctx.telegram.deleteMessage(targetChatId, msgId).catch(() => {});
+  }
+
   try {
-    await ctx.sendChatAction('upload_document');
+    await ctx.sendChatAction('typing');
     const devices = await fetchPixelDeviceList();
     const devInfo = devices.find(d => d.product === product) || { model: 'Pixel Device', product };
 
@@ -916,7 +926,6 @@ bot.action(/^get_pif:([a-z0-9_]+):(\d+)$/, async (ctx) => {
 
     const fingerprint = `google/${deviceName}/${deviceName}:17/${build.id}/${build.incremental}:user/release-keys`;
 
-    // Cấu trúc file pif.json chuẩn
     const pifJsonData = {
       BRAND: "google",
       DEVICE: deviceName,
@@ -938,15 +947,25 @@ bot.action(/^get_pif:([a-z0-9_]+):(\d+)$/, async (ctx) => {
       `📦 <b>ID Build:</b> <code>${build.id}</code> | Incremental: <code>${build.incremental}</code>\n` +
       `🔏 <b>Fingerprint:</b>\n<code>${fingerprint}</code>`;
 
+    await ctx.sendChatAction('upload_document');
     await ctx.replyWithDocument(
       { source: jsonBuffer, filename: `pif_${deviceName}.json` },
-      { caption, parse_mode: 'HTML' }
+      {
+        caption,
+        parse_mode: 'HTML',
+        ...(replyToMsgId ? { reply_parameters: { message_id: replyToMsgId } } : {})
+      }
     );
   } catch (err) {
-    await ctx.reply(`❌ Lỗi khi khởi tạo PIF: ${err.message}`);
+    await ctx.reply(`❌ Lỗi khi khởi tạo PIF: ${err.message}`, {
+      ...(replyToMsgId ? { reply_parameters: { message_id: replyToMsgId } } : {})
+    });
+  } finally {
+    activeLocks.delete(msgId);
   }
 });
 
+// Lệnh /check
 bot.command('check', async (ctx) => {
   const replyTo = ctx.message?.reply_to_message;
   if (replyTo?.document) return handleDocumentValidation(ctx, replyTo.document);
@@ -957,8 +976,8 @@ bot.command('check', async (ctx) => {
   const results = await Promise.all(
     SOURCES.map(async (src) => {
       try {
-        const { buffer } = await fetchAndFixKeyboxFromSource(src);
-        const analysis = await analyzeKeybox(buffer.toString('utf-8'), trustData);
+        const { buffer } = await fetchKeyboxFromSource(src);
+        const analysis = await analyzeKeybox(decodeKeyboxBytes(buffer), trustData);
 
         let icon = '✅';
         if (analysis.overall === 'device') icon = '⚠️';
@@ -977,7 +996,10 @@ bot.command('check', async (ctx) => {
   });
 
   if (USERNAME_BOT_CHECK) message += `\n@${USERNAME_BOT_CHECK}`;
-  await ctx.reply(message.trim(), { parse_mode: 'HTML' });
+  await ctx.reply(message.trim(), {
+    parse_mode: 'HTML',
+    reply_parameters: { message_id: ctx.message.message_id }
+  });
 });
 
 bot.on('document', async (ctx) => {
@@ -989,10 +1011,13 @@ bot.on('document', async (ctx) => {
 async function handleDocumentValidation(ctx, doc) {
   const fileName = doc.file_name || '';
   if (!fileName.endsWith('.xml') && doc.mime_type !== 'text/xml' && doc.mime_type !== 'application/xml') {
-    return ctx.reply('❌ Vui lòng gửi file định dạng XML (<code>.xml</code>).', { parse_mode: 'HTML' });
+    return ctx.reply('❌ Vui lòng gửi file định dạng XML (<code>.xml</code>).', {
+      parse_mode: 'HTML',
+      reply_parameters: { message_id: ctx.message.message_id }
+    });
   }
 
-  await ctx.sendChatAction('upload_document');
+  await ctx.sendChatAction('typing');
 
   try {
     const fileLink = await ctx.telegram.getFileLink(doc.file_id);
@@ -1000,24 +1025,19 @@ async function handleDocumentValidation(ctx, doc) {
     const rawBuffer = Buffer.from(res.data);
 
     const trustData = await trustManager.refreshTrustData();
-    const repairResult = await repairKeybox(rawBuffer, trustData);
+    const xmlContent = decodeKeyboxBytes(rawBuffer);
+    const analysis = await analyzeKeybox(xmlContent, trustData);
 
-    if (!repairResult.success) {
-      return ctx.reply(`❌ <b>Không thể phân tích file XML:</b> ${repairResult.error}`, { parse_mode: 'HTML' });
-    }
+    const reportText = formatAnalysisReport(analysis);
 
-    const reportText = formatAnalysisReport(repairResult.analysis, repairResult.fixesApplied);
-    const fixedBuffer = Buffer.from(repairResult.repairedXml, 'utf-8');
-
-    await ctx.replyWithDocument(
-      { source: fixedBuffer, filename: `fixed_${fileName}` },
-      {
-        caption: `🛠 <b>Đã phân tích & Auto-Fix File:</b>\n\n${reportText}`,
-        parse_mode: 'HTML'
-      }
-    );
+    await ctx.reply(`📋 <b>Kết quả phân tích file Keybox (<code>${fileName}</code>):</b>\n\n${reportText}`, {
+      parse_mode: 'HTML',
+      reply_parameters: { message_id: ctx.message.message_id }
+    });
   } catch (err) {
-    await ctx.reply(`❌ Lỗi khi xử lý file: ${err.message}`);
+    await ctx.reply(`❌ Lỗi khi xử lý file: ${err.message}`, {
+      reply_parameters: { message_id: ctx.message.message_id }
+    });
   }
 }
 
