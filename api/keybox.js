@@ -765,7 +765,7 @@ bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
   const msgId = ctx.callbackQuery.message?.message_id;
 
   if (ctx.from.id !== ownerId) {
-    return ctx.answerCbQuery('눈⁠‸⁠눈 Bạn không thể bấm nút của người khác', { show_alert: true }).catch(() => {});
+    return ctx.answerCbQuery('눈⁠‸⁠눈 SAO LẠI QUẤY RỐI NG TA', { show_alert: true }).catch(() => {});
   }
 
   if (processedMessages.has(msgId)) {
@@ -773,7 +773,7 @@ bot.action(/^get_keybox:([a-z0-9_-]+):(\d+)$/, async (ctx) => {
   }
 
   if (activeLocks.has(msgId)) {
-    return ctx.answerCbQuery('⏳ Đang xử lý, vui lòng không ấn liên tục!', { show_alert: true }).catch(() => {});
+    return ctx.answerCbQuery('🥶SPAM!', { show_alert: true }).catch(() => {});
   }
 
   activeLocks.add(msgId);
@@ -990,9 +990,9 @@ bot.command('check', async (ctx) => {
     })
   );
 
-  let message = '📊 <b>KẾT QUẢ KIỂM TRA TOÀN BỘ NGUỒN KEYBOX:</b>\n\n';
+  let message = '📊 <b>KẾT QUẢ KIỂM TRA:</b>\n\n';
   results.forEach((item) => {
-    message += `<blockquote>${item.icon} <b>${item.name}</b>: <code>${item.status.toUpperCase()}</code></blockquote>\n`;
+    message += `<code>${item.icon} <b>${item.name}</b>: ${item.status.toUpperCase()}</code>\n`;
   });
 
   if (USERNAME_BOT_CHECK) message += `\n@${USERNAME_BOT_CHECK}`;
