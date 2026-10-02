@@ -810,13 +810,13 @@ function formatAnalysisReport(analysis) {
   let statusDetail = '';
 
   if (analysis.overall === 'strong') {
-    statusBadge = '✅ <b>[STRONG] - Hoàn toàn hợp lệ</b>';
+    statusBadge = '✅ <b>Hoàn toàn hợp lệ</b>';
     statusDetail = '• Chứng chỉ không bị thu hồi\n• Chuỗi chữ ký Keychain hợp lệ\n• Hardware Root Google/Knox';
   } else if (analysis.overall === 'device') {
-    statusBadge = '⚠️ <b>[DEVICE] - Soft-ban / Cảnh báo</b>';
+    statusBadge = '⚠️ <b>Soft-ban / Cảnh báo</b>';
     statusDetail = '• Dùng Software Attestation (AOSP)\n• Cần chú ý khi dùng cho app ngân hàng';
   } else {
-    statusBadge = '❌ <b>[BANNED] - Không thể sử dụng</b>';
+    statusBadge = '❌ <b>Không thể sử dụng</b>';
     statusDetail = '• Đã bị Google thu hồi hoặc hỏng cấu trúc';
   }
 
@@ -1396,20 +1396,19 @@ bot.command('check', async (ctx) => {
   for (const item of results) {
     if (item.status === 'error') {
       message +=
-        `<code>${item.icon} ${escapeHtml(item.name)}: ERROR</code>\n` +
-        `   └ <i>${escapeHtml(item.error || 'Unknown error')}</i>\n`;
+        `<code>${item.icon} ${escapeHtml(item.name)}</code>\n`
 
       continue;
     }
 
     message +=
-      `<code>${item.icon} ${escapeHtml(item.name)}: ${item.status.toUpperCase()}</code>\n`;
+      `<code>${item.icon} ${escapeHtml(item.name)}</code>\n`;
   }
 
   const elapsed = Date.now() - startedAt;
 
   if (USERNAME_BOT_CHECK) {
-    message += `\n\n@${escapeHtml(USERNAME_BOT_CHECK)}`;
+    message += `\n@${escapeHtml(USERNAME_BOT_CHECK)}`;
   }
 
   await ctx.reply(message, {
