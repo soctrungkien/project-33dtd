@@ -5,6 +5,8 @@ const Redis = require("ioredis");
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const STORAGE_CHANNEL = process.env.STORAGE_CHANNEL_ID;
+const BACKUP_CHANNEL = process.env.BACKUP_CHANNEL_ID;
+const JOIN_CHANNEL = process.env.JOIN_CHANNEL_ID;
 const OWNER_ID = process.env.OWNER_ID;
 const API_ID = Number(process.env.API_ID || 0);
 const API_HASH = process.env.API_HASH || "";
