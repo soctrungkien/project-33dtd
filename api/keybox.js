@@ -11,7 +11,6 @@ import { X509Certificate } from '@peculiar/x509';
 // ==========================================================
 
 const BOT_TOKEN = process.env.BOT_TOKEN_KEYBOX || process.env.TELEGRAM_BOT_TOKEN_CHECK_KEYBOX;
-const USERNAME_BOT_CHECK = process.env.USERNAME_BOT_CHECK_KEYBOX;
 
 const bot = new Telegraf(BOT_TOKEN);
 
@@ -1394,22 +1393,11 @@ bot.command('check', async (ctx) => {
     '📊 <b>KẾT QUẢ KIỂM TRA KEYBOX</b>\n\n';
 
   for (const item of results) {
-    if (item.status === 'error') {
-      message +=
-        `<code>${item.icon} ${escapeHtml(item.name)}</code>\n`
-
-      continue;
-    }
-
     message +=
-      `<code>${item.icon} ${escapeHtml(item.name)}</code>\n`;
+      `${item.icon} ${escapeHtml(item.name)}\n`;
   }
 
   const elapsed = Date.now() - startedAt;
-
-  if (USERNAME_BOT_CHECK) {
-    message += `\n@${escapeHtml(USERNAME_BOT_CHECK)}`;
-  }
 
   await ctx.reply(message, {
     parse_mode: 'HTML',
