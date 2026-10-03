@@ -800,13 +800,15 @@ bot.action(/^store_(.+)$/, async (ctx) => {
 
   await ctx.answerCbQuery("Đang gửi...");
 
-  if (STORAGE_CHANNEL) {
+  if (STORAGE_CHANNEL || BACKUP_CHANNEL) {
     try {
-      await ctx.telegram.sendDocument(STORAGE_CHANNEL, fileId);
-      await ctx.editMessageText("✅ Đã gửi file vào dữ liệu lưu trữ thành công!");
+      const targets = [STORAGE_CHANNEL, BACKUP_CHANNEL].filter(Boolean);
+      await Promise.all(targets.map(channel => ctx.telegram.sendDocument(channel, fileId)));
+      
+      await ctx.editMessageText("✅ Đã gửi file vào kho lưu trữ thành công!");
       global.fileStoreCache.delete(storeKey);
     } catch (e) {
-      await ctx.editMessageText("Lỗi: Bot chưa được phong quyền Admin trong Kênh lưu trữ!");
+      await ctx.editMessageText("Lỗi: Bot chưa đủ quyền trong kho lưu trữ!");
     }
   }
 });
