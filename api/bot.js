@@ -667,11 +667,11 @@ bot.action("cancel_delcache", async (ctx) => {
 });
 
 bot.command("ping", async (ctx) => {
-  const sentTime = ctx.message.date * 1000;
-  const receiveTime = Date.now();
-  const latency = receiveTime - sentTime;
+  const start = performance.now();
+  const msg = await ctx.reply("🏓 Pinging...");
+  const latency = Math.round(performance.now() - start);
   
-  await ctx.reply(`🏓 Pong! ${latency}ms`);
+  await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🏓 Pong! ${latency}ms`);
 });
 
 bot.command("apk", async (ctx) => {
