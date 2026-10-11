@@ -69,8 +69,8 @@ const MAX_CONTEXT_HISTORY = 12;
 const MAX_REPLY_CHAIN = 15;
 const MAX_GEMINI_INPUT_CHARS = 24000;
 const MAX_OUTPUT_CHARS = 4000;
-const PROCESS_TIMEOUT_MS = 45000;
-const GEMINI_REQUEST_TIMEOUT_MS = 30000;
+const PROCESS_TIMEOUT_MS = 15000;
+const GEMINI_REQUEST_TIMEOUT_MS = 15000;
 const TOOL_TIMEOUT_MS = 15000;
 const TTS_TIMEOUT_MS = 15000;
 const AUTO_RESPONSE_CHANCE = 0.00001;
@@ -2124,7 +2124,7 @@ async function processGeminiResponse(
         deadline.signal,
       ),
       PROCESS_TIMEOUT_MS,
-      "Xử lý Gemini",
+      "Xử lý",
     );
 
     if (aiResponse && aiResponse.trim()) {
