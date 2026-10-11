@@ -1558,19 +1558,26 @@ async function generateGeminiWithRotation(
 
         const calls = [];
         let chunkText = "";
-
+        
         for await (const chunk of stream) {
           if (chunk.text) {
             chunkText += chunk.text;
             fullText += chunk.text;
             await onTextUpdate(fullText);
           }
-
-          if (Array.isArray(chunk.functionCalls)) {
-            calls.push(...chunk.functionCalls);
+        
+          const parts = chunk.candidates?.[0]?.content?.parts || [];
+        
+          for (const part of parts) {
+            if (!part.functionCall) continue;
+        
+            calls.push({
+              ...part.functionCall,
+              _rawPart: part,
+            });
           }
         }
-
+        
         return { text: chunkText, calls };
       };
 
@@ -1585,12 +1592,26 @@ async function generateGeminiWithRotation(
 
         contents.push({
           role: "model",
-          parts: calls.map((call) => ({
-            functionCall: {
+          parts: calls.map((call) => {
+            const part = call._rawPart;
+        
+            if (part) {
+              return part;
+            }
+        
+            const functionCall = {
               name: call.name,
               args: call.args || {},
-            },
-          })),
+            };
+        
+            if (call.thoughtSignature) {
+              functionCall.thoughtSignature = call.thoughtSignature;
+            } else if (call.thought_signature) {
+              functionCall.thought_signature = call.thought_signature;
+            }
+        
+            return { functionCall };
+          }),
         });
 
         const functionResponses = [];
@@ -1630,7 +1651,10 @@ async function generateGeminiWithRotation(
           });
         }
 
-        contents.push({ role: "user", parts: functionResponses });
+        contents.push({
+          role: "user",
+          parts: functionResponses,
+        });
         result = await runModel();
         calls = result.calls;
       }
@@ -1649,7 +1673,7 @@ async function generateGeminiWithRotation(
 
       if (sideEffectToolExecuted) {
         throw new Error(
-          `Gemini gặp lỗi sau khi công cụ đã thực hiện hành động; không tự chạy lại để tránh gửi trùng. ${error.message}`,
+          `Model gặp lỗi sau khi công cụ đã thực hiện hành động; không tự chạy lại để tránh gửi trùng. ${error.message}`,
         );
       }
 
@@ -2160,17 +2184,26 @@ async function handleUpdate(update) {
     }
 
     let groupHistoryContext = "";
+    
     if (!isPrivate) {
-      const history = await getHistoryBeforeId(chatId, originalMessageId, 8);
+      const history = await getHistoryBeforeId(
+        chatId,
+        originalMessageId,
+        20,
+      );
+    
       if (history.messages.length) {
         groupHistoryContext =
-          "\n[Ngữ cảnh tin nhắn nhóm đã lưu gần đây]\n" +
-          history.messages.map(formatHistoryItem).join("\n");
+          "\n[LỊCH SỬ HỘI THOẠI NHÓM]\n" +
+          "Các tin nhắn dưới đây được lấy từ lịch sử đã lưu trong database. " +
+          "Sử dụng chúng để hiểu ngữ cảnh, người nói và chuỗi hội thoại. " +
+          "Không được khẳng định đã đọc những tin nhắn không xuất hiện trong dữ liệu.\n\n" +
+          history.messages.map(formatHistoryItem).join("\n\n");
       }
     }
 
     const userHeader =
-      `[Thời gian Việt Nam: ${getVietnamTimeString()}]\n` +
+      `[Thời gian UTC+7: ${getVietnamTimeString()}]\n` +
       `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole} | Ngôn ngữ: ${message.from?.language_code || "Không rõ"}]` +
       `${groupDetails}${replyContext}${groupHistoryContext}`;
 
