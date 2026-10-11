@@ -1,6 +1,14 @@
 const https = require("https");
 const { GoogleGenAI } = require("@google/genai");
 const Redis = require("ioredis");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { spawn } = require("child_process");
+const ffmpegPath = require("ffmpeg-static");
+const zlib = require("zlib");
+const { promisify } = require("util");
+const gunzipAsync = promisify(zlib.gunzip);
 
 const redis = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: 3,
@@ -54,7 +62,6 @@ const MAX_GENERATED_FILE_SIZE = 10 * 1024 * 1024;
 const DEFAULT_FREE_TOKENS = 50;
 const RESET_DURATION_MS = 12 * 60 * 60 * 1000;
 const REDIS_TTL_SEC = 24 * 60 * 60;
-
 const MAX_MESSAGES = 15;
 const MAX_HISTORY_MESSAGES = 1500;
 const MAX_HISTORY_TEXT = 1800;
@@ -62,13 +69,18 @@ const MAX_CONTEXT_HISTORY = 12;
 const MAX_REPLY_CHAIN = 15;
 const MAX_GEMINI_INPUT_CHARS = 24000;
 const MAX_OUTPUT_CHARS = 4000;
-const PROCESS_TIMEOUT_MS = 30000;
-const TOOL_TIMEOUT_MS = 8000;
+const PROCESS_TIMEOUT_MS = 60000;
+const GEMINI_REQUEST_TIMEOUT_MS = 45000;
+const TOOL_TIMEOUT_MS = 15000;
+const TTS_TIMEOUT_MS = 15000;
 const AUTO_RESPONSE_CHANCE = 0.00001;
 
 let currentApiKeyIndex = 0;
 let currentModelIndex = 0;
 let cachedBotInfo = null;
+
+const STICKER_FRAME_COUNT = 4;
+const STICKER_FRAME_SIZE = 256;
 
 const ramCache = new Map();
 const stickerPackCache = new Map();
@@ -94,6 +106,22 @@ function isAdmin(uid) {
 
 function cleanMarkdownForTelegram(text) {
   return String(text || "");
+}
+
+function createDeadline(timeoutMs) {
+  const controller = new AbortController();
+
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`Hết thời gian xử lý sau ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  return {
+    signal: controller.signal,
+
+    close() {
+      clearTimeout(timer);
+    },
+  };
 }
 
 async function telegramCall(method, payload = {}, timeout = 8000) {
@@ -181,6 +209,70 @@ async function getUserRole(chatId, userId, chatType) {
   } catch {}
 
   return "Thành viên";
+}
+
+const muteCache = new Map();
+const BOT_MUTE_CACHE_MS = 5000;
+
+async function checkBotCanSend(chatId, forceRefresh = false) {
+  const key = String(chatId);
+  const now = Date.now();
+  const cached = muteCache.get(key);
+
+  if (!forceRefresh && cached && cached.expiresAt > now) {
+    return cached.result;
+  }
+
+  const bot = await getBotInfo();
+
+  if (!bot.id) {
+    return {
+      canSend: null,
+      reason: "Không lấy được ID bot",
+    };
+  }
+
+  try {
+    const member = await telegramCall(
+      "getChatMember",
+      {
+        chat_id: chatId,
+        user_id: bot.id,
+      },
+      5000,
+    );
+
+    let canSend = true;
+    let reason = "";
+
+    if (member.status === "left" || member.status === "kicked") {
+      canSend = false;
+      reason = "Bot không còn trong nhóm";
+    } else if (
+      member.status === "restricted" &&
+      member.is_member &&
+      member.can_send_messages === false
+    ) {
+      canSend = false;
+      reason = "Bot bị hạn chế quyền gửi tin nhắn";
+    }
+
+    const result = { canSend, reason };
+
+    muteCache.set(key, {
+      result,
+      expiresAt: now + BOT_MUTE_CACHE_MS,
+    });
+
+    return result;
+  } catch (error) {
+    console.error("[MuteCheck]", error.message);
+
+    return {
+      canSend: null,
+      reason: "Không xác minh được quyền của bot",
+    };
+  }
 }
 
 async function sendChatAction(chatId, action = "typing") {
@@ -477,7 +569,6 @@ async function getTelegramFileBuffer(fileId, forcedMimeType = null) {
     return null;
   }
 }
-
 async function getFileFromMessage(message) {
   if (!message) return null;
 
@@ -488,14 +579,45 @@ async function getFileFromMessage(message) {
     );
   }
 
-  for (const type of [
-    "document",
-    "video",
-    "audio",
-    "voice",
-    "animation",
-    "sticker",
-  ]) {
+  const sticker = message.sticker;
+
+  if (sticker?.file_id) {
+    const raw = await getTelegramRawFile(sticker.file_id);
+    if (!raw) return null;
+
+    if (sticker.is_animated) {
+      const frames = await decodeTGSFrames(raw.buffer);
+
+      return {
+        kind: "frames",
+        frames,
+        fileSize: raw.fileSize,
+        mimeType: "application/x-tgsticker",
+      };
+    }
+
+    if (sticker.is_video) {
+      const frames = await decodeWebMFrames(raw.buffer);
+
+      return {
+        kind: "frames",
+        frames,
+        fileSize: raw.fileSize,
+        mimeType: "video/webm",
+      };
+    }
+
+    return {
+      inlineData: {
+        mimeType: "image/webp",
+        data: raw.buffer.toString("base64"),
+      },
+      fileSize: raw.fileSize,
+      mimeType: "image/webp",
+    };
+  }
+
+  for (const type of ["document", "video", "audio", "voice", "animation"]) {
     const item = message[type];
     if (!item?.file_id) continue;
 
@@ -504,7 +626,6 @@ async function getFileFromMessage(message) {
       audio: "audio/mpeg",
       voice: "audio/ogg",
       animation: "video/mp4",
-      sticker: "image/webp",
     };
 
     return getTelegramFileBuffer(
@@ -514,6 +635,213 @@ async function getFileFromMessage(message) {
   }
 
   return null;
+}
+
+async function decodeTGSFrames(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error("TGS rỗng hoặc không hợp lệ");
+  }
+
+  const decompressed = await gunzipAsync(buffer);
+  const animationJSON = JSON.parse(decompressed.toString("utf8"));
+
+  const { parse, ImageSurface } = await import("lottie.js");
+
+  const animation = parse(animationJSON);
+  const totalFrames = Math.max(1, Math.floor(animation.totalFrames || 1));
+
+  const surface = new ImageSurface(STICKER_FRAME_SIZE, STICKER_FRAME_SIZE);
+
+  const frameIndexes = [
+    0,
+    Math.floor((totalFrames - 1) / 3),
+    Math.floor(((totalFrames - 1) * 2) / 3),
+    totalFrames - 1,
+  ];
+
+  const uniqueFrames = [...new Set(frameIndexes)];
+  const frames = [];
+
+  try {
+    for (const frameIndex of uniqueFrames) {
+      const png = await surface.png(animation, frameIndex);
+
+      frames.push({
+        mimeType: "image/png",
+        data: Buffer.from(png).toString("base64"),
+        frameIndex,
+      });
+    }
+  } finally {
+    surface.dispose?.();
+  }
+
+  return frames;
+}
+
+function runFFmpeg(args, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    if (!ffmpegPath) {
+      return reject(new Error("Không tìm thấy FFmpeg"));
+    }
+
+    const child = spawn(ffmpegPath, args, {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+
+    let stderr = "";
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error("FFmpeg timeout"));
+    }, timeoutMs);
+
+    function finish(error, value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+
+      if (error) reject(error);
+      else resolve(value);
+    }
+
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < 12000) {
+        stderr += chunk.toString();
+      }
+    });
+
+    child.once("error", (error) => finish(error));
+
+    child.once("close", (code) => {
+      if (code === 0) {
+        finish(null, true);
+      } else {
+        finish(new Error(`FFmpeg exit ${code}: ${stderr.slice(-1500)}`));
+      }
+    });
+  });
+}
+
+async function decodeWebMFrames(buffer) {
+  const dir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "chan-sticker-"),
+  );
+
+  const input = path.join(dir, "input.webm");
+  const outputPattern = path.join(dir, "frame-%02d.png");
+
+  try {
+    await fs.promises.writeFile(input, buffer);
+
+    await runFFmpeg([
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-threads",
+      "1",
+      "-i",
+      input,
+      "-vf",
+      "fps=2,scale=256:256:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=256:256:(ow-iw)/2:(oh-ih)/2:color=black@0",
+      "-frames:v",
+      String(STICKER_FRAME_COUNT),
+      "-an",
+      "-y",
+      outputPattern,
+    ]);
+
+    const files = (await fs.promises.readdir(dir))
+      .filter((name) => /^frame-\d+\.png$/.test(name))
+      .sort()
+      .slice(0, STICKER_FRAME_COUNT);
+
+    if (!files.length) {
+      throw new Error("Không trích xuất được khung hình WebM");
+    }
+
+    const frames = [];
+
+    for (const file of files) {
+      const png = await fs.promises.readFile(path.join(dir, file));
+
+      frames.push({
+        mimeType: "image/png",
+        data: png.toString("base64"),
+      });
+    }
+
+    return frames;
+  } finally {
+    await fs.promises
+      .rm(dir, {
+        recursive: true,
+        force: true,
+      })
+      .catch(() => {});
+  }
+}
+
+async function getTelegramRawFile(fileId) {
+  const fileInfo = await telegramCall("getFile", { file_id: fileId }, 7000);
+
+  if (
+    !fileInfo.file_path ||
+    (typeof fileInfo.file_size === "number" &&
+      fileInfo.file_size >= MAX_FILE_SIZE)
+  ) {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(`${TELEGRAM_FILE_URL}/${fileInfo.file_path}`, {
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Download Telegram HTTP ${response.status}`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    if (buffer.length >= MAX_FILE_SIZE) {
+      return null;
+    }
+
+    return {
+      buffer,
+      filePath: fileInfo.file_path,
+      fileSize: buffer.length,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function framesToGeminiParts(frames) {
+  if (!Array.isArray(frames) || frames.length === 0) {
+    return [];
+  }
+
+  return frames
+    .filter(
+      (frame) =>
+        frame &&
+        typeof frame.data === "string" &&
+        frame.data.length > 0 &&
+        typeof frame.mimeType === "string",
+    )
+    .map((frame, index) => ({
+      inlineData: {
+        mimeType: frame.mimeType,
+        data: frame.data,
+      },
+      _frameIndex: frame.frameIndex ?? index,
+    }));
 }
 
 async function sendMultipart(
@@ -1416,20 +1744,52 @@ async function executeTool(
           );
           return { success: true, text: `Đã gửi file ${filename}.` };
         }
-
         if (name === "text_to_speech") {
           const text = String(args.text || "").trim();
-          if (!text)
-            return { success: false, text: "Không có văn bản để đọc." };
 
-          await sendChatAction(chatId, "record_audio");
-          const audio = await googleTranslateTTS(
-            text,
-            String(args.language || "vi"),
-          );
-          await sendVoiceBuffer(chatId, audio, originalMessageId);
+          if (!text) {
+            return {
+              success: false,
+              text: "Không có văn bản để đọc.",
+            };
+          }
 
-          return { success: true, text: "Đã gửi tin nhắn thoại." };
+          try {
+            await sendChatAction(chatId, "record_audio");
+
+            const audio = await withTimeout(
+              googleTranslateTTS(text, String(args.language || "vi")),
+              TTS_TIMEOUT_MS,
+              "Tạo voice",
+            );
+
+            if (!audio || !audio.length) {
+              return {
+                success: false,
+                text: "Không tạo được dữ liệu âm thanh.",
+              };
+            }
+
+            await withTimeout(
+              sendVoiceBuffer(chatId, audio, originalMessageId),
+              TTS_TIMEOUT_MS,
+              "Gửi voice",
+            );
+
+            console.log("[TTS OK] Voice đã gửi thành công.");
+
+            return {
+              success: true,
+              text: "Voice đã được gửi thành công. Không gửi lại voice.",
+            };
+          } catch (error) {
+            console.error("[TTS ERROR]", error.message);
+
+            return {
+              success: false,
+              text: `Tạo hoặc gửi voice thất bại: ${error.message}`,
+            };
+          }
         }
 
         if (name === "get_bot_profile") {
@@ -1442,7 +1802,9 @@ async function executeTool(
           if (!Number.isSafeInteger(requestedId) || requestedId <= 0) {
             return {
               success: false,
-              text: "Không có user_id hợp lệ. Hãy sử dụng thông tin người đang hỏi trong ngữ cảnh hiện tại.",
+              text:
+                "Không có user_id hợp lệ. Hãy sử dụng thông tin người đang hỏi " +
+                "đã có trong ngữ cảnh tin nhắn.",
             };
           }
 
@@ -1457,18 +1819,22 @@ async function executeTool(
               },
               5000,
             );
-          } catch {}
+          } catch (error) {
+            console.error("[User profile]", error.message);
+          }
 
           return {
             user_id: requestedId,
             group_membership: member
               ? {
                   status: member.status,
-                  is_anonymous: member.is_anonymous || false,
+                  is_anonymous: Boolean(member.is_anonymous),
                 }
               : null,
             user: member?.user || null,
-            note: "Chỉ trả về dữ liệu Telegram cho phép bot truy cập. Nếu không tìm thấy, không được tự suy đoán thông tin cá nhân.",
+            note:
+              "Chỉ trả về dữ liệu Telegram cho phép bot truy cập. " +
+              "Không được tự suy đoán thông tin cá nhân.",
           };
         }
 
@@ -1490,6 +1856,14 @@ async function executeTool(
   }
 }
 
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("Yêu cầu đã bị hủy");
+  }
+}
+
 async function generateGeminiWithRotation(
   historyMessages,
   userParts,
@@ -1497,11 +1871,13 @@ async function generateGeminiWithRotation(
   originalMessageId,
   onTextUpdate,
   progress,
+  signal,
 ) {
   let lastError = null;
   const totalAttempts = GEMINI_API_KEYS.length * GEMINI_MODELS.length;
 
   for (let attempt = 0; attempt < totalAttempts; attempt++) {
+    throwIfAborted(signal);
     const modelIndex =
       (currentModelIndex + Math.floor(attempt / GEMINI_API_KEYS.length)) %
       GEMINI_MODELS.length;
@@ -1534,45 +1910,47 @@ async function generateGeminiWithRotation(
       let callCount = 0;
 
       const runModel = async () => {
-        const stream = await withTimeout(
-          client.models.generateContentStream({
-            model: modelName,
-            contents,
-            config: {
-              systemInstruction:
-                `${CUSTOM_PERSONALITY}\n\n` +
-                "Bạn là Chan. Khi người dùng hỏi về lịch sử nhóm, hãy dùng các công cụ lịch sử. " +
-                "Không được khẳng định đã đọc tin nhắn nếu công cụ báo không tìm thấy. " +
-                "Nếu ID không có trong lịch sử đã lưu, hãy giải thích giới hạn của Telegram Bot API.",
-              tools: GEMINI_TOOLS,
-            },
-          }),
-          PROCESS_TIMEOUT_MS,
-          `Gemini ${modelName}`,
-        );
+        throwIfAborted(signal);
+
+        const stream = await client.models.generateContentStream({
+          model: modelName,
+          contents,
+          config: {
+            systemInstruction:
+              `${CUSTOM_PERSONALITY}\n\n` +
+              "Bạn là Chan. Khi người dùng hỏi về lịch sử nhóm, hãy dùng các công cụ lịch sử. " +
+              "Không được khẳng định đã đọc tin nhắn nếu công cụ báo không tìm thấy. " +
+              "Nếu ID không có trong lịch sử đã lưu, hãy giải thích giới hạn của Telegram Bot API.",
+            tools: GEMINI_TOOLS,
+          },
+        });
 
         const calls = [];
         let chunkText = "";
-        
+
         for await (const chunk of stream) {
+          throwIfAborted(signal);
+
           if (chunk.text) {
             chunkText += chunk.text;
             fullText += chunk.text;
             await onTextUpdate(fullText);
           }
-        
+
           const parts = chunk.candidates?.[0]?.content?.parts || [];
-        
+
           for (const part of parts) {
-            if (!part.functionCall) continue;
-        
-            calls.push({
-              ...part.functionCall,
-              _rawPart: part,
-            });
+            if (part.functionCall) {
+              calls.push({
+                ...part.functionCall,
+                _rawPart: part,
+              });
+            }
           }
         }
-        
+
+        throwIfAborted(signal);
+
         return { text: chunkText, calls };
       };
 
@@ -1589,22 +1967,22 @@ async function generateGeminiWithRotation(
           role: "model",
           parts: calls.map((call) => {
             const part = call._rawPart;
-        
+
             if (part) {
               return part;
             }
-        
+
             const functionCall = {
               name: call.name,
               args: call.args || {},
             };
-        
+
             if (call.thoughtSignature) {
               functionCall.thoughtSignature = call.thoughtSignature;
             } else if (call.thought_signature) {
               functionCall.thought_signature = call.thought_signature;
             }
-        
+
             return { functionCall };
           }),
         });
@@ -1701,6 +2079,7 @@ async function processGeminiResponse(
   let lastText = "";
   let finished = false;
 
+  const deadline = createDeadline(PROCESS_TIMEOUT_MS);
   const progress = async () => {};
 
   const updateTelegram = async (text) => {
@@ -1742,16 +2121,23 @@ async function processGeminiResponse(
         originalMessageId,
         updateTelegram,
         progress,
+        deadline.signal,
       ),
       PROCESS_TIMEOUT_MS,
-      "Xử lý",
+      "Xử lý Gemini",
     );
 
-    finished = true;
-
     if (aiResponse && aiResponse.trim()) {
-      history.push({ role: "user", content: promptTextOnly });
-      history.push({ role: "model", content: aiResponse });
+      history.push({
+        role: "user",
+        content: promptTextOnly,
+      });
+
+      history.push({
+        role: "model",
+        content: aiResponse,
+      });
+
       await saveChatMemory(chatId, history);
 
       if (aiResponse !== lastText) {
@@ -1760,23 +2146,22 @@ async function processGeminiResponse(
     } else if (!telegramMessageId) {
       await sendOrUpdateMessage(
         chatId,
-        "Chan đã thực hiện xong nhưng không trả về văn bản.",
+        "Chan đã xử lý xong nhưng không nhận được văn bản trả lời.",
         statusMessageId,
-        null,
+        originalMessageId,
         null,
       );
     }
 
     console.log(`[Chan] Hoàn tất sau ${Date.now() - startedAt}ms`);
   } catch (error) {
-    finished = true;
     console.error("[Chan process]", error.message);
 
     const mention =
       senderHandle && senderHandle !== "Không có" ? `${senderHandle} ` : "";
 
     const message =
-      `${mention} Chan không thể hoàn thành yêu cầu trong giới hạn thời gian hoặc các model đều gặp lỗi.\n` +
+      `${mention}Chan không thể hoàn thành yêu cầu.\n` +
       `Lỗi: ${String(error.message || "Unknown error").slice(0, 350)}`;
 
     await sendOrUpdateMessage(
@@ -1786,6 +2171,9 @@ async function processGeminiResponse(
       statusMessageId ? null : originalMessageId,
       null,
     );
+  } finally {
+    finished = true;
+    deadline.close();
   }
 }
 
@@ -1891,6 +2279,7 @@ async function handleUpdate(update) {
     } catch (error) {
       console.error("[Pre checkout]", error.message);
     }
+
     return;
   }
 
@@ -1910,6 +2299,13 @@ async function handleUpdate(update) {
     }
   }
 
+  const permission = await checkBotCanSend(chatId);
+
+  if (permission.canSend === false) {
+    console.log(`[MuteCheck] Chat ${chatId}: ${permission.reason}`);
+    return;
+  }
+
   if (!uid) return;
 
   if (message.successful_payment) {
@@ -1917,6 +2313,7 @@ async function handleUpdate(update) {
 
     if (payload.startsWith("buy_tokens_100_")) {
       await addTokens(uid, 100);
+
       const balance = await getUserTokens(uid);
 
       await sendOrUpdateMessage(
@@ -1927,6 +2324,7 @@ async function handleUpdate(update) {
         null,
       );
     }
+
     return;
   }
 
@@ -2129,7 +2527,7 @@ async function handleUpdate(update) {
   let acquiredLock;
 
   try {
-    acquiredLock = await redis.set(lockKey, "processing", "NX", "EX", 40);
+    acquiredLock = await redis.set(lockKey, "processing", "NX", "EX", 90);
   } catch (error) {
     console.error("[User lock]", error.message);
     return;
@@ -2179,14 +2577,10 @@ async function handleUpdate(update) {
     }
 
     let groupHistoryContext = "";
-    
+
     if (!isPrivate) {
-      const history = await getHistoryBeforeId(
-        chatId,
-        originalMessageId,
-        20,
-      );
-    
+      const history = await getHistoryBeforeId(chatId, originalMessageId, 20);
+
       if (history.messages.length) {
         groupHistoryContext =
           "\n[LỊCH SỬ HỘI THOẠI NHÓM]\n" +
@@ -2211,8 +2605,26 @@ async function handleUpdate(update) {
     }
 
     if (fileData) {
-      userParts.push({ inlineData: fileData.inlineData });
-      promptTextOnly += `\n[File đính kèm: ${fileData.mimeType}, ${fileData.fileSize} bytes]`;
+      if (fileData.kind === "frames") {
+        userParts.push({
+          text:
+            "Các ảnh tiếp theo là khung hình theo thứ tự thời gian của một sticker động. " +
+            "Hãy phân tích nội dung và sự thay đổi giữa các khung hình, " +
+            "không suy đoán những chi tiết không thể quan sát.",
+        });
+
+        userParts.push(...framesToGeminiParts(fileData.frames));
+
+        promptTextOnly +=
+          `\n[Sticker động: ${fileData.frames.length} khung hình, ` +
+          `${fileData.mimeType}, ${fileData.fileSize} bytes]`;
+      } else if (fileData.inlineData) {
+        userParts.push({ inlineData: fileData.inlineData });
+
+        promptTextOnly +=
+          `\n[File đính kèm: ${fileData.mimeType}, ` +
+          `${fileData.fileSize} bytes]`;
+      }
     }
 
     const replyTargetId = message.from?.is_bot ? null : originalMessageId;
