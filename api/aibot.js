@@ -2345,7 +2345,6 @@ async function handleUpdate(update) {
     }
 
     text +=
-      "\nGói nâng cấp:\n" +
       "100 token = 10 Telegram Stars.\n\n" +
       "Để mua token, hãy thanh toán hóa đơn bên dưới.";
 
@@ -2583,7 +2582,7 @@ async function handleUpdate(update) {
 
       if (history.messages.length) {
         groupHistoryContext =
-          "\n[LỊCH SỬ HỘI THOẠI NHÓM]\n" +
+          "\n[LỊCH SỬ HỘI THOẠI]\n" +
           "Các tin nhắn dưới đây được lấy từ lịch sử đã lưu trong database. " +
           "Sử dụng chúng để hiểu ngữ cảnh, người nói và chuỗi hội thoại. " +
           "Không được khẳng định đã đọc những tin nhắn không xuất hiện trong dữ liệu.\n\n" +
@@ -2609,7 +2608,7 @@ async function handleUpdate(update) {
         userParts.push({
           text:
             "Các ảnh tiếp theo là khung hình theo thứ tự thời gian của một sticker động. " +
-            "Hãy phân tích nội dung và sự thay đổi giữa các khung hình, " +
+            "Hãy xem nội dung và sự thay đổi giữa các khung hình, " +
             "không suy đoán những chi tiết không thể quan sát.",
         });
 
