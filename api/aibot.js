@@ -1,6 +1,7 @@
 const https = require("https");
 const { GoogleGenAI } = require("@google/genai");
 const Redis = require("ioredis");
+const { waitUntil } = require("@vercel/functions");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -333,6 +334,34 @@ async function sendMessageRaw(
 
     throw error;
   }
+}
+
+async function sendStreamingMessage(
+  chatId,
+  text,
+  messageId = null,
+  replyToMessageId = null,
+) {
+  if (!text) return null;
+
+  return sendMessageRaw(
+    chatId,
+    String(text).slice(0, MAX_OUTPUT_CHARS),
+    messageId,
+    replyToMessageId,
+    "Markdown",
+  ).catch(async (error) => {
+    if (/parse entities|can't parse entities/i.test(error.message)) {
+      return sendMessageRaw(
+        chatId,
+        String(text).slice(0, MAX_OUTPUT_CHARS),
+        messageId,
+        replyToMessageId,
+        null,
+      );
+    }
+    throw error;
+  });
 }
 
 async function sendOrUpdateMessage(
@@ -2641,57 +2670,37 @@ async function handleUpdate(update) {
 }
 
 module.exports = async (req, res) => {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+if (req.method !== "POST") {
+return res.status(405).json({ error: "Method not allowed" });
+}
+
+  const update = req.body;
+
+  if (!update) {
+        return res.status(200).json({ ok: true });
   }
 
   try {
-    const update = req.body;
-
-    if (update?.update_id && !(await claimUpdate(update.update_id))) {
-      return res.status(200).json({ ok: true, duplicate: true });
-    }
-
-    if (update) {
-      await withTimeout(
-        handleUpdate(update),
-        PROCESS_TIMEOUT_MS + 2000,
-        "Telegram update",
-      );
-    }
+        if (
+              update.update_id &&
+              !(await claimUpdate(update.update_id))
+        ) {
+              return res.status(200).json({
+                    ok: true,
+                    duplicate: true,
+              });
+        }
   } catch (error) {
-    console.error("[Chan webhook]", error.message);
+        console.error("[Webhook dedupe]", error.message);
+        return res.status(503).json({ ok: false });
   }
 
-  if (!res.headersSent) {
-    return res.status(200).json({ ok: true });
-  }
+  waitUntil(
+        handleUpdate(update).catch((error) => {
+              console.error("[Handle update]", error.message);
+        }),
+  );
+
+  return res.status(200).json({ ok: true });
+
 };
-
-async function sendStreamingMessage(
-  chatId,
-  text,
-  messageId = null,
-  replyToMessageId = null,
-) {
-  if (!text) return null;
-
-  return sendMessageRaw(
-    chatId,
-    String(text).slice(0, MAX_OUTPUT_CHARS),
-    messageId,
-    replyToMessageId,
-    "Markdown",
-  ).catch(async (error) => {
-    if (/parse entities|can't parse entities/i.test(error.message)) {
-      return sendMessageRaw(
-        chatId,
-        String(text).slice(0, MAX_OUTPUT_CHARS),
-        messageId,
-        replyToMessageId,
-        null,
-      );
-    }
-    throw error;
-  });
-}
