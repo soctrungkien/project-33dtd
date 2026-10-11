@@ -1725,7 +1725,7 @@ async function processGeminiResponse(
         progress,
       ),
       PROCESS_TIMEOUT_MS,
-      "Xử lý Gemini",
+      "Xử lý",
     );
 
     finished = true;
