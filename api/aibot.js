@@ -9,13 +9,17 @@ const redis = new Redis(process.env.REDIS_URL, {
 });
 
 const GEMINI_API_KEYS = (process.env.GEMINI_API_KEY_BOT || "")
-  .split(",").map(x => x.trim()).filter(Boolean);
+  .split(",")
+  .map((x) => x.trim())
+  .filter(Boolean);
 
 if (!GEMINI_API_KEYS.length) {
   throw new Error("Chưa cấu hình GEMINI_API_KEY_BOT");
 }
 
-const geminiClients = GEMINI_API_KEYS.map(apiKey => new GoogleGenAI({ apiKey }));
+const geminiClients = GEMINI_API_KEYS.map(
+  (apiKey) => new GoogleGenAI({ apiKey }),
+);
 
 const GEMINI_MODELS = [
   "gemini-3.5-flash-lite",
@@ -32,7 +36,9 @@ const GEMINI_MODELS = [
 ];
 
 const ADMIN_UIDS = (process.env.OWNER_ID || "")
-  .split(",").map(x => x.trim()).filter(Boolean);
+  .split(",")
+  .map((x) => x.trim())
+  .filter(Boolean);
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN_AI;
 if (!TELEGRAM_BOT_TOKEN) {
@@ -44,7 +50,9 @@ const TELEGRAM_FILE_URL = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN
 
 const CUSTOM_PERSONALITY = process.env.BOT_PERSONALITY_AI || "";
 const STICKER_FAVORITE_PACKS = (process.env.STICKER_FAVORITE_PACKS_BOT || "")
-  .split(",").map(x => x.trim()).filter(Boolean);
+  .split(",")
+  .map((x) => x.trim())
+  .filter(Boolean);
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_GENERATED_FILE_SIZE = 10 * 1024 * 1024;
@@ -70,14 +78,17 @@ let cachedBotInfo = null;
 const ramCache = new Map();
 const stickerPackCache = new Map();
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function withTimeout(promise, ms, label = "Operation") {
   let timer;
   return Promise.race([
     promise,
     new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label} timeout sau ${ms}ms`)), ms);
+      timer = setTimeout(
+        () => reject(new Error(`${label} timeout sau ${ms}ms`)),
+        ms,
+      );
     }),
   ]).finally(() => clearTimeout(timer));
 }
@@ -145,7 +156,8 @@ async function getGroupAdminsList(chatId) {
 
     for (const member of members) {
       const user = member.user || {};
-      const name = [user.first_name, user.last_name].filter(Boolean).join(" ") || "N/A";
+      const name =
+        [user.first_name, user.last_name].filter(Boolean).join(" ") || "N/A";
       const username = user.username ? `@${user.username}` : "Không có";
       const info = `${name} (${username} | ID: ${user.id})`;
 
@@ -208,17 +220,26 @@ async function sendMessageRaw(
   } catch (error) {
     if (
       parseMode &&
-      /parse entities|can't parse entities|unsupported start tag/i.test(error.message)
+      /parse entities|can't parse entities|unsupported start tag/i.test(
+        error.message,
+      )
     ) {
       return sendMessageRaw(
-        chatId, text, messageId, replyToMessageId, null, replyMarkup,
+        chatId,
+        text,
+        messageId,
+        replyToMessageId,
+        null,
+        replyMarkup,
       );
     }
 
     if (
       replyToMessageId &&
       !messageId &&
-      /message to be replied not found|replied message not found|reply/i.test(error.message)
+      /message to be replied not found|replied message not found|reply/i.test(
+        error.message,
+      )
     ) {
       return sendMessageRaw(chatId, text, null, null, parseMode, replyMarkup);
     }
@@ -298,7 +319,12 @@ async function searchDuckDuckGo(query) {
       ...html.matchAll(/class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/gi),
     ]
       .slice(0, 5)
-      .map(match => match[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+      .map((match) =>
+        match[1]
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim(),
+      )
       .filter(Boolean);
 
     if (!snippets.length) {
@@ -316,14 +342,18 @@ async function searchDuckDuckGo(query) {
 async function getWeather(location) {
   try {
     const response = await withTimeout(
-      fetch(`https://wttr.in/${encodeURIComponent(location)}?format=j1&lang=vi`, {
-        headers: { "User-Agent": "curl/7.68.0" },
-      }),
+      fetch(
+        `https://wttr.in/${encodeURIComponent(location)}?format=j1&lang=vi`,
+        {
+          headers: { "User-Agent": "curl/7.68.0" },
+        },
+      ),
       TOOL_TIMEOUT_MS,
       "Weather",
     );
 
-    if (!response.ok) return `Dịch vụ thời tiết trả về HTTP ${response.status}.`;
+    if (!response.ok)
+      return `Dịch vụ thời tiết trả về HTTP ${response.status}.`;
 
     const data = await response.json();
     const current = data.current_condition?.[0];
@@ -331,7 +361,10 @@ async function getWeather(location) {
 
     if (!current) return "Không đọc được dữ liệu thời tiết.";
 
-    const desc = current.lang_vi?.[0]?.value || current.weatherDesc?.[0]?.value || "Không rõ";
+    const desc =
+      current.lang_vi?.[0]?.value ||
+      current.weatherDesc?.[0]?.value ||
+      "Không rõ";
 
     return `Thời tiết tại ${area}: ${desc}, ${current.temp_C}°C, cảm giác ${current.FeelsLikeC}°C, độ ẩm ${current.humidity}%, gió ${current.windspeedKmph} km/h.`;
   } catch (error) {
@@ -350,11 +383,11 @@ async function getStickerPack(packName) {
     );
 
     const stickers = (result.stickers || [])
-      .map(sticker => ({
+      .map((sticker) => ({
         file_id: sticker.file_id,
         emoji: sticker.emoji || "",
       }))
-      .filter(sticker => sticker.file_id);
+      .filter((sticker) => sticker.file_id);
 
     stickerPackCache.set(packName, stickers);
     return stickers;
@@ -412,7 +445,8 @@ async function getTelegramFileBuffer(fileId, forcedMimeType = null) {
 
     if (
       !fileInfo.file_path ||
-      (typeof fileInfo.file_size === "number" && fileInfo.file_size >= MAX_FILE_SIZE)
+      (typeof fileInfo.file_size === "number" &&
+        fileInfo.file_size >= MAX_FILE_SIZE)
     ) {
       return null;
     }
@@ -429,17 +463,19 @@ async function getTelegramFileBuffer(fileId, forcedMimeType = null) {
     if (arrayBuffer.byteLength >= MAX_FILE_SIZE) return null;
 
     const extension = fileInfo.file_path.includes(".")
-      ? fileInfo.file_path.slice(fileInfo.file_path.lastIndexOf(".")).toLowerCase()
+      ? fileInfo.file_path
+          .slice(fileInfo.file_path.lastIndexOf("."))
+          .toLowerCase()
       : "";
 
     return {
       inlineData: {
         data: Buffer.from(arrayBuffer).toString("base64"),
-        mimeType: forcedMimeType || await getMimeType(extension),
+        mimeType: forcedMimeType || (await getMimeType(extension)),
       },
       fileSize: arrayBuffer.byteLength,
       filePath: fileInfo.file_path,
-      mimeType: forcedMimeType || await getMimeType(extension),
+      mimeType: forcedMimeType || (await getMimeType(extension)),
     };
   } catch (error) {
     console.error("[Telegram file]", error.message);
@@ -451,10 +487,20 @@ async function getFileFromMessage(message) {
   if (!message) return null;
 
   if (message.photo?.length) {
-    return getTelegramFileBuffer(message.photo[message.photo.length - 1].file_id, "image/jpeg");
+    return getTelegramFileBuffer(
+      message.photo[message.photo.length - 1].file_id,
+      "image/jpeg",
+    );
   }
 
-  for (const type of ["document", "video", "audio", "voice", "animation", "sticker"]) {
+  for (const type of [
+    "document",
+    "video",
+    "audio",
+    "voice",
+    "animation",
+    "sticker",
+  ]) {
     const item = message[type];
     if (!item?.file_id) continue;
 
@@ -466,55 +512,77 @@ async function getFileFromMessage(message) {
       sticker: "image/webp",
     };
 
-    return getTelegramFileBuffer(item.file_id, item.mime_type || defaults[type] || null);
+    return getTelegramFileBuffer(
+      item.file_id,
+      item.mime_type || defaults[type] || null,
+    );
   }
 
   return null;
 }
 
-async function sendMultipart(method, chatId, buffer, filename, contentType, replyToMessageId = null, caption = "") {
+async function sendMultipart(
+  method,
+  chatId,
+  buffer,
+  filename,
+  contentType,
+  replyToMessageId = null,
+  caption = "",
+) {
   const boundary = `----ChanBoundary${Date.now()}${Math.random().toString(16).slice(2)}`;
   const parts = [];
 
   const field = (name, value) => {
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
-    ));
+    parts.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+      ),
+    );
   };
 
   field("chat_id", chatId);
   if (replyToMessageId) field("reply_to_message_id", replyToMessageId);
   if (caption) field("caption", caption);
 
-  parts.push(Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="${method === "sendVoice" ? "voice" : "document"}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`,
-  ));
+  parts.push(
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${method === "sendVoice" ? "voice" : "document"}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`,
+    ),
+  );
   parts.push(buffer);
   parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
   const body = Buffer.concat(parts);
 
   return new Promise((resolve, reject) => {
-    const req = https.request(`${TELEGRAM_API_URL}/${method}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        "Content-Length": body.length,
+    const req = https.request(
+      `${TELEGRAM_API_URL}/${method}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": body.length,
+        },
+        timeout: 10000,
       },
-      timeout: 10000,
-    }, response => {
-      let raw = "";
-      response.on("data", chunk => raw += chunk);
-      response.on("end", () => {
-        try {
-          const data = JSON.parse(raw);
-          if (!data.ok) return reject(new Error(data.description || "Telegram upload failed"));
-          resolve(data.result);
-        } catch (error) {
-          reject(error);
-        }
-      });
-    });
+      (response) => {
+        let raw = "";
+        response.on("data", (chunk) => (raw += chunk));
+        response.on("end", () => {
+          try {
+            const data = JSON.parse(raw);
+            if (!data.ok)
+              return reject(
+                new Error(data.description || "Telegram upload failed"),
+              );
+            resolve(data.result);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
 
     req.on("timeout", () => req.destroy(new Error("Upload timeout")));
     req.on("error", reject);
@@ -522,7 +590,13 @@ async function sendMultipart(method, chatId, buffer, filename, contentType, repl
   });
 }
 
-async function sendDocumentBuffer(chatId, buffer, filename, caption = "", replyToMessageId = null) {
+async function sendDocumentBuffer(
+  chatId,
+  buffer,
+  filename,
+  caption = "",
+  replyToMessageId = null,
+) {
   return sendMultipart(
     "sendDocument",
     chatId,
@@ -542,8 +616,8 @@ async function googleTranslateTTS(text, language = "vi") {
     const response = await withTimeout(
       fetch(
         "https://translate.google.com/translate_tts" +
-        `?ie=UTF-8&client=tw-ob&tl=${encodeURIComponent(language)}` +
-        `&q=${encodeURIComponent(chunk)}`,
+          `?ie=UTF-8&client=tw-ob&tl=${encodeURIComponent(language)}` +
+          `&q=${encodeURIComponent(chunk)}`,
       ),
       TOOL_TIMEOUT_MS,
       "Google TTS",
@@ -581,7 +655,8 @@ function getMessageText(message) {
 
   if (message.photo) return "[Ảnh]";
   if (message.video) return "[Video]";
-  if (message.document) return `[File: ${message.document.file_name || "document"}]`;
+  if (message.document)
+    return `[File: ${message.document.file_name || "document"}]`;
   if (message.voice) return "[Tin nhắn thoại]";
   if (message.audio) return "[Âm thanh]";
   if (message.sticker) return `[Sticker ${message.sticker.emoji || ""}]`;
@@ -599,14 +674,16 @@ function normalizeStoredMessage(message) {
     chatId: String(message.chat?.id ?? ""),
     date: Number(message.date || Math.floor(Date.now() / 1000)),
     userId: from.id ? String(from.id) : "",
-    name: [from.first_name, from.last_name].filter(Boolean).join(" ") || "Không rõ",
+    name:
+      [from.first_name, from.last_name].filter(Boolean).join(" ") || "Không rõ",
     username: from.username || "",
     isBot: Boolean(from.is_bot),
     text: getMessageText(message).slice(0, MAX_HISTORY_TEXT),
+    languageCode: from.language_code || "",
     replyToId: message.reply_to_message?.message_id
       ? Number(message.reply_to_message.message_id)
       : null,
-    entities: (message.entities || []).slice(0, 20).map(entity => ({
+    entities: (message.entities || []).slice(0, 20).map((entity) => ({
       type: entity.type,
       offset: entity.offset,
       length: entity.length,
@@ -636,7 +713,11 @@ async function storeHistoryMessage(chatId, message) {
     const excess = await redis.zcard(historyIndexKey(chatId));
     if (excess > MAX_HISTORY_MESSAGES) {
       const removeCount = excess - MAX_HISTORY_MESSAGES;
-      const oldIds = await redis.zrange(historyIndexKey(chatId), 0, removeCount - 1);
+      const oldIds = await redis.zrange(
+        historyIndexKey(chatId),
+        0,
+        removeCount - 1,
+      );
 
       if (oldIds.length) {
         const pipeline = redis.pipeline();
@@ -741,9 +822,13 @@ async function getHistoryAroundId(chatId, messageId, count = 10) {
       const rows = await pipeline.exec();
 
       after = (rows || [])
-        .filter(row => row && !row[0] && row[1])
-        .map(row => {
-          try { return JSON.parse(row[1]); } catch { return null; }
+        .filter((row) => row && !row[0] && row[1])
+        .map((row) => {
+          try {
+            return JSON.parse(row[1]);
+          } catch {
+            return null;
+          }
         })
         .filter(Boolean);
     }
@@ -767,7 +852,12 @@ async function traceReplyChain(chatId, messageId, maxDepth = MAX_REPLY_CHAIN) {
   const seen = new Set();
 
   for (let i = 0; i < Math.min(maxDepth, MAX_REPLY_CHAIN); i++) {
-    if (!Number.isSafeInteger(currentId) || currentId <= 0 || seen.has(currentId)) break;
+    if (
+      !Number.isSafeInteger(currentId) ||
+      currentId <= 0 ||
+      seen.has(currentId)
+    )
+      break;
 
     seen.add(currentId);
     const item = await getStoredMessage(chatId, currentId);
@@ -813,9 +903,9 @@ async function getChatMemory(chatId) {
 
 async function saveChatMemory(chatId, messages) {
   const safe = messages
-    .filter(item => item && (item.role === "user" || item.role === "model"))
+    .filter((item) => item && (item.role === "user" || item.role === "model"))
     .slice(-MAX_MESSAGES)
-    .map(item => ({
+    .map((item) => ({
       role: item.role,
       content: String(item.content || "").slice(0, MAX_HISTORY_TEXT * 2),
     }));
@@ -852,6 +942,34 @@ async function checkRateLimit(userId) {
   }
 }
 
+async function getBotProfile() {
+  const result = await telegramCall("getMe", {}, 5000);
+
+  let description = "";
+  let shortDescription = "";
+
+  try {
+    const data = await telegramCall("getMyDescription", {}, 5000);
+    description = data.description || "";
+  } catch {}
+
+  try {
+    const data = await telegramCall("getMyShortDescription", {}, 5000);
+    shortDescription = data.short_description || "";
+  } catch {}
+
+  return {
+    id: result.id,
+    is_bot: result.is_bot,
+    first_name: result.first_name,
+    last_name: result.last_name || "",
+    username: result.username || "",
+    language_code: result.language_code || "",
+    description,
+    short_description: shortDescription,
+  };
+}
+
 async function getUserTokens(userId) {
   const tokenKey = `user:${userId}:tokens`;
   const resetKey = `user:${userId}:reset_at`;
@@ -862,7 +980,12 @@ async function getUserTokens(userId) {
 
     if (tokenText === null) {
       await redis.set(tokenKey, DEFAULT_FREE_TOKENS);
-      await redis.set(resetKey, now + RESET_DURATION_MS, "EX", 12 * 60 * 60 + 3600);
+      await redis.set(
+        resetKey,
+        now + RESET_DURATION_MS,
+        "EX",
+        12 * 60 * 60 + 3600,
+      );
       return DEFAULT_FREE_TOKENS;
     }
 
@@ -872,7 +995,12 @@ async function getUserTokens(userId) {
     if (resetText && now >= Number(resetText)) {
       tokens = DEFAULT_FREE_TOKENS;
       await redis.set(tokenKey, tokens);
-      await redis.set(resetKey, now + RESET_DURATION_MS, "EX", 12 * 60 * 60 + 3600);
+      await redis.set(
+        resetKey,
+        now + RESET_DURATION_MS,
+        "EX",
+        12 * 60 * 60 + 3600,
+      );
     }
 
     return Math.max(0, tokens);
@@ -950,7 +1078,8 @@ function shouldRespondInGroup(message, text, botUsername) {
   const lower = String(text || "").toLowerCase();
 
   if (botUsername && lower.includes(`@${botUsername}`)) return true;
-  if (message.reply_to_message?.from?.username?.toLowerCase() === botUsername) return true;
+  if (message.reply_to_message?.from?.username?.toLowerCase() === botUsername)
+    return true;
   if (/\bchan\b/i.test(lower)) return true;
 
   return Math.random() < AUTO_RESPONSE_CHANCE;
@@ -975,132 +1104,161 @@ function buildGeminiHistory(messages) {
   return output;
 }
 
-const GEMINI_TOOLS = [{
-  functionDeclarations: [
-    {
-      name: "web_search",
-      description: "Tìm kiếm thông tin trên internet.",
-      parameters: {
-        type: "OBJECT",
-        properties: { query: { type: "STRING" } },
-        required: ["query"],
-      },
-    },
-    {
-      name: "get_weather",
-      description: "Lấy thời tiết hiện tại.",
-      parameters: {
-        type: "OBJECT",
-        properties: { location: { type: "STRING" } },
-        required: ["location"],
-      },
-    },
-    {
-      name: "react_message",
-      description: "Thả reaction vào tin nhắn người dùng đang hỏi.",
-      parameters: {
-        type: "OBJECT",
-        properties: { emoji: { type: "STRING" } },
-        required: ["emoji"],
-      },
-    },
-    {
-      name: "send_sticker",
-      description: "Gửi sticker bằng Telegram file_id.",
-      parameters: {
-        type: "OBJECT",
-        properties: { file_id: { type: "STRING" } },
-        required: ["file_id"],
-      },
-    },
-    {
-      name: "send_favorite_sticker",
-      description: "Chọn sticker từ pack yêu thích và gửi.",
-      parameters: {
-        type: "OBJECT",
-        properties: { reason: { type: "STRING" } },
-        required: ["reason"],
-      },
-    },
-    {
-      name: "mute_user",
-      description: "Mute một thành viên trong 36 đến 67 giây.",
-      parameters: {
-        type: "OBJECT",
-        properties: {
-          user_id: { type: "NUMBER" },
-          duration_seconds: { type: "NUMBER" },
-          reason: { type: "STRING" },
+const GEMINI_TOOLS = [
+  {
+    functionDeclarations: [
+      {
+        name: "web_search",
+        description: "Tìm kiếm thông tin trên internet.",
+        parameters: {
+          type: "OBJECT",
+          properties: { query: { type: "STRING" } },
+          required: ["query"],
         },
-        required: ["user_id", "duration_seconds"],
       },
-    },
-    {
-      name: "create_file",
-      description: "Tạo file văn bản và gửi qua Telegram.",
-      parameters: {
-        type: "OBJECT",
-        properties: {
-          filename: { type: "STRING" },
-          content: { type: "STRING" },
+      {
+        name: "get_weather",
+        description: "Lấy thời tiết hiện tại.",
+        parameters: {
+          type: "OBJECT",
+          properties: { location: { type: "STRING" } },
+          required: ["location"],
         },
-        required: ["filename", "content"],
       },
-    },
-    {
-      name: "text_to_speech",
-      description: "Chuyển văn bản thành giọng nói và gửi voice note.",
-      parameters: {
-        type: "OBJECT",
-        properties: {
-          text: { type: "STRING" },
-          language: { type: "STRING" },
+      {
+        name: "react_message",
+        description: "Thả reaction vào tin nhắn người dùng đang hỏi.",
+        parameters: {
+          type: "OBJECT",
+          properties: { emoji: { type: "STRING" } },
+          required: ["emoji"],
         },
-        required: ["text"],
       },
-    },
-    {
-      name: "get_message_by_id",
-      description: "Tìm nội dung một tin nhắn đã được lưu bằng ID trong nhóm hiện tại.",
-      parameters: {
-        type: "OBJECT",
-        properties: { message_id: { type: "NUMBER" } },
-        required: ["message_id"],
-      },
-    },
-    {
-      name: "scan_group_history",
-      description: "Quét ngược lịch sử nhóm từ trước một message ID đã lưu.",
-      parameters: {
-        type: "OBJECT",
-        properties: {
-          before_message_id: { type: "NUMBER" },
-          count: { type: "NUMBER" },
+      {
+        name: "send_sticker",
+        description: "Gửi sticker bằng Telegram file_id.",
+        parameters: {
+          type: "OBJECT",
+          properties: { file_id: { type: "STRING" } },
+          required: ["file_id"],
         },
-        required: ["before_message_id"],
       },
-    },
-    {
-      name: "trace_reply_chain",
-      description: "Truy ngược chuỗi reply từ message ID về tin gốc.",
-      parameters: {
-        type: "OBJECT",
-        properties: {
-          message_id: { type: "NUMBER" },
-          max_depth: { type: "NUMBER" },
+      {
+        name: "send_favorite_sticker",
+        description: "Chọn sticker từ pack yêu thích và gửi.",
+        parameters: {
+          type: "OBJECT",
+          properties: { reason: { type: "STRING" } },
+          required: ["reason"],
         },
-        required: ["message_id"],
       },
-    },
-  ],
-}];
+      {
+        name: "mute_user",
+        description: "Mute một thành viên trong 36 đến 67 giây.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            user_id: { type: "NUMBER" },
+            duration_seconds: { type: "NUMBER" },
+            reason: { type: "STRING" },
+          },
+          required: ["user_id", "duration_seconds"],
+        },
+      },
+      {
+        name: "create_file",
+        description: "Tạo file văn bản và gửi qua Telegram.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            filename: { type: "STRING" },
+            content: { type: "STRING" },
+          },
+          required: ["filename", "content"],
+        },
+      },
+      {
+        name: "text_to_speech",
+        description: "Chuyển văn bản thành giọng nói và gửi voice note.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            text: { type: "STRING" },
+            language: { type: "STRING" },
+          },
+          required: ["text"],
+        },
+      },
+      {
+        name: "get_message_by_id",
+        description:
+          "Tìm nội dung một tin nhắn đã được lưu bằng ID trong nhóm hiện tại.",
+        parameters: {
+          type: "OBJECT",
+          properties: { message_id: { type: "NUMBER" } },
+          required: ["message_id"],
+        },
+      },
+      {
+        name: "scan_group_history",
+        description: "Quét ngược lịch sử nhóm từ trước một message ID đã lưu.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            before_message_id: { type: "NUMBER" },
+            count: { type: "NUMBER" },
+          },
+          required: ["before_message_id"],
+        },
+      },
+      {
+        name: "trace_reply_chain",
+        description: "Truy ngược chuỗi reply từ message ID về tin gốc.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            message_id: { type: "NUMBER" },
+            max_depth: { type: "NUMBER" },
+          },
+          required: ["message_id"],
+        },
+      },
+      {
+        name: "get_bot_profile",
+        description:
+          "Lấy hồ sơ tài khoản Telegram của chính bot Chan, bao gồm ID, tên, username, trạng thái bot và mô tả hồ sơ nếu Telegram cho phép truy cập.",
+        parameters: {
+          type: "OBJECT",
+          properties: {},
+        },
+      },
+      {
+        name: "get_user_profile",
+        description:
+          "Lấy thông tin Telegram của người dùng. Ưu tiên người đang hỏi nếu không cung cấp user_id. Có thể lấy ID, tên, username, ngôn ngữ và trạng thái bot từ dữ liệu tin nhắn đã nhận. Có thể kiểm tra tư cách thành viên trong nhóm hiện tại khi Telegram cho phép.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            user_id: {
+              type: "NUMBER",
+              description:
+                "ID Telegram cần tra cứu. Bỏ trống để lấy thông tin người đang hỏi.",
+            },
+          },
+        },
+      },
+    ],
+  },
+];
 
 function isQuotaZeroError(error) {
   const message = String(error?.message || "").toLowerCase();
-  return error?.status === 429 &&
+  return (
+    error?.status === 429 &&
     (message.includes("limit: 0") ||
-     message.includes("freetier") ||
-     message.includes("free_tier"));
+      message.includes("freetier") ||
+      message.includes("free_tier"))
+  );
 }
 
 function isRetryableError(error) {
@@ -1131,129 +1289,209 @@ async function executeTool(
   const name = String(call?.name || "");
   const args = call?.args || {};
 
-  await progress(`Đang thực hiện công cụ: ${name}...`);
-
   try {
-    const response = await withTimeout((async () => {
-      if (name === "web_search") {
-        return { text: await searchDuckDuckGo(String(args.query || "").trim()) };
-      }
-
-      if (name === "get_weather") {
-        return { text: await getWeather(String(args.location || "").trim()) };
-      }
-
-      if (name === "get_message_by_id") {
-        const item = await getStoredMessage(chatId, args.message_id);
-
-        return {
-          found: Boolean(item),
-          message: item ? formatHistoryItem(item) : "Không tìm thấy ID trong lịch sử đã lưu.",
-          note: "Bot API không thể tải tin nhắn bất kỳ chỉ bằng ID. Kết quả chỉ dựa trên lịch sử đã lưu.",
-        };
-      }
-
-      if (name === "scan_group_history") {
-        const count = Math.max(1, Math.min(Number(args.count) || 20, 60));
-        const result = await getHistoryBeforeId(chatId, args.before_message_id, count);
-
-        return {
-          scanned: result.scanned,
-          messages: result.messages.map(formatHistoryItem),
-          note: "Chỉ quét các tin nhắn đã được bot lưu.",
-        };
-      }
-
-      if (name === "trace_reply_chain") {
-        const chain = await traceReplyChain(
-          chatId,
-          args.message_id,
-          Math.max(1, Math.min(Number(args.max_depth) || MAX_REPLY_CHAIN, MAX_REPLY_CHAIN)),
-        );
-
-        return {
-          chain: chain.map(formatHistoryItem),
-          note: "Chuỗi chỉ có thể truy tiếp khi tin nhắn đã được lưu và có replyToId.",
-        };
-      }
-
-      if (name === "react_message") {
-        if (!originalMessageId) return { success: false, text: "Không có ID tin nhắn để thả reaction." };
-        const emoji = String(args.emoji || "👍");
-        await setMessageReaction(chatId, originalMessageId, emoji);
-        return { success: true, text: `Đã thả reaction ${emoji}.` };
-      }
-
-      if (name === "send_sticker") {
-        const fileId = String(args.file_id || "").trim();
-        if (!fileId) return { success: false, text: "Thiếu file_id." };
-        await sendSticker(chatId, fileId, originalMessageId);
-        return { success: true, text: "Đã gửi sticker." };
-      }
-
-      if (name === "send_favorite_sticker") {
-        const stickers = await getFavoriteStickers();
-        if (!stickers.length) return { success: false, text: "Không có sticker pack yêu thích." };
-
-        const chosen = stickers[Math.floor(Math.random() * stickers.length)];
-        await sendSticker(chatId, chosen.file_id, originalMessageId);
-
-        return { success: true, text: `Đã gửi sticker từ pack ${chosen.pack}.` };
-      }
-
-      if (name === "mute_user") {
-        const userId = Number(args.user_id);
-        if (!Number.isSafeInteger(userId) || userId <= 0) {
-          return { success: false, text: "ID người dùng không hợp lệ." };
+    const response = await withTimeout(
+      (async () => {
+        if (name === "web_search") {
+          return {
+            text: await searchDuckDuckGo(String(args.query || "").trim()),
+          };
         }
 
-        const duration = await muteUser(
-          chatId,
-          userId,
-          Number(args.duration_seconds) || 36,
-        );
-
-        return { success: true, text: `Đã mute ${userId} trong ${duration} giây.` };
-      }
-
-      if (name === "create_file") {
-        const content = String(args.content || "");
-        if (!content) return { success: false, text: "Nội dung file trống." };
-
-        const buffer = Buffer.from(content, "utf8");
-        if (buffer.length > MAX_GENERATED_FILE_SIZE) {
-          return { success: false, text: "File vượt giới hạn 10 MB." };
+        if (name === "get_weather") {
+          return { text: await getWeather(String(args.location || "").trim()) };
         }
 
-        const filename = String(args.filename || "output.txt")
-          .replace(/[\/\\:*?"<>|]/g, "_")
-          .slice(0, 150) || "output.txt";
+        if (name === "get_message_by_id") {
+          const item = await getStoredMessage(chatId, args.message_id);
 
-        await sendDocumentBuffer(chatId, buffer, filename, "", originalMessageId);
-        return { success: true, text: `Đã gửi file ${filename}.` };
-      }
+          return {
+            found: Boolean(item),
+            message: item
+              ? formatHistoryItem(item)
+              : "Không tìm thấy ID trong lịch sử đã lưu.",
+            note: "Bot API không thể tải tin nhắn bất kỳ chỉ bằng ID. Kết quả chỉ dựa trên lịch sử đã lưu.",
+          };
+        }
 
-      if (name === "text_to_speech") {
-        const text = String(args.text || "").trim();
-        if (!text) return { success: false, text: "Không có văn bản để đọc." };
+        if (name === "scan_group_history") {
+          const count = Math.max(1, Math.min(Number(args.count) || 20, 60));
+          const result = await getHistoryBeforeId(
+            chatId,
+            args.before_message_id,
+            count,
+          );
 
-        await sendChatAction(chatId, "record_audio");
-        const audio = await googleTranslateTTS(text, String(args.language || "vi"));
-        await sendVoiceBuffer(chatId, audio, originalMessageId);
+          return {
+            scanned: result.scanned,
+            messages: result.messages.map(formatHistoryItem),
+            note: "Chỉ quét các tin nhắn đã được bot lưu.",
+          };
+        }
 
-        return { success: true, text: "Đã gửi tin nhắn thoại." };
-      }
+        if (name === "trace_reply_chain") {
+          const chain = await traceReplyChain(
+            chatId,
+            args.message_id,
+            Math.max(
+              1,
+              Math.min(
+                Number(args.max_depth) || MAX_REPLY_CHAIN,
+                MAX_REPLY_CHAIN,
+              ),
+            ),
+          );
 
-      return { success: false, text: `Không tồn tại công cụ ${name}.` };
-    })(), TOOL_TIMEOUT_MS, `Tool ${name}`);
-    
+          return {
+            chain: chain.map(formatHistoryItem),
+            note: "Chuỗi chỉ có thể truy tiếp khi tin nhắn đã được lưu và có replyToId.",
+          };
+        }
+
+        if (name === "react_message") {
+          if (!originalMessageId)
+            return {
+              success: false,
+              text: "Không có ID tin nhắn để thả reaction.",
+            };
+          const emoji = String(args.emoji || "👍");
+          await setMessageReaction(chatId, originalMessageId, emoji);
+          return { success: true, text: `Đã thả reaction ${emoji}.` };
+        }
+
+        if (name === "send_sticker") {
+          const fileId = String(args.file_id || "").trim();
+          if (!fileId) return { success: false, text: "Thiếu file_id." };
+          await sendSticker(chatId, fileId, originalMessageId);
+          return { success: true, text: "Đã gửi sticker." };
+        }
+
+        if (name === "send_favorite_sticker") {
+          const stickers = await getFavoriteStickers();
+          if (!stickers.length)
+            return { success: false, text: "Không có sticker pack yêu thích." };
+
+          const chosen = stickers[Math.floor(Math.random() * stickers.length)];
+          await sendSticker(chatId, chosen.file_id, originalMessageId);
+
+          return {
+            success: true,
+            text: `Đã gửi sticker từ pack ${chosen.pack}.`,
+          };
+        }
+
+        if (name === "mute_user") {
+          const userId = Number(args.user_id);
+          if (!Number.isSafeInteger(userId) || userId <= 0) {
+            return { success: false, text: "ID người dùng không hợp lệ." };
+          }
+
+          const duration = await muteUser(
+            chatId,
+            userId,
+            Number(args.duration_seconds) || 36,
+          );
+
+          return {
+            success: true,
+            text: `Đã mute ${userId} trong ${duration} giây.`,
+          };
+        }
+
+        if (name === "create_file") {
+          const content = String(args.content || "");
+          if (!content) return { success: false, text: "Nội dung file trống." };
+
+          const buffer = Buffer.from(content, "utf8");
+          if (buffer.length > MAX_GENERATED_FILE_SIZE) {
+            return { success: false, text: "File vượt giới hạn 10 MB." };
+          }
+
+          const filename =
+            String(args.filename || "output.txt")
+              .replace(/[\/\\:*?"<>|]/g, "_")
+              .slice(0, 150) || "output.txt";
+
+          await sendDocumentBuffer(
+            chatId,
+            buffer,
+            filename,
+            "",
+            originalMessageId,
+          );
+          return { success: true, text: `Đã gửi file ${filename}.` };
+        }
+
+        if (name === "text_to_speech") {
+          const text = String(args.text || "").trim();
+          if (!text)
+            return { success: false, text: "Không có văn bản để đọc." };
+
+          await sendChatAction(chatId, "record_audio");
+          const audio = await googleTranslateTTS(
+            text,
+            String(args.language || "vi"),
+          );
+          await sendVoiceBuffer(chatId, audio, originalMessageId);
+
+          return { success: true, text: "Đã gửi tin nhắn thoại." };
+        }
+
+        if (name === "get_bot_profile") {
+          return await getBotProfile();
+        }
+
+        if (name === "get_user_profile") {
+          const requestedId = Number(args.user_id);
+
+          if (!Number.isSafeInteger(requestedId) || requestedId <= 0) {
+            return {
+              success: false,
+              text: "Không có user_id hợp lệ. Hãy sử dụng thông tin người đang hỏi trong ngữ cảnh hiện tại.",
+            };
+          }
+
+          let member = null;
+
+          try {
+            member = await telegramCall(
+              "getChatMember",
+              {
+                chat_id: chatId,
+                user_id: requestedId,
+              },
+              5000,
+            );
+          } catch {}
+
+          return {
+            user_id: requestedId,
+            group_membership: member
+              ? {
+                  status: member.status,
+                  is_anonymous: member.is_anonymous || false,
+                }
+              : null,
+            user: member?.user || null,
+            note: "Chỉ trả về dữ liệu Telegram cho phép bot truy cập. Nếu không tìm thấy, không được tự suy đoán thông tin cá nhân.",
+          };
+        }
+
+        return { success: false, text: `Không tồn tại công cụ ${name}.` };
+      })(),
+      TOOL_TIMEOUT_MS,
+      `Tool ${name}`,
+    );
+
     console.log(`[Tool OK] ${name}`);
-    await progress(`Đã hoàn thành: ${name}.`);
     return response;
   } catch (error) {
     console.error(`[Tool ERROR] ${name}:`, error.message);
-    await progress(`Công cụ ${name} gặp lỗi.`);
-    return { success: false, error: error.message, text: `Công cụ ${name} lỗi: ${error.message}` };
+    return {
+      success: false,
+      error: error.message,
+      text: `Công cụ ${name} lỗi: ${error.message}`,
+    };
   }
 }
 
@@ -1273,8 +1511,7 @@ async function generateGeminiWithRotation(
       (currentModelIndex + Math.floor(attempt / GEMINI_API_KEYS.length)) %
       GEMINI_MODELS.length;
 
-    const apiKeyIndex =
-      (currentApiKeyIndex + attempt) % GEMINI_API_KEYS.length;
+    const apiKeyIndex = (currentApiKeyIndex + attempt) % GEMINI_API_KEYS.length;
 
     const modelName = GEMINI_MODELS[modelIndex];
     const client = geminiClients[apiKeyIndex];
@@ -1282,18 +1519,20 @@ async function generateGeminiWithRotation(
     let sideEffectToolExecuted = false;
 
     try {
-      console.log(`[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | Model ${modelName}`);
-      await progress(`Đang gọi ${modelName} (key ${apiKeyIndex + 1})...`);
+      console.log(
+        `[Gemini] Key ${apiKeyIndex + 1}/${GEMINI_API_KEYS.length} | Model ${modelName}`,
+      );
 
-      const history = buildGeminiHistory(historyMessages).slice(-MAX_CONTEXT_HISTORY);
-      const contents = history.map(item => ({
+      const history =
+        buildGeminiHistory(historyMessages).slice(-MAX_CONTEXT_HISTORY);
+      const contents = history.map((item) => ({
         role: item.role,
-        parts: item.parts.map(part => ({ ...part })),
+        parts: item.parts.map((part) => ({ ...part })),
       }));
 
       contents.push({
         role: "user",
-        parts: userParts.map(part => ({ ...part })),
+        parts: userParts.map((part) => ({ ...part })),
       });
 
       let fullText = "";
@@ -1346,7 +1585,7 @@ async function generateGeminiWithRotation(
 
         contents.push({
           role: "model",
-          parts: calls.map(call => ({
+          parts: calls.map((call) => ({
             functionCall: {
               name: call.name,
               args: call.args || {},
@@ -1359,14 +1598,16 @@ async function generateGeminiWithRotation(
         for (const call of calls) {
           const name = String(call?.name || "");
 
-          if ([
-            "react_message",
-            "send_sticker",
-            "send_favorite_sticker",
-            "mute_user",
-            "create_file",
-            "text_to_speech",
-          ].includes(name)) {
+          if (
+            [
+              "react_message",
+              "send_sticker",
+              "send_favorite_sticker",
+              "mute_user",
+              "create_file",
+              "text_to_speech",
+            ].includes(name)
+          ) {
             sideEffectToolExecuted = true;
           }
 
@@ -1381,7 +1622,10 @@ async function generateGeminiWithRotation(
           functionResponses.push({
             functionResponse: {
               name,
-              response: response || { success: false, text: "Không có kết quả." },
+              response: response || {
+                success: false,
+                text: "Không có kết quả.",
+              },
             },
           });
         }
@@ -1409,7 +1653,12 @@ async function generateGeminiWithRotation(
         );
       }
 
-      if (!isRetryableError(error) && error?.status && error.status < 500 && error.status !== 400) {
+      if (
+        !isRetryableError(error) &&
+        error?.status &&
+        error.status < 500 &&
+        error.status !== 400
+      ) {
         console.warn("[Gemini] Lỗi không thuộc nhóm retry thông thường.");
       }
 
@@ -1433,30 +1682,9 @@ async function processGeminiResponse(
   let lastText = "";
   let finished = false;
 
-  const progress = async text => {
-    if (finished) return;
+  const progress = async () => {};
 
-    const message = `⏳ ${text}`;
-    if (!statusMessageId) {
-      statusMessageId = await sendOrUpdateMessage(
-        chatId,
-        message,
-        null,
-        originalMessageId,
-        null,
-      );
-    } else {
-      await sendOrUpdateMessage(
-        chatId,
-        message,
-        statusMessageId,
-        null,
-        null,
-      );
-    }
-  };
-
-  const updateTelegram = async text => {
+  const updateTelegram = async (text) => {
     if (finished || !text || text === lastText) return;
 
     lastText = text;
@@ -1484,7 +1712,6 @@ async function processGeminiResponse(
 
   try {
     await sendChatAction(chatId, "typing");
-    await progress("Đang đọc lịch sử và chuẩn bị câu trả lời...");
 
     const history = await getChatMemory(chatId);
 
@@ -1508,10 +1735,6 @@ async function processGeminiResponse(
       history.push({ role: "model", content: aiResponse });
       await saveChatMemory(chatId, history);
 
-      if (statusMessageId) {
-        await sendOrUpdateMessage(chatId, "✅ Đã xử lý xong.", statusMessageId, null, null);
-      }
-
       if (aiResponse !== lastText) {
         await updateTelegram(aiResponse);
       }
@@ -1530,12 +1753,11 @@ async function processGeminiResponse(
     finished = true;
     console.error("[Chan process]", error.message);
 
-    const mention = senderHandle && senderHandle !== "Không có"
-      ? `${senderHandle} `
-      : "";
+    const mention =
+      senderHandle && senderHandle !== "Không có" ? `${senderHandle} ` : "";
 
     const message =
-      `${mention}Chan không thể hoàn thành yêu cầu trong giới hạn thời gian hoặc các API đều gặp lỗi.\n` +
+      `${mention} Chan không thể hoàn thành yêu cầu trong giới hạn thời gian hoặc các model đều gặp lỗi.\n` +
       `Lỗi: ${String(error.message || "Unknown error").slice(0, 350)}`;
 
     await sendOrUpdateMessage(
@@ -1641,31 +1863,6 @@ async function handleHistoryCommand(message, command, args) {
 }
 
 async function handleUpdate(update) {
-  if (update.callback_query) {
-    const cb = update.callback_query;
-
-    try {
-      await telegramCall("answerCallbackQuery", {
-        callback_query_id: cb.id,
-      });
-
-      if (cb.data === "buy_tokens_100" && cb.message) {
-        await telegramCall("sendInvoice", {
-          chat_id: cb.message.chat.id,
-          title: "100 Token AI",
-          description: "Quy đổi 10 Telegram Stars thành 100 Tokens AI",
-          payload: `buy_tokens_100_${cb.from.id}`,
-          provider_token: "",
-          currency: "XTR",
-          prices: [{ label: "100 Tokens", amount: 10 }],
-        });
-      }
-    } catch (error) {
-      console.error("[Callback]", error.message);
-    }
-    return;
-  }
-
   if (update.pre_checkout_query) {
     try {
       await telegramCall("answerPreCheckoutQuery", {
@@ -1720,43 +1917,76 @@ async function handleUpdate(update) {
   const command = commandText.split(/\s+/)[0].split("@")[0].toLowerCase();
   const args = commandText.split(/\s+/).slice(1);
 
-  if (["/msgid", "/history", "/chain"].includes(command)) {
-    await handleHistoryCommand(message, command, args);
-    return;
-  }
-
   if (command === "/token") {
     const tokens = await getUserTokens(uid);
     const remaining = await getResetRemainingTimeString(uid);
 
     let text = `Số token hiện có: ${tokens}\n`;
-    if (remaining) text += `Tự hồi token sau: ${remaining}\n`;
-    text += "Quy đổi: 10 Telegram Stars = 100 token.";
 
-    const markup = isPrivate
-      ? {
-          inline_keyboard: [[{
-            text: "⭐ Mua 100 Token (10 Stars)",
-            callback_data: "buy_tokens_100",
-          }]],
-        }
-      : undefined;
+    if (remaining) {
+      text += `Tự hồi token sau: ${remaining}\n`;
+    }
 
-    await sendOrUpdateMessage(chatId, text, null, originalMessageId, null, markup);
+    text +=
+      "\nGói nâng cấp:\n" +
+      "100 token = 10 Telegram Stars.\n\n" +
+      "Để mua token, hãy thanh toán hóa đơn bên dưới.";
+
+    await sendOrUpdateMessage(chatId, text, null, originalMessageId, null);
+
+    try {
+      await telegramCall("sendInvoice", {
+        chat_id: chatId,
+        title: "100 Token AI",
+        description: "Quy đổi 10 Telegram Stars thành 100 Tokens AI",
+        payload: `buy_tokens_100_${uid}`,
+        provider_token: "",
+        currency: "XTR",
+        prices: [
+          {
+            label: "100 Tokens",
+            amount: 10,
+          },
+        ],
+      });
+    } catch (error) {
+      console.error("[Token invoice]", error.message);
+
+      await sendOrUpdateMessage(
+        chatId,
+        "Không thể gửi hóa đơn trong cuộc trò chuyện này. Hãy thử sử dụng /token trong chat riêng với bot.",
+        null,
+        originalMessageId,
+        null,
+      );
+    }
+
     return;
   }
 
   if (command === "/addtoken" || command === "/checktoken") {
     if (!isPrivate || !isAdmin(uid)) {
       if (isPrivate) {
-        await sendOrUpdateMessage(chatId, "Bạn không có quyền dùng lệnh này.", null, originalMessageId, null);
+        await sendOrUpdateMessage(
+          chatId,
+          "Bạn không có quyền dùng lệnh này.",
+          null,
+          originalMessageId,
+          null,
+        );
       }
       return;
     }
 
     if (command === "/addtoken") {
       if (args.length < 2) {
-        await sendOrUpdateMessage(chatId, "Cú pháp: /addtoken <uid> <số_lượng>", null, originalMessageId, null);
+        await sendOrUpdateMessage(
+          chatId,
+          "Cú pháp: /addtoken <uid> <số_lượng>",
+          null,
+          originalMessageId,
+          null,
+        );
         return;
       }
 
@@ -1764,18 +1994,36 @@ async function handleUpdate(update) {
       const amount = Number(args[1]);
 
       if (!Number.isSafeInteger(amount) || amount === 0) {
-        await sendOrUpdateMessage(chatId, "Số lượng token không hợp lệ.", null, originalMessageId, null);
+        await sendOrUpdateMessage(
+          chatId,
+          "Số lượng token không hợp lệ.",
+          null,
+          originalMessageId,
+          null,
+        );
         return;
       }
 
       const balance = await addTokens(targetUid, amount);
-      await sendOrUpdateMessage(chatId, `Đã cập nhật token cho ${targetUid}. Số dư: ${balance}`, null, originalMessageId, null);
+      await sendOrUpdateMessage(
+        chatId,
+        `Đã cập nhật token cho ${targetUid}. Số dư: ${balance}`,
+        null,
+        originalMessageId,
+        null,
+      );
       return;
     }
 
     if (command === "/checktoken") {
       if (!args[0]) {
-        await sendOrUpdateMessage(chatId, "Cú pháp: /checktoken <uid>", null, originalMessageId, null);
+        await sendOrUpdateMessage(
+          chatId,
+          "Cú pháp: /checktoken <uid>",
+          null,
+          originalMessageId,
+          null,
+        );
         return;
       }
 
@@ -1797,7 +2045,8 @@ async function handleUpdate(update) {
     if (
       !isPrivate &&
       commandText.includes("@") &&
-      commandText.split(/\s+/)[0].toLowerCase() !== `/${command.replace("/", "")}@${botInfo.username}`
+      commandText.split(/\s+/)[0].toLowerCase() !==
+        `/${command.replace("/", "")}@${botInfo.username}`
     ) {
       return;
     }
@@ -1809,13 +2058,11 @@ async function handleUpdate(update) {
         `Bạn đang có ${tokens} token.\n\n` +
         "Lệnh:\n" +
         "/clearmy — Xóa bộ nhớ hội thoại\n" +
-        "/token — Kiểm tra/mua token\n" +
-        "/msgid <id> — Xem tin nhắn theo ID đã lưu\n" +
-        "/history <id> [số tin] — Quét ngược lịch sử\n" +
-        "/chain <id> — Truy ngược chuỗi trả lời";
+        "/token — Kiểm tra/mua token";
 
       if (isPrivate && isAdmin(uid)) {
-        text += "\n\nLệnh quản trị:\n/addtoken <uid> <số_lượng>\n/checktoken <uid>";
+        text +=
+          "\n\nLệnh quản trị:\n/addtoken <uid> <số_lượng>\n/checktoken <uid>";
       }
 
       await sendOrUpdateMessage(chatId, text, null, originalMessageId, null);
@@ -1823,7 +2070,13 @@ async function handleUpdate(update) {
     }
 
     await clearChatMemory(chatId);
-    await sendOrUpdateMessage(chatId, "Đã xóa bộ nhớ hội thoại AI.", null, originalMessageId, null);
+    await sendOrUpdateMessage(
+      chatId,
+      "Đã xóa bộ nhớ hội thoại AI.",
+      null,
+      originalMessageId,
+      null,
+    );
     return;
   }
 
@@ -1866,15 +2119,24 @@ async function handleUpdate(update) {
   if (!acquiredLock) return;
 
   try {
-    if (!await consumeUserToken(uid)) {
-      await sendOrUpdateMessage(chatId, "Không thể trừ token hoặc bạn đã hết token. Thử lại sau.", null, originalMessageId, null);
+    if (!(await consumeUserToken(uid))) {
+      await sendOrUpdateMessage(
+        chatId,
+        "Không thể trừ token hoặc bạn đã hết token. Thử lại sau.",
+        null,
+        originalMessageId,
+        null,
+      );
       return;
     }
 
     const firstName = message.from?.first_name || "";
     const lastName = message.from?.last_name || "";
-    const senderName = [firstName, lastName].filter(Boolean).join(" ") || "Người dùng";
-    const senderHandle = message.from?.username ? `@${message.from.username}` : "Không có";
+    const senderName =
+      [firstName, lastName].filter(Boolean).join(" ") || "Người dùng";
+    const senderHandle = message.from?.username
+      ? `@${message.from.username}`
+      : "Không có";
     const userRole = await getUserRole(chatId, uid, message.chat.type);
 
     let groupDetails = "";
@@ -1909,7 +2171,7 @@ async function handleUpdate(update) {
 
     const userHeader =
       `[Thời gian Việt Nam: ${getVietnamTimeString()}]\n` +
-      `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole}]` +
+      `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole} | Ngôn ngữ: ${message.from?.language_code || "Không rõ"}]` +
       `${groupDetails}${replyContext}${groupHistoryContext}`;
 
     let promptTextOnly = `${userHeader}\n[Nội dung tin nhắn]: ${rawText || getMessageText(message)}`;
@@ -1947,7 +2209,7 @@ module.exports = async (req, res) => {
   try {
     const update = req.body;
 
-    if (update?.update_id && !await claimUpdate(update.update_id)) {
+    if (update?.update_id && !(await claimUpdate(update.update_id))) {
       return res.status(200).json({ ok: true, duplicate: true });
     }
 
@@ -1981,7 +2243,7 @@ async function sendStreamingMessage(
     messageId,
     replyToMessageId,
     "Markdown",
-  ).catch(async error => {
+  ).catch(async (error) => {
     if (/parse entities|can't parse entities/i.test(error.message)) {
       return sendMessageRaw(
         chatId,
