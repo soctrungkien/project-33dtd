@@ -2549,7 +2549,7 @@ async function handleUpdate(update) {
     }
   }
 
-  if (command === "/start" || command === "/clearmy") {
+  if (command === "/start" || command === "/c" || command === "/clearmy") {
     if (
       !isPrivate &&
       commandText.includes("@") &&
