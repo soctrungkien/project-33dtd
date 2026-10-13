@@ -1294,6 +1294,36 @@ async function checkRateLimit(userId) {
   }
 }
 
+const activeRequests = new Map(); // uid -> { abortController, statusMsgId, chatId }
+
+function cancelUserRequest(uid) {
+  const req = activeRequests.get(String(uid));
+  if (!req) return false;
+
+  try {
+    req.abortController.abort(new Error("Người dùng hủy bằng /c"));
+  } catch {}
+
+  activeRequests.delete(String(uid));
+  return true;
+}
+
+async function consumeExtraToken(userId, amount = 1) {
+  const tokenKey = `user:${userId}:tokens`;
+  try {
+    const script = `
+      local tokens = tonumber(redis.call('GET', KEYS[1]) or '0')
+      if tokens < tonumber(ARGV[1]) then return -1 end
+      return redis.call('DECRBY', KEYS[1], ARGV[1])
+    `;
+    const result = await redis.eval(script, 1, tokenKey, String(amount));
+    return Number(result) >= 0;
+  } catch (e) {
+    console.error("[Extra token]", e.message);
+    return false;
+  }
+}
+
 async function getBotProfile() {
   const result = await telegramCall("getMe", {}, 5000);
 
@@ -1332,12 +1362,7 @@ async function getUserTokens(userId) {
 
     if (tokenText === null) {
       await redis.set(tokenKey, DEFAULT_FREE_TOKENS);
-      await redis.set(
-        resetKey,
-        now + RESET_DURATION_MS,
-        "EX",
-        12 * 60 * 60 + 3600,
-      );
+      // không set reset_at ở đây
       return DEFAULT_FREE_TOKENS;
     }
 
@@ -1347,12 +1372,7 @@ async function getUserTokens(userId) {
     if (resetText && now >= Number(resetText)) {
       tokens = DEFAULT_FREE_TOKENS;
       await redis.set(tokenKey, tokens);
-      await redis.set(
-        resetKey,
-        now + RESET_DURATION_MS,
-        "EX",
-        12 * 60 * 60 + 3600,
-      );
+      await redis.del(resetKey); // xóa timer sau khi hồi
     }
 
     return Math.max(0, tokens);
@@ -1640,6 +1660,8 @@ async function executeTool(
 ) {
   const name = String(call?.name || "");
   const args = call?.args || {};
+
+  await consumeExtraToken(uid, 1); // mỗi tool trừ thêm 1
 
   try {
     const response = await withTimeout(
@@ -2108,12 +2130,49 @@ async function processGeminiResponse(
   let lastText = "";
   let finished = false;
 
+  const abortController = new AbortController();
+  activeRequests.set(String(uid), {
+    abortController,
+    chatId,
+    statusMsgId: null,
+  });
+
+  const suggestTimer = setTimeout(
+    async () => {
+      if (finished || lastText) return; // đã có text rồi thì thôi
+
+      try {
+        const suggestId = await sendOrUpdateMessage(
+          chatId,
+          "Đang xử lý hơi lâu... Gõ /c để hủy.",
+          null,
+          originalMessageId,
+          null,
+        );
+
+        // tự xóa sau 30s
+        setTimeout(async () => {
+          try {
+            await telegramCall("deleteMessage", {
+              chat_id: chatId,
+              message_id: suggestId,
+            });
+          } catch {}
+        }, 30000);
+      } catch {}
+    },
+    Math.floor((PROCESS_TIMEOUT_MS * 2) / 3),
+  ); // \~80s
+
   const deadline = createDeadline(PROCESS_TIMEOUT_MS);
   const progress = async () => {};
 
   const updateTelegram = async (text) => {
     if (finished || !text || text === lastText) return;
-
+    if (suggestTimer) {
+      clearTimeout(suggestTimer);
+      suggestTimer = null;
+    }
     lastText = text;
 
     try {
@@ -2496,6 +2555,20 @@ async function handleUpdate(update) {
       return;
     }
 
+    if (command === "/c") {
+      const cancelled = cancelUserRequest(uid);
+      await redis.del(`lock:user:${uid}`).catch(() => {});
+
+      await sendOrUpdateMessage(
+        chatId,
+        cancelled ? "Đã hủy." : "Đang không chạy yêu cầu nào.",
+        null,
+        originalMessageId,
+        null,
+      );
+      return;
+    }
+
     if (command === "/start") {
       const tokens = await getUserTokens(uid);
       let text =
@@ -2619,9 +2692,11 @@ async function handleUpdate(update) {
       }
     }
 
+    const tokensLeft = await getUserTokens(uid);
+
     const userHeader =
       `[Thời gian UTC+7: ${getVietnamTimeString()}]\n` +
-      `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole} | Ngôn ngữ: ${message.from?.language_code || "Không rõ"}]` +
+      `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole} | Token còn: ${tokensLeft}]\n` +
       `${groupDetails}${replyContext}${groupHistoryContext}`;
 
     let promptTextOnly = `${userHeader}\n[Nội dung tin nhắn]: ${rawText || getMessageText(message)}`;
@@ -2670,37 +2745,33 @@ async function handleUpdate(update) {
 }
 
 module.exports = async (req, res) => {
-if (req.method !== "POST") {
-return res.status(405).json({ error: "Method not allowed" });
-}
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   const update = req.body;
 
   if (!update) {
-        return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true });
   }
 
   try {
-        if (
-              update.update_id &&
-              !(await claimUpdate(update.update_id))
-        ) {
-              return res.status(200).json({
-                    ok: true,
-                    duplicate: true,
-              });
-        }
+    if (update.update_id && !(await claimUpdate(update.update_id))) {
+      return res.status(200).json({
+        ok: true,
+        duplicate: true,
+      });
+    }
   } catch (error) {
-        console.error("[Webhook dedupe]", error.message);
-        return res.status(503).json({ ok: false });
+    console.error("[Webhook dedupe]", error.message);
+    return res.status(503).json({ ok: false });
   }
 
   waitUntil(
-        handleUpdate(update).catch((error) => {
-              console.error("[Handle update]", error.message);
-        }),
+    handleUpdate(update).catch((error) => {
+      console.error("[Handle update]", error.message);
+    }),
   );
 
   return res.status(200).json({ ok: true });
-
 };
