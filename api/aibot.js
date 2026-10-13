@@ -1987,7 +1987,14 @@ async function generateGeminiWithRotation(
           if (chunk.text) {
             chunkText += chunk.text;
             fullText += chunk.text;
-            await onTextUpdate(fullText);
+            if (typeof onTextUpdate === "function") {
+              await onTextUpdate(fullText);
+            } else {
+              console.error(
+                "[Gemini] onTextUpdate không phải function:",
+                typeof onTextUpdate,
+              );
+            }
           }
 
           const parts = chunk.candidates?.[0]?.content?.parts || [];
@@ -2141,7 +2148,7 @@ async function processGeminiResponse(
     statusMsgId: null,
   });
 
-  const suggestTimer = setTimeout(
+  let suggestTimer = setTimeout(
     async () => {
       if (finished || lastText) return; // đã có text rồi thì thôi
 
