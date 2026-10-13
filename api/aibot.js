@@ -1653,6 +1653,7 @@ function isRetryableError(error) {
 
 async function executeTool(
   call,
+  uid,
   chatId,
   originalMessageId,
   statusMessageId,
@@ -2058,6 +2059,7 @@ async function generateGeminiWithRotation(
 
           const response = await executeTool(
             call,
+            uid,
             chatId,
             originalMessageId,
             null,
@@ -2119,6 +2121,7 @@ async function generateGeminiWithRotation(
 
 async function processGeminiResponse(
   chatId,
+  uid,
   userParts,
   promptTextOnly,
   originalMessageId,
@@ -2205,6 +2208,7 @@ async function processGeminiResponse(
       generateGeminiWithRotation(
         history,
         userParts,
+        uid,
         chatId,
         originalMessageId,
         updateTelegram,
@@ -2734,6 +2738,7 @@ async function handleUpdate(update) {
 
     await processGeminiResponse(
       chatId,
+      uid,
       userParts,
       promptTextOnly,
       replyTargetId,
