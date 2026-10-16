@@ -19,6 +19,7 @@
     "@google/generative-ai": "^0.21.0",
     "@google/genai": "^2.23.0",
     "@peculiar/x509": "^1.9.0",
-    "@vercel/functions": "^2.0.0"
+    "@vercel/functions": "^2.0.0",
+    "@ybd-project/ytdl-core": "6.0.8"
   }
 }
