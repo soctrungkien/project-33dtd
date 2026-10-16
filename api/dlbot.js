@@ -6,25 +6,26 @@ const { spawn } = require("child_process");
 const { waitUntil } = require("@vercel/functions");
 
 const TOKEN = process.env.BOT_TOKEN_VIDEO;
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET_DL || "";
 const API = `https://api.telegram.org/bot${TOKEN}`;
-const FILE_API = `https://api.telegram.org/file/bot${TOKEN}`;
 const MAX_FILE_SIZE = 45 * 1024 * 1024;
 const MAX_DURATION = 240000;
 const WORK_DIR = os.tmpdir();
 const YTDLP_PATH = path.join(WORK_DIR, "yt-dlp-linux");
 
 let binaryPromise;
+let botUsernamePromise;
 const jobs = new Set();
 
 function request(url, options = {}) {
   return new Promise((resolve, reject) => {
     const req = https.request(url, options, res => {
       const chunks = [];
+
       res.on("data", chunk => chunks.push(chunk));
       res.on("end", () => {
         const body = Buffer.concat(chunks).toString();
         let data;
+
         try {
           data = JSON.parse(body);
         } catch {
@@ -32,15 +33,21 @@ function request(url, options = {}) {
         }
 
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          return reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 300)}`));
+          return reject(
+            new Error(`HTTP ${res.statusCode}: ${body.slice(0, 300)}`)
+          );
         }
 
         resolve(data);
       });
     });
 
-    req.setTimeout(30000, () => req.destroy(new Error("Request timeout")));
+    req.setTimeout(30000, () => {
+      req.destroy(new Error("Request timeout"));
+    });
+
     req.on("error", reject);
+
     if (options.body) req.write(options.body);
     req.end();
   });
@@ -49,7 +56,9 @@ function request(url, options = {}) {
 function api(method, body = {}) {
   return request(`${API}/${method}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify(body)
   });
 }
@@ -63,6 +72,8 @@ async function sendMessage(chatId, text, extra = {}) {
 }
 
 async function editMessage(chatId, messageId, text) {
+  if (!messageId) return;
+
   try {
     await api("editMessageText", {
       chat_id: chatId,
@@ -81,41 +92,74 @@ async function action(chatId, type = "typing") {
   } catch {}
 }
 
-function download(url, destination) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destination);
-    const req = https.get(url, res => {
-      if (res.statusCode !== 200) {
-        file.close();
-        fs.rm(destination, { force: true }, () => {});
-        return reject(new Error(`Download HTTP ${res.statusCode}`));
+async function getBotUsername() {
+  if (!botUsernamePromise) {
+    botUsernamePromise = api("getMe").then(result => {
+      if (!result.ok || !result.result?.username) {
+        throw new Error("Không lấy được username bot");
       }
 
-      const length = Number(res.headers["content-length"] || 0);
-      if (length > MAX_FILE_SIZE) {
-        req.destroy(new Error("File quá lớn"));
-        return;
-      }
-
-      let total = 0;
-      res.on("data", chunk => {
-        total += chunk.length;
-        if (total > MAX_FILE_SIZE) {
-          req.destroy(new Error("File vượt giới hạn 45 MB"));
-        }
-      });
-
-      res.pipe(file);
-      file.on("finish", () => file.close(resolve));
+      return result.result.username.toLowerCase();
+    }).catch(error => {
+      botUsernamePromise = null;
+      throw error;
     });
+  }
 
-    req.setTimeout(30000, () => req.destroy(new Error("Download timeout")));
-    req.on("error", err => {
-      file.destroy();
-      fs.rm(destination, { force: true }, () => {});
-      reject(err);
-    });
-  });
+  return botUsernamePromise;
+}
+
+async function isOwnCommand(text, command) {
+  const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = text.match(
+    new RegExp("^/" + escaped + "(?:@([a-zA-Z0-9_]+))?(?=\\s|$)", "i")
+  );
+
+  if (!match) return false;
+  if (!match[1]) return true;
+
+  try {
+    return (await getBotUsername()) === match[1].toLowerCase();
+  } catch (error) {
+    console.error("[getMe]", error);
+    return false;
+  }
+}
+
+function validateUrl(value) {
+  try {
+    const url = new URL(value);
+
+    if (!["https:", "http:"].includes(url.protocol)) {
+      return false;
+    }
+
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+
+    return [
+      "youtube.com",
+      "m.youtube.com",
+      "youtu.be",
+      "music.youtube.com",
+      "youtube-nocookie.com",
+      "tiktok.com",
+      "m.tiktok.com",
+      "vm.tiktok.com",
+      "vt.tiktok.com"
+    ].includes(host) ||
+      host.endsWith(".tiktok.com") ||
+      host.endsWith(".youtube.com");
+  } catch {
+    return false;
+  }
+}
+
+function extractUrl(text) {
+  const match = text.match(/https?:\/\/[^\s<>]+/i);
+  if (!match) return null;
+
+  const url = match[0].replace(/[),.!?]+$/, "");
+  return validateUrl(url) ? url : null;
 }
 
 async function ensureYtDlp() {
@@ -124,37 +168,80 @@ async function ensureYtDlp() {
 
   binaryPromise = (async () => {
     const temp = `${YTDLP_PATH}.download`;
-    const url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
+    const url =
+      "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
 
     await new Promise((resolve, reject) => {
       const file = fs.createWriteStream(temp);
+      let settled = false;
+
+      const fail = error => {
+        if (settled) return;
+        settled = true;
+        file.destroy();
+        fs.rm(temp, { force: true }, () => {});
+        reject(error);
+      };
+
+      file.on("error", fail);
 
       function get(target, redirects = 0) {
-        if (redirects > 10) return reject(new Error("Quá nhiều redirect"));
+        if (redirects > 10) {
+          return fail(new Error("Quá nhiều redirect khi tải yt-dlp"));
+        }
 
-        https.get(target, res => {
+        const req = https.get(target, res => {
           if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
             res.resume();
-            if (!res.headers.location) return reject(new Error("Thiếu redirect URL"));
-            return get(new URL(res.headers.location, target).href, redirects + 1);
+
+            if (!res.headers.location) {
+              return fail(new Error("Thiếu redirect URL"));
+            }
+
+            return get(
+              new URL(res.headers.location, target).href,
+              redirects + 1
+            );
           }
 
           if (res.statusCode !== 200) {
             res.resume();
-            return reject(new Error(`Không tải được yt-dlp: ${res.statusCode}`));
+            return fail(
+              new Error(`Không tải được yt-dlp: HTTP ${res.statusCode}`)
+            );
           }
 
           res.pipe(file);
-          file.on("finish", () => file.close(resolve));
-        }).on("error", reject);
+
+          file.on("finish", () => {
+            file.close(error => {
+              if (error) return fail(error);
+              if (settled) return;
+
+              settled = true;
+
+              try {
+                fs.chmodSync(temp, 0o755);
+                fs.renameSync(temp, YTDLP_PATH);
+                resolve();
+              } catch (err) {
+                fs.rm(temp, { force: true }, () => {});
+                reject(err);
+              }
+            });
+          });
+        });
+
+        req.setTimeout(30000, () => {
+          req.destroy(new Error("Timeout khi tải yt-dlp"));
+        });
+
+        req.on("error", fail);
       }
 
-      file.on("error", reject);
       get(url);
     });
 
-    fs.chmodSync(temp, 0o755);
-    fs.renameSync(temp, YTDLP_PATH);
     return YTDLP_PATH;
   })();
 
@@ -166,66 +253,110 @@ async function ensureYtDlp() {
   }
 }
 
-function validateUrl(value) {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+function parseCommandArguments(input) {
+  const tokens = input.match(/"[^"]*"|'[^']*'|\S+/g) || [];
 
-    const host = url.hostname.toLowerCase().replace(/^www\./, "");
-    return [
-      "youtube.com",
-      "m.youtube.com",
-      "youtu.be",
-      "music.youtube.com",
-      "tiktok.com",
-      "m.tiktok.com",
-      "vm.tiktok.com",
-      "vt.tiktok.com"
-    ].includes(host) || host.endsWith(".tiktok.com") || host.endsWith(".youtube.com");
-  } catch {
-    return false;
-  }
+  return tokens.map(token => {
+    if (
+      (token.startsWith('"') && token.endsWith('"')) ||
+      (token.startsWith("'") && token.endsWith("'"))
+    ) {
+      return token.slice(1, -1);
+    }
+
+    return token;
+  });
 }
 
-function parseCommand(text) {
-  const parts = text.trim().split(/\s+/);
-  const command = parts.shift();
-  const args = [];
+function validateCliArgs(args) {
+  const blocked = new Set([
+    "--exec",
+    "--exec-before-download",
+    "--config-location",
+    "--plugin-dirs",
+    "--cookies",
+    "--cookies-from-browser",
+    "--proxy",
+    "--external-downloader",
+    "--external-downloader-args",
+    "--postprocessor-args",
+    "--alias",
+    "--use-postprocessor",
+    "--load-info-json",
+    "--batch-file",
+    "--netrc-location",
+    "--ffmpeg-location",
+    "--cache-dir",
+    "--download-archive",
+    "--print",
+    "--progress-template",
+    "--parse-metadata",
+    "--replace-in-metadata",
+    "--embed-from-url",
+    "--ppa",
+    "--remux-video",
+    "--recode-video",
+    "--extract-audio",
+    "--audio-format",
+    "--audio-quality",
+    "--paths",
+    "-o",
+    "-P"
+  ]);
 
-  for (const part of parts) {
-    if (part.startsWith("-")) {
-      if (/^--?(exec|exec-before-download|output|paths|config-location|plugin-dirs|cookies|cookies-from-browser|proxy|external-downloader|external-downloader-args|postprocessor-args|alias|use-postprocessor|load-info-json|batch-file|netrc-location|ffmpeg-location|cache-dir|paths|download-archive|print|progress-template|parse-metadata|replace-in-metadata|embed-from-url|sponsorblock-mark|sponsorblock-remove|xattr-set-filesize|ppa|remux-video|recode-video|extract-audio|audio-format|audio-quality)$/i.test(part)) {
-        throw new Error(`Không cho phép tuỳ chọn: ${part}`);
-      }
-      args.push(part);
-    } else {
-      args.push(part);
+  for (const arg of args) {
+    const name = arg.split("=")[0];
+
+    if (blocked.has(name)) {
+      throw new Error(`Tuỳ chọn CLI không được hỗ trợ: ${name}`);
+    }
+
+    if (
+      !arg.startsWith("-") &&
+      !/^\d+(?:\.\d+)?$/.test(arg)
+    ) {
+      throw new Error(`Tham số không hợp lệ: ${arg}`);
     }
   }
-
-  return { command, args };
 }
 
-function runYtDlp(args, output, onProgress) {
+function runYtDlp(args, onProgress, timeout = MAX_DURATION) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("Quá thời gian tải video"));
-    }, MAX_DURATION);
-
-    let stderr = "";
+    let child;
     let settled = false;
+    let stderr = "";
+    let stdout = "";
 
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      error ? reject(error) : resolve(result);
+
+      if (error) reject(error);
+      else resolve(result);
     };
 
-    const child = spawn(YTDLP_PATH, args, {
-      cwd: WORK_DIR,
-      stdio: ["ignore", "ignore", "pipe"]
+    const timer = setTimeout(() => {
+      if (child) child.kill("SIGKILL");
+      finish(new Error("Đã vượt quá thời gian xử lý"));
+    }, timeout);
+
+    try {
+      child = spawn(YTDLP_PATH, args, {
+        cwd: WORK_DIR,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          PATH: process.env.PATH || "/usr/bin:/bin",
+          HOME: WORK_DIR,
+          LANG: "C.UTF-8"
+        }
+      });
+    } catch (error) {
+      return finish(error);
+    }
+
+    child.stdout.on("data", chunk => {
+      stdout = (stdout + chunk.toString()).slice(-12000);
     });
 
     child.stderr.on("data", chunk => {
@@ -233,46 +364,116 @@ function runYtDlp(args, output, onProgress) {
       stderr = (stderr + line).slice(-5000);
 
       const match = line.match(/\[download\]\s+([\d.]+)%/);
-      if (match) onProgress(Math.min(100, Math.floor(Number(match[1]))));
+      if (match) {
+        onProgress(Math.min(100, Math.floor(Number(match[1]))));
+      }
     });
 
     child.on("error", error => finish(error));
+
     child.on("close", code => {
-      if (code === 0) finish(null, true);
-      else finish(new Error(stderr.slice(-1200) || `yt-dlp exit ${code}`));
+      if (code === 0) {
+        finish(null, {
+          stdout,
+          stderr
+        });
+      } else {
+        finish(
+          new Error(
+            stderr.slice(-1500) || `yt-dlp kết thúc với mã ${code}`
+          )
+        );
+      }
     });
   });
 }
 
+async function getVideoInfo(url) {
+  await ensureYtDlp();
+
+  const result = await runYtDlp([
+    "--no-playlist",
+    "--no-warnings",
+    "--skip-download",
+    "--print",
+    "%(title).200B",
+    url
+  ], () => {}, 45000);
+
+  return result.stdout.trim().split("\n")[0] || "Video đã tải";
+}
+
+async function listFormats(chatId, url) {
+  const status = await sendMessage(chatId, "Đang lấy danh sách định dạng...");
+  const messageId = status.result?.message_id;
+
+  try {
+    await ensureYtDlp();
+
+    const result = await runYtDlp([
+      "--no-playlist",
+      "--no-warnings",
+      "--list-formats",
+      url
+    ], () => {}, 45000);
+
+    const output = (result.stdout || result.stderr).slice(-3500);
+
+    await editMessage(
+      chatId,
+      messageId,
+      output || "Không tìm thấy định dạng."
+    );
+  } catch (error) {
+    await editMessage(
+      chatId,
+      messageId,
+      `Không lấy được định dạng:\n${String(error.message).slice(0, 1000)}`
+    );
+  }
+}
+
 async function sendVideoFile(chatId, filePath, title, statusId) {
   const stat = fs.statSync(filePath);
+
   if (stat.size > MAX_FILE_SIZE) {
-    throw new Error("Video lớn hơn giới hạn bot hỗ trợ (45 MB). Hãy chọn chất lượng thấp hơn.");
+    throw new Error(
+      "Video lớn hơn giới hạn 45 MB. Hãy chọn định dạng nhỏ hơn."
+    );
   }
 
   await editMessage(chatId, statusId, "Đang gửi video lên Telegram...");
+  await action(chatId, "upload_video");
 
-  const boundary = `----BotBoundary${Date.now()}`;
+  const boundary = `----TelegramBoundary${Date.now()}`;
+  const filename = path.basename(filePath).replace(/["\r\n]/g, "_");
+
   const fields = {
     chat_id: String(chatId),
     caption: String(title || "Video đã tải").slice(0, 900)
   };
 
   const chunks = [];
+
   for (const [key, value] of Object.entries(fields)) {
     chunks.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="${key}"\r\n\r\n${value}\r\n`
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="${key}"\r\n\r\n` +
+      `${value}\r\n`
     ));
   }
 
-  const filename = path.basename(filePath).replace(/["\r\n]/g, "_");
   chunks.push(Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="video"; filename="${filename}"\r\nContent-Type: video/mp4\r\n\r\n`
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="video"; filename="${filename}"\r\n` +
+    `Content-Type: video/mp4\r\n\r\n`
   ));
+
   chunks.push(fs.readFileSync(filePath));
   chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
   const body = Buffer.concat(chunks);
+
   const result = await request(`${API}/sendVideo`, {
     method: "POST",
     headers: {
@@ -282,141 +483,213 @@ async function sendVideoFile(chatId, filePath, title, statusId) {
     body
   });
 
-  if (!result.ok) throw new Error(result.description || "Telegram không gửi được video");
+  if (!result.ok) {
+    throw new Error(result.description || "Telegram không gửi được video");
+  }
 }
 
 async function processLink(chatId, url, cliArgs = []) {
   if (jobs.has(chatId)) {
-    await sendMessage(chatId, "Bạn đang có một tác vụ tải. Vui lòng chờ tác vụ đó hoàn tất.");
-    return;
+    return sendMessage(
+      chatId,
+      "Bạn đang có một tác vụ tải. Vui lòng chờ tác vụ đó hoàn tất."
+    );
   }
 
   if (!validateUrl(url)) {
-    await sendMessage(chatId, "Link không hợp lệ hoặc chưa được hỗ trợ.");
-    return;
+    return sendMessage(chatId, "Link TikTok hoặc YouTube không hợp lệ.");
+  }
+
+  try {
+    validateCliArgs(cliArgs);
+  } catch (error) {
+    return sendMessage(chatId, error.message);
   }
 
   jobs.add(chatId);
-  const status = await sendMessage(chatId, "Đang khởi tạo yt-dlp...");
-  const statusId = status.result?.message_id;
-  const prefix = path.join(WORK_DIR, `video_${Date.now()}_${Math.random().toString(36).slice(2)}`);
-  const output = `${prefix}.%(ext)s`;
+
+  let statusId;
+  let prefix;
+  let output;
 
   try {
+    const status = await sendMessage(chatId, "Đang khởi tạo yt-dlp...");
+    statusId = status.result?.message_id;
+
+    prefix = path.join(
+      WORK_DIR,
+      `video_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    );
+
+    output = `${prefix}.%(ext)s`;
+
     await action(chatId);
     await ensureYtDlp();
+
     await editMessage(chatId, statusId, "Đang phân tích video...");
+    const title = await getVideoInfo(url);
+
+    await editMessage(chatId, statusId, "Đang tải video: 0%");
 
     const args = [
       "--no-playlist",
       "--no-warnings",
       "--newline",
-      "--no-progress",
-      "-f", "best[ext=mp4]/best",
-      "-o", output,
+      "-f",
+      "best[ext=mp4]/best",
+      "-o",
+      output,
       ...cliArgs,
       url
     ];
 
-    await runYtDlp(args, output, percent => {
-      editMessage(chatId, statusId, `Đang tải video: ${percent}%`).catch(() => {});
+    await runYtDlp(args, percent => {
+      editMessage(
+        chatId,
+        statusId,
+        `Đang tải video: ${percent}%`
+      ).catch(() => {});
     });
 
     const files = fs.readdirSync(WORK_DIR)
       .filter(name => name.startsWith(path.basename(prefix) + "."))
       .map(name => path.join(WORK_DIR, name))
-      .filter(name => fs.statSync(name).isFile());
+      .filter(file => {
+        try {
+          return fs.statSync(file).isFile();
+        } catch {
+          return false;
+        }
+      });
 
-    if (!files.length) throw new Error("yt-dlp không tạo ra file video.");
+    if (!files.length) {
+      throw new Error("yt-dlp không tạo ra file video.");
+    }
 
     const file = files[0];
-    await sendVideoFile(chatId, file, path.basename(file), statusId);
+
+    await sendVideoFile(chatId, file, title, statusId);
     await editMessage(chatId, statusId, "Tải và gửi video thành công.");
   } catch (error) {
     console.error("[yt-dlp]", error);
+
     await editMessage(
       chatId,
       statusId,
-      `Tải thất bại:\n${String(error.message || error).slice(0, 1000)}`
+      `Tải thất bại:\n${String(error.message || error).slice(0, 1200)}`
     );
   } finally {
-    for (const name of fs.readdirSync(WORK_DIR)) {
-      if (name.startsWith(path.basename(prefix) + ".")) {
-        fs.rmSync(path.join(WORK_DIR, name), { force: true });
+    if (prefix) {
+      for (const name of fs.readdirSync(WORK_DIR)) {
+        if (name.startsWith(path.basename(prefix) + ".")) {
+          fs.rmSync(path.join(WORK_DIR, name), { force: true });
+        }
       }
     }
+
     jobs.delete(chatId);
   }
 }
 
-async function handleUpdate(update) {
-  const message = update.message;
-  if (!message?.chat || message.chat.type !== "private" || !message.text) return;
-
+async function handleCommand(message, command) {
   const chatId = message.chat.id;
   const text = message.text.trim();
 
-  if (/^\/start(?:@\w+)?(?:\s|$)/i.test(text)) {
-    return sendMessage(chatId,
+  if (!(await isOwnCommand(text, command))) return false;
+
+  if (command === "start") {
+    await sendMessage(
+      chatId,
       "Bot tải video TikTok và YouTube bằng yt-dlp.\n\n" +
-      "Cách dùng:\n" +
-      "• Gửi link video để tải nhanh.\n" +
+      "Cách sử dụng:\n" +
+      "• Gửi link video trong chat riêng để tải nhanh.\n" +
       "• /yt-dlp URL\n" +
       "• /yt-dlp -f best URL\n" +
-      "• /yt-dlp --list-formats URL\n\n" +
-      "Chỉ hoạt động trong chat riêng. Giới hạn video 45 MB và thời gian tải khoảng 4 phút.\n" +
-      "Lưu ý: các tuỳ chọn CLI bị hạn chế để bảo vệ bot."
+      "• /yt-dlp --list-formats URL\n" +
+      "• /help — Trợ giúp\n\n" +
+      "Lệnh có thể nhận trong nhóm, nhưng tải video chỉ hoạt động trong chat riêng."
     );
+
+    return true;
   }
 
-  if (/^\/help(?:@\w+)?(?:\s|$)/i.test(text)) {
-    return sendMessage(chatId,
-      "Lệnh:\n/start — Hướng dẫn\n/help — Trợ giúp\n" +
-      "/yt-dlp URL — Tải video\n/yt-dlp -f best URL — Chọn định dạng\n" +
-      "/yt-dlp --list-formats URL — Liệt kê định dạng\n\n" +
-      "Gửi link TikTok hoặc YouTube để tải nhanh."
+  if (command === "help") {
+    await sendMessage(
+      chatId,
+      "Lệnh bot:\n" +
+      "/start — Bắt đầu\n" +
+      "/help — Trợ giúp\n" +
+      "/yt-dlp URL — Tải video\n" +
+      "/yt-dlp -f best URL — Chọn định dạng\n" +
+      "/yt-dlp --list-formats URL — Danh sách định dạng\n\n" +
+      "Gửi link trực tiếp trong chat riêng để tải nhanh."
     );
+
+    return true;
   }
 
-  if (/^\/yt-dlp(?:@\w+)?(?:\s|$)/i.test(text)) {
-    try {
-      const input = text.replace(/^\/yt-dlp(?:@\w+)?\s*/i, "");
-      const tokens = input.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-      const url = tokens.find(token => validateUrl(token.replace(/^"|"$/g, "")));
-
-      if (!url) {
-        return sendMessage(chatId, "Cách dùng:\n/yt-dlp URL\n/yt-dlp -f best URL");
-      }
-
-      const cleanUrl = url.replace(/^"|"$/g, "");
-      const cliArgs = tokens
-        .filter(token => token !== url)
-        .map(token => token.replace(/^"|"$/g, ""));
-
-      if (cliArgs.includes("--list-formats")) {
-        const result = await sendMessage(chatId, "Đang lấy danh sách định dạng...");
-        const bin = await ensureYtDlp();
-        const child = spawn(bin, ["--no-playlist", "--list-formats", cleanUrl]);
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", d => stdout = (stdout + d.toString()).slice(-3500));
-        child.stderr.on("data", d => stderr = (stderr + d.toString()).slice(-1500));
-        child.on("close", async code => {
-          await editMessage(chatId, result.result.message_id,
-            code === 0 ? stdout.slice(-3500) || "Không có định dạng." : stderr.slice(-1500) || "Không lấy được định dạng."
-          );
-        });
-        return;
-      }
-
-      return processLink(chatId, cleanUrl, cliArgs);
-    } catch (error) {
-      return sendMessage(chatId, `Lỗi lệnh: ${error.message}`);
+  if (command === "yt-dlp") {
+    if (message.chat.type !== "private") {
+      await sendMessage(chatId, "Vui lòng dùng lệnh tải video trong chat riêng với bot.");
+      return true;
     }
+
+    const input = text.replace(/^\/yt-dlp(?:@[a-zA-Z0-9_]+)?\s*/i, "");
+    const tokens = parseCommandArguments(input);
+    const url = tokens.find(token => validateUrl(token));
+
+    if (!url) {
+      await sendMessage(
+        chatId,
+        "Cách dùng:\n" +
+        "/yt-dlp URL\n" +
+        "/yt-dlp -f best URL\n" +
+        "/yt-dlp --list-formats URL"
+      );
+
+      return true;
+    }
+
+    const cliArgs = tokens.filter(token => token !== url);
+
+    if (cliArgs.includes("--list-formats")) {
+      await listFormats(chatId, url);
+      return true;
+    }
+
+    await processLink(chatId, url, cliArgs);
+    return true;
   }
 
-  const url = text.match(/https?:\/\/\S+/i)?.[0]?.replace(/[),.!?]+$/, "");
-  if (url && validateUrl(url)) return processLink(chatId, url);
+  return false;
+}
+
+async function handleUpdate(update) {
+  const message = update.message;
+
+  if (!message?.chat || !message.text) return;
+
+  const text = message.text.trim();
+  const chatId = message.chat.id;
+  const isCommand = /^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?(?:\s|$)/.test(text);
+
+  if (isCommand) {
+    const command = text.match(/^\/([a-zA-Z0-9_]+)/)[1].toLowerCase();
+
+    if (["start", "help", "yt-dlp"].includes(command)) {
+      await handleCommand(message, command);
+    }
+
+    return;
+  }
+
+  if (message.chat.type !== "private") return;
+
+  const url = extractUrl(text);
+
+  if (url) {
+    await processLink(chatId, url);
+  }
 }
 
 module.exports = async (req, res) => {
@@ -424,14 +697,15 @@ module.exports = async (req, res) => {
     return res.status(200).send("Telegram video bot is running.");
   }
 
-  if (!TOKEN) return res.status(500).json({ ok: false, error: "Missing BOT_TOKEN" });
-
-  if (WEBHOOK_SECRET &&
-      req.headers["x-telegram-bot-api-secret-token"] !== WEBHOOK_SECRET) {
-    return res.status(401).json({ ok: false });
+  if (!TOKEN) {
+    return res.status(500).json({
+      ok: false,
+      error: "Missing BOT_TOKEN"
+    });
   }
 
   const update = req.body;
+
   res.status(200).json({ ok: true });
 
   waitUntil(
@@ -440,3 +714,4 @@ module.exports = async (req, res) => {
       .catch(error => console.error("[Update]", error))
   );
 };
+                                           
