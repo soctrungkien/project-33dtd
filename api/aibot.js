@@ -20,7 +20,7 @@ const redis = new Redis(process.env.REDIS_URL, {
 // Cấu hình 9router (OpenAI-compatible endpoint)
 const NINE_ROUTER_URL = process.env.NINE_ROUTER_URL || "http://localhost:20128/v1";
 const NINE_ROUTER_KEY = process.env.NINE_ROUTER_KEY || process.env.OPENAI_API_KEY || "dummy-key";
-const AI_MODEL = process.env.AI_MODEL || "gemini/gemini-3.5-flash-lite";
+const AI_MODEL = process.env.AI_MODEL || "gemini/gemini-3.8-flash";
 
 const aiClient = new OpenAI({
   baseURL: NINE_ROUTER_URL,
