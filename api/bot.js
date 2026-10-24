@@ -83,6 +83,86 @@ async function getGramClient() {
   }
 }
 
+async function getJoinChannelUrl(ctx) {
+  if (!JOIN_CHANNEL) return "https://t.me/";
+  try {
+    const chat = await ctx.telegram.getChat(JOIN_CHANNEL);
+    if (chat.username) {
+      return `https://t.me/${chat.username}`;
+    }
+    if (chat.invite_link) {
+      return chat.invite_link;
+    }
+  } catch (e) {
+    if (typeof JOIN_CHANNEL === 'string') {
+      const clean = JOIN_CHANNEL.replace(/^@/, '');
+      if (!/^-?\d+$/.test(clean)) {
+        return `https://t.me/${clean}`;
+      }
+    }
+  }
+  return "https://t.me/";
+}
+
+async function checkUserSubscription(ctx) {
+  if (!JOIN_CHANNEL) return true;
+  try {
+    const userId = ctx.from?.id;
+    if (!userId) return false;
+    const member = await ctx.telegram.getChatMember(JOIN_CHANNEL, userId);
+    const status = member.status;
+    return ["creator", "administrator", "member"].includes(status);
+  } catch (e) {
+    logError("JOIN_CHECK", "Lỗi kiểm tra thành viên kênh", e);
+    return true; // Tránh block người dùng nếu bot gặp lỗi quyền hạn
+  }
+}
+
+async function sendJoinPrompt(ctx) {
+  const url = await getJoinChannelUrl(ctx);
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.url("📢 Vào Kênh", url)],
+    [Markup.button.callback("✅ Check", "check_join_status")]
+  ]);
+  return ctx.reply("⚠️ Bạn cần tham gia kênh để tiếp tục sử dụng bot!", keyboard);
+}
+
+// Middleware chặn người dùng chưa join kênh (chỉ áp dụng ở chat riêng)
+bot.use(async (ctx, next) => {
+  if (!JOIN_CHANNEL) return next();
+
+  if (ctx.chat && ctx.chat.type === "private") {
+    // Cho phép các nút tương tác xác nhận join hoặc nút đóng/trang hoạt động
+    if (ctx.callbackQuery) {
+      const data = ctx.callbackQuery.data;
+      if (
+        data === "check_join_status"
+      ) {
+        return next();
+      }
+    }
+
+    const isMember = await checkUserSubscription(ctx);
+    if (!isMember) {
+      return sendJoinPrompt(ctx);
+    }
+  }
+  return next();
+});
+
+bot.action("check_join_status", async (ctx) => {
+  const isMember = await checkUserSubscription(ctx);
+  if (isMember) {
+    await ctx.answerCbQuery("✅ Bạn đã tham gia thành công!", { show_alert: true });
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {}
+    await ctx.reply("🎉 Cảm ơn bạn đã tham gia kênh! Bây giờ bạn có thể sử dụng bot.");
+  } else {
+    await ctx.answerCbQuery("❌ Bạn vẫn chưa tham gia kênh, vui lòng bấm vào nút 'Vào Kênh' để tham gia nhé!", { show_alert: true });
+  }
+});
+
 // Xóa file hỏng/đã bị xóa khỏi cache RAM & Redis
 async function removeApkFromCache(messageId) {
   try {
@@ -97,65 +177,25 @@ async function removeApkFromCache(messageId) {
 }
 
 async function getMaxMessageId(client, channelPeer) {
-  const probeIds = [
-    10,
-    50,
-    100,
-    200,
-    250,
-    500,
-    750,
-    1000,
-    1500,
-    2000,
-    3000,
-    5000,
-    7500,
-    10000,
-    15000,
-    20000,
-    30000,
-    50000,
-    75000,
-    100000
-  ];
+  const probeIds = [10, 50, 100, 200, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 30000, 50000, 75000, 100000];
 
   try {
     let highestFound = 0;
-
     for (const id of probeIds) {
       try {
-        const msgs = await client.getMessages(channelPeer, {
-          ids: [id]
-        });
-
+        const msgs = await client.getMessages(channelPeer, { ids: [id] });
         if (Array.isArray(msgs) && msgs.length > 0) {
           const msg = msgs[0];
-
           if (msg && msg.id) {
-            highestFound = Math.max(
-              highestFound,
-              Number(msg.id)
-            );
+            highestFound = Math.max(highestFound, Number(msg.id));
           }
         }
-      } catch (e) {
-        // ID không tồn tại thì bỏ qua
-      }
+      } catch (e) {}
     }
-
-    if (highestFound > 0) {
-      return highestFound + 100;
-    }
-
+    if (highestFound > 0) return highestFound + 100;
     return 500;
   } catch (e) {
-    logError(
-      "MAX_ID",
-      "Không xác định được message ID lớn nhất",
-      e
-    );
-
+    logError("MAX_ID", "Không xác định được message ID lớn nhất", e);
     return 500;
   }
 }
@@ -390,7 +430,6 @@ async function handleSearchResults(ctx, matches) {
   }
 }
 
-// Hàm render trang /list
 async function renderListPage(botUsername, page = 1) {
   const validUsername = botUsername || bot.botInfo?.username || "";
   const allApks = await getAllApksFromChannelOptimized(false);
@@ -433,88 +472,56 @@ async function renderListPage(botUsername, page = 1) {
   return { text, keyboard };
 }
 
-// 1. CHỈ LỆNH /list HOẶC DEEP LINK ?start=list
 bot.command("list", async (ctx) => {
   const waitMsg = await ctx.reply("Đang lấy danh sách...");
 
   try {
-    const botUsername =
-      ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
-
+    const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
     const { text, keyboard } = await renderListPage(botUsername, 1);
 
-    // Xóa tin nhắn "Đang lấy danh sách..."
-    try {
-      await ctx.deleteMessage(waitMsg.message_id);
-    } catch {}
+    try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+    try { await ctx.deleteMessage(ctx.message.message_id); } catch {}
 
-    // Xóa tin nhắn /list của người dùng
-    try {
-      await ctx.deleteMessage(ctx.message.message_id);
-    } catch {}
-
-    // Hiện danh sách
     await ctx.reply(text, {
       parse_mode: "HTML",
       disable_web_page_preview: true,
       ...(keyboard || {})
     });
   } catch (e) {
-    try {
-      await ctx.deleteMessage(waitMsg.message_id);
-    } catch {}
-
+    try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
     logError("LIST", "Lỗi hiển thị danh sách", e);
     await ctx.reply("❌ Không thể lấy danh sách APK!");
   }
 });
 
-// 2. CHỈ XỬ LÝ /start DẠNG t.me/username?start=list HOẶC t.me/username?start=get_id
 bot.command("start", async (ctx) => {
   const text = ctx.message.text.trim();
   const args = text.split(/\s+/);
   const payload = args[1]?.trim() || "";
 
-  // Xử lý t.me/username?start=list
-if (payload.toLowerCase() === "list") {
-  const waitMsg = await ctx.reply("Đang lấy danh sách...");
+  if (payload.toLowerCase() === "list") {
+    const waitMsg = await ctx.reply("Đang lấy danh sách...");
 
-  try {
-    const botUsername =
-      ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
-
-    const { text: listText, keyboard } =
-      await renderListPage(botUsername, 1);
-
-    // Xóa "Đang lấy danh sách..."
     try {
-      await ctx.deleteMessage(waitMsg.message_id);
-    } catch {}
+      const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
+      const { text: listText, keyboard } = await renderListPage(botUsername, 1);
 
-    // Xóa /start list
-    try {
-      await ctx.deleteMessage(ctx.message.message_id);
-    } catch {}
+      try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+      try { await ctx.deleteMessage(ctx.message.message_id); } catch {}
 
-    // Hiện danh sách
-    await ctx.reply(listText, {
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      ...(keyboard || {})
-    });
-  } catch (e) {
-    try {
-      await ctx.deleteMessage(waitMsg.message_id);
-    } catch {}
-
-    logError("START_LIST", "Lỗi hiển thị danh sách", e);
-    await ctx.reply("❌ Không thể lấy danh sách APK!");
+      await ctx.reply(listText, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...(keyboard || {})
+      });
+    } catch (e) {
+      try { await ctx.deleteMessage(waitMsg.message_id); } catch {}
+      logError("START_LIST", "Lỗi hiển thị danh sách", e);
+      await ctx.reply("❌ Không thể lấy danh sách APK!");
+    }
+    return;
   }
 
-  return;
-}
-
-  // Xử lý t.me/username?start=get_12345
   if (payload.toLowerCase().startsWith("get_")) {
     const rawId = payload.substring(4).trim();
     const msgId = Number(rawId);
@@ -570,7 +577,6 @@ if (payload.toLowerCase() === "list") {
     return;
   }
 
-  // Lệnh /start bình thường không tham số
   await ctx.reply("Chào bạn! Vui lòng nhập /help để xem hướng dẫn sử dụng.");
 });
 
@@ -591,7 +597,6 @@ bot.command("help", async (ctx) => {
   await ctx.reply(helpText);
 });
 
-// Chuyển trang qua nút bấm Inline
 bot.action(/^list_page_(\d+)$/, async (ctx) => {
   const page = parseInt(ctx.match[1], 10);
   const botUsername = ctx.botInfo?.username || (await ctx.telegram.getMe()).username;
@@ -644,9 +649,7 @@ bot.action("confirm_delcache", async (ctx) => {
     global.fileStoreCache.clear();
 
     if (clientInstance) {
-      try {
-        await clientInstance.disconnect();
-      } catch (e) {}
+      try { await clientInstance.disconnect(); } catch (e) {}
       clientInstance = null;
     }
 
@@ -738,7 +741,6 @@ bot.action(/^show_(1|all)_(.+)$/, async (ctx) => {
   const matchedIds = global.searchCache.get(searchId);
 
   await ctx.answerCbQuery();
-
   try { await ctx.deleteMessage(); } catch (e) {}
 
   if (!matchedIds || matchedIds.length === 0) {
@@ -821,14 +823,15 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
   try { await ctx.editMessageText("❌ Đã hủy thao tác lưu trữ."); } catch (e) {}
 });
 
-// Xử lý tin nhắn văn bản thông thường (Search APK)
 bot.on("text", async (ctx) => {
   const text = ctx.message.text.trim();
   if (text.startsWith("/")) return;
   if (ctx.chat.type !== "private") return;
-    if (/^(https?:\/\/)?t\.me\//i.test(text) || text.toLowerCase() === "list") {
+  
+  if (/^(https?:\/\/)?t\.me\//i.test(text) || text.toLowerCase() === "list") {
     return ctx.reply("/list");
-    }
+  }
+
   const repliedMessage = ctx.message.reply_to_message;
   if (
     repliedMessage &&
