@@ -128,27 +128,27 @@ async function sendJoinPrompt(ctx) {
 }
 
 // Middleware chặn người dùng chưa join kênh (chỉ áp dụng ở chat riêng)
-bot.use(async (ctx, next) => {
-  if (!JOIN_CHANNEL) return next();
-
-  if (ctx.chat && ctx.chat.type === "private") {
-    // Cho phép các nút tương tác xác nhận join hoặc nút đóng/trang hoạt động
-    if (ctx.callbackQuery) {
-      const data = ctx.callbackQuery.data;
-      if (
-        data === "check_join_status"
-      ) {
-        return next();
-      }
-    }
-
-    const isMember = await checkUserSubscription(ctx);
-    if (!isMember) {
-      return sendJoinPrompt(ctx);
-    }
-  }
-  return next();
-});
+// bot.use(async (ctx, next) => {
+//   if (!JOIN_CHANNEL) return next();
+// 
+//   if (ctx.chat && ctx.chat.type === "private") {
+//     // Cho phép các nút tương tác xác nhận join hoặc nút đóng/trang hoạt động
+//     if (ctx.callbackQuery) {
+//       const data = ctx.callbackQuery.data;
+//       if (
+//         data === "check_join_status"
+//       ) {
+//         return next();
+//       }
+//     }
+// 
+//     const isMember = await checkUserSubscription(ctx);
+//     if (!isMember) {
+//       return sendJoinPrompt(ctx);
+//     }
+//   }
+//   return next();
+// });
 
 bot.action("check_join_status", async (ctx) => {
   const isMember = await checkUserSubscription(ctx);
