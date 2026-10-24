@@ -16,6 +16,7 @@
     "lottie.js": "^0.6.0",
     "ffmpeg-static": "^5.2.0",
     "youtube-dl-exec": "^3.1.17",
+    "9router": "^0.5.109",
     "@fastify/http-proxy": "^11.0.0",
     "@google/generative-ai": "^0.21.0",
     "@google/genai": "^2.23.0",
