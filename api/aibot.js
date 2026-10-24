@@ -1234,8 +1234,10 @@ const OPENAI_TOOLS = [
       name: "web_search",
       description: "Tìm kiếm thông tin trên internet.",
       parameters: {
-        type: "OBJECT",
-        properties: { query: { type: "STRING" } },
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Từ khóa tìm kiếm" },
+        },
         required: ["query"],
       },
     },
@@ -1246,8 +1248,10 @@ const OPENAI_TOOLS = [
       name: "get_weather",
       description: "Lấy thời tiết hiện tại.",
       parameters: {
-        type: "OBJECT",
-        properties: { location: { type: "STRING" } },
+        type: "object",
+        properties: {
+          location: { type: "string", description: "Tên địa điểm" },
+        },
         required: ["location"],
       },
     },
@@ -1258,8 +1262,10 @@ const OPENAI_TOOLS = [
       name: "react_message",
       description: "Thả reaction vào tin nhắn người dùng đang hỏi.",
       parameters: {
-        type: "OBJECT",
-        properties: { emoji: { type: "STRING" } },
+        type: "object",
+        properties: {
+          emoji: { type: "string", description: "Emoji reaction" },
+        },
         required: ["emoji"],
       },
     },
@@ -1270,8 +1276,10 @@ const OPENAI_TOOLS = [
       name: "send_sticker",
       description: "Gửi sticker bằng Telegram file_id.",
       parameters: {
-        type: "OBJECT",
-        properties: { file_id: { type: "STRING" } },
+        type: "object",
+        properties: {
+          file_id: { type: "string", description: "File ID của sticker" },
+        },
         required: ["file_id"],
       },
     },
@@ -1282,8 +1290,10 @@ const OPENAI_TOOLS = [
       name: "send_favorite_sticker",
       description: "Chọn sticker từ pack yêu thích và gửi.",
       parameters: {
-        type: "OBJECT",
-        properties: { reason: { type: "STRING" } },
+        type: "object",
+        properties: {
+          reason: { type: "string", description: "Lý do gửi sticker" },
+        },
         required: ["reason"],
       },
     },
@@ -1294,11 +1304,11 @@ const OPENAI_TOOLS = [
       name: "mute_user",
       description: "Mute một thành viên trong 36 đến 67 giây.",
       parameters: {
-        type: "OBJECT",
+        type: "object",
         properties: {
-          user_id: { type: "NUMBER" },
-          duration_seconds: { type: "NUMBER" },
-          reason: { type: "STRING" },
+          user_id: { type: "number", description: "ID Telegram người dùng" },
+          duration_seconds: { type: "number", description: "Thời gian mute (giây)" },
+          reason: { type: "string", description: "Lý do mute" },
         },
         required: ["user_id", "duration_seconds"],
       },
@@ -1310,10 +1320,10 @@ const OPENAI_TOOLS = [
       name: "create_file",
       description: "Tạo file văn bản và gửi qua Telegram.",
       parameters: {
-        type: "OBJECT",
+        type: "object",
         properties: {
-          filename: { type: "STRING" },
-          content: { type: "STRING" },
+          filename: { type: "string", description: "Tên file" },
+          content: { type: "string", description: "Nội dung file" },
         },
         required: ["filename", "content"],
       },
@@ -1325,10 +1335,10 @@ const OPENAI_TOOLS = [
       name: "text_to_speech",
       description: "Chuyển văn bản thành giọng nói và gửi voice note.",
       parameters: {
-        type: "OBJECT",
+        type: "object",
         properties: {
-          text: { type: "STRING" },
-          language: { type: "STRING" },
+          text: { type: "string", description: "Văn bản cần đọc" },
+          language: { type: "string", description: "Mã ngôn ngữ (vi, en,...)" },
         },
         required: ["text"],
       },
@@ -1340,8 +1350,10 @@ const OPENAI_TOOLS = [
       name: "get_message_by_id",
       description: "Tìm nội dung một tin nhắn đã được lưu bằng ID trong nhóm hiện tại.",
       parameters: {
-        type: "OBJECT",
-        properties: { message_id: { type: "NUMBER" } },
+        type: "object",
+        properties: {
+          message_id: { type: "number", description: "ID tin nhắn" },
+        },
         required: ["message_id"],
       },
     },
@@ -1352,10 +1364,10 @@ const OPENAI_TOOLS = [
       name: "scan_group_history",
       description: "Quét ngược lịch sử nhóm từ trước một message ID đã lưu.",
       parameters: {
-        type: "OBJECT",
+        type: "object",
         properties: {
-          before_message_id: { type: "NUMBER" },
-          count: { type: "NUMBER" },
+          before_message_id: { type: "number", description: "ID mốc lịch sử" },
+          count: { type: "number", description: "Số lượng tin nhắn cần quét" },
         },
         required: ["before_message_id"],
       },
@@ -1367,10 +1379,10 @@ const OPENAI_TOOLS = [
       name: "trace_reply_chain",
       description: "Truy ngược chuỗi reply từ message ID về tin gốc.",
       parameters: {
-        type: "OBJECT",
+        type: "object",
         properties: {
-          message_id: { type: "NUMBER" },
-          max_depth: { type: "NUMBER" },
+          message_id: { type: "number", description: "ID tin nhắn bắt đầu" },
+          max_depth: { type: "number", description: "Độ sâu tối đa" },
         },
         required: ["message_id"],
       },
@@ -1381,7 +1393,10 @@ const OPENAI_TOOLS = [
     function: {
       name: "get_bot_profile",
       description: "Lấy hồ sơ tài khoản Telegram của chính bot Chan.",
-      parameters: { type: "OBJECT", properties: {} },
+      parameters: {
+        type: "object",
+        properties: {},
+      },
     },
   },
   {
@@ -1390,9 +1405,9 @@ const OPENAI_TOOLS = [
       name: "get_user_profile",
       description: "Lấy thông tin Telegram của người dùng.",
       parameters: {
-        type: "OBJECT",
+        type: "object",
         properties: {
-          user_id: { type: "NUMBER", description: "ID Telegram cần tra cứu." },
+          user_id: { type: "number", description: "ID Telegram cần tra cứu." },
         },
       },
     },
