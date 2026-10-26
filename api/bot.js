@@ -141,36 +141,33 @@ async function checkUserSubscription(ctx) {
   if (!userId) return false;
 
   try {
+    const client = await getGramClient();
+    if (!client) return false;
+
     const channel = JOIN_CHANNEL.trim();
+    const peer = /^-?\d+$/.test(channel)
+      ? await client.getEntity(BigInt(channel))
+      : await client.getEntity(
+          channel.startsWith("@") ? channel : `@${channel}`
+        );
 
-    // Chuẩn hóa username thành @username
-    const chatId = /^-?\d+$/.test(channel)
-      ? channel
-      : channel.startsWith("@")
-        ? channel
-        : channel.replace(/^https?:\/\/t\.me\//i, "").replace(/\/+$/, "").startsWith("+")
-          ? channel
-          : `@${channel.replace(/^https?:\/\/t\.me\//i, "").replace(/\/+$/, "")}`;
+    let found = false;
 
-    const member = await ctx.telegram.getChatMember(chatId, userId);
+    for await (const user of client.iterParticipants(peer)) {
+      if (Number(user.id) === Number(userId)) {
+        found = true;
+        break;
+      }
+    }
 
-    return [
-      "creator",
-      "administrator",
-      "member"
-    ].includes(member.status) || (
-      member.status === "restricted" &&
-      member.is_member === true
-    );
+    return found;
   } catch (err) {
-    logError("JOIN_CHECK", "Không thể xác minh thành viên kênh", {
+    logError("JOIN_CHECK", "Lỗi lấy danh sách thành viên", {
       channel: JOIN_CHANNEL,
       userId,
-      message: err.message,
-      description: err.response?.description
+      message: err.message
     });
 
-    // Không cho sử dụng nếu không xác minh được
     return false;
   }
 }
