@@ -16,6 +16,8 @@ const INITIAL_SCAN_LIMIT = 50000;
 const MAX_SEARCH_CACHE = 1000;
 const PAGE_SIZE = 25; // Số lượng APK hiển thị trên 1 trang /list
 
+const channelMembers = new Set();
+
 // Khi khởi tạo bot
 bot.on("chat_member", async (ctx) => {
   const { chat, new_chat_member } = ctx.update.chat_member;
