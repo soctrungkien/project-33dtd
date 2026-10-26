@@ -16,6 +16,23 @@ const INITIAL_SCAN_LIMIT = 50000;
 const MAX_SEARCH_CACHE = 1000;
 const PAGE_SIZE = 25; // Số lượng APK hiển thị trên 1 trang /list
 
+// Khi khởi tạo bot
+bot.on("chat_member", async (ctx) => {
+  const { chat, new_chat_member } = ctx.update.chat_member;
+
+  if (chat.id.toString() !== JOIN_CHANNEL.toString()) return;
+
+  const { user, status } = new_chat_member;
+  const isMember = ["member", "administrator", "creator"].includes(status) ||
+    (status === "restricted" && new_chat_member.is_member === true);
+
+  if (isMember) {
+    channelMembers.add(user.id); // hoặc lưu DB
+  } else {
+    channelMembers.delete(user.id);
+  }
+});
+
 bot.use(async (ctx, next) => {
   if (ctx.chat?.type !== "private") return;
 
@@ -138,33 +155,19 @@ async function checkUserSubscription(ctx) {
 if (!JOIN_CHANNEL) return true;
 if (!ctx.from) return false;
 
-try {
-  const member = await ctx.telegram.getChatMember(
-    JOIN_CHANNEL,
-    ctx.from.id
-  );
+// Check cache trước
+if (channelMembers.has(ctx.from.id)) return true;
 
+// Fallback getChatMember (public channel hoặc user từng được track)
+try {
+  const member = await ctx.telegram.getChatMember(JOIN_CHANNEL, ctx.from.id);
   const allowed =
     ["member", "administrator", "creator"].includes(member.status) ||
     (member.status === "restricted" && member.is_member === true);
 
-  // Tạm log để debug
-  console.log("[JOIN_CHECK]", {
-    userId: ctx.from.id,
-    status: member.status,
-    is_member: member.is_member,
-    allowed,
-  });
-
+  if (allowed) channelMembers.add(ctx.from.id);
   return allowed;
-} catch (err) {
-  console.log("[JOIN_CHECK] ERROR", {
-    channel: JOIN_CHANNEL,
-    userId: ctx.from.id,
-    code: err.code,
-    description: err.response?.description || err.message,
-  });
-
+} catch {
   return false;
 }
 }
@@ -187,7 +190,7 @@ bot.action("check_join_status", async (ctx) => {
 
     if (!isMember) {
       await ctx.answerCbQuery(
-        "❌ Chưa xác minh được bạn đã tham gia kênh!",
+        "❌ Chưa xác minh được bạn đã tham gia kênh! Nếu bạn đã tham gia mà vẫn hiện hãy thử thoát ra vô lại kênh.",
         { show_alert: true }
       );
       return;
