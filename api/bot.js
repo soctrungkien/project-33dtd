@@ -136,36 +136,25 @@ async function getJoinChannelUrl(ctx) {
 
 async function checkUserSubscription(ctx) {
   if (!JOIN_CHANNEL) return true;
-
-  const userId = ctx.from?.id;
-  if (!userId) return false;
+  if (!ctx.from) return false;
 
   try {
-    const client = await getGramClient();
-    if (!client) return false;
+    const member = await ctx.telegram.getChatMember(
+      JOIN_CHANNEL,
+      ctx.from.id
+    );
 
-    const channel = JOIN_CHANNEL.trim();
-    const peer = /^-?\d+$/.test(channel)
-      ? await client.getEntity(BigInt(channel))
-      : await client.getEntity(
-          channel.startsWith("@") ? channel : `@${channel}`
-        );
-
-    let found = false;
-
-    for await (const user of client.iterParticipants(peer)) {
-      if (Number(user.id) === Number(userId)) {
-        found = true;
-        break;
-      }
-    }
-
-    return found;
+    return [
+      "member",
+      "administrator",
+      "creator"
+    ].includes(member.status) ||
+      (member.status === "restricted" && member.is_member === true);
   } catch (err) {
-    logError("JOIN_CHECK", "Lỗi lấy danh sách thành viên", {
+    logError("JOIN_CHECK", "Lỗi kiểm tra thành viên", {
       channel: JOIN_CHANNEL,
-      userId,
-      message: err.message
+      userId: ctx.from.id,
+      description: err.response?.description || err.message
     });
 
     return false;
