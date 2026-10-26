@@ -135,30 +135,38 @@ async function getJoinChannelUrl(ctx) {
 }
 
 async function checkUserSubscription(ctx) {
-  if (!JOIN_CHANNEL) return true;
-  if (!ctx.from) return false;
+if (!JOIN_CHANNEL) return true;
+if (!ctx.from) return false;
 
-  try {
-    const member = await ctx.telegram.getChatMember(
-      JOIN_CHANNEL,
-      ctx.from.id
-    );
+try {
+  const member = await ctx.telegram.getChatMember(
+    JOIN_CHANNEL,
+    ctx.from.id
+  );
 
-    return [
-      "member",
-      "administrator",
-      "creator"
-    ].includes(member.status) ||
-      (member.status === "restricted" && member.is_member === true);
-  } catch (err) {
-    logError("JOIN_CHECK", "Lỗi kiểm tra thành viên", {
-      channel: JOIN_CHANNEL,
-      userId: ctx.from.id,
-      description: err.response?.description || err.message
-    });
+  const allowed =
+    ["member", "administrator", "creator"].includes(member.status) ||
+    (member.status === "restricted" && member.is_member === true);
 
-    return false;
-  }
+  // Tạm log để debug
+  console.log("[JOIN_CHECK]", {
+    userId: ctx.from.id,
+    status: member.status,
+    is_member: member.is_member,
+    allowed,
+  });
+
+  return allowed;
+} catch (err) {
+  console.log("[JOIN_CHECK] ERROR", {
+    channel: JOIN_CHANNEL,
+    userId: ctx.from.id,
+    code: err.code,
+    description: err.response?.description || err.message,
+  });
+
+  return false;
+}
 }
 
 async function sendJoinPrompt(ctx) {
