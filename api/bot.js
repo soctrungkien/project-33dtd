@@ -39,28 +39,28 @@ bot.use(async (ctx, next) => {
   if (ctx.chat?.type !== "private") return;
 
   // Không cấu hình kênh thì bỏ qua kiểm tra
-  if (!JOIN_CHANNEL) {
-    return next();
-  }
+//  if (!JOIN_CHANNEL) {
+//    return next();
+//  }
 
   // Cho phép xử lý nút kiểm tra tham gia
-  if (
-    ctx.callbackQuery?.data === "check_join_status"
-  ) {
-    return next();
-  }
+//  if (
+//    ctx.callbackQuery?.data === "check_join_status"
+//  ) {
+//    return next();
+//  }
 
-  // Cho phép callback đang cần xử lý để tránh làm nút bị treo
-  if (ctx.callbackQuery) {
-    return next();
-  }
+//  // Cho phép callback đang cần xử lý để tránh làm nút bị treo
+//  if (ctx.callbackQuery) {
+//    return next();
+//  }
 
-  const isMember = await checkUserSubscription(ctx);
+//  const isMember = await checkUserSubscription(ctx);
 
-  if (!isMember) {
-    await sendJoinPrompt(ctx);
-    return;
-  }
+//  if (!isMember) {
+//    await sendJoinPrompt(ctx);
+//    return;
+//  }
 
   return next();
 });
