@@ -18,6 +18,31 @@ const PAGE_SIZE = 25; // Số lượng APK hiển thị trên 1 trang /list
 
 bot.use(async (ctx, next) => {
   if (ctx.chat?.type !== "private") return;
+
+  // Không cấu hình kênh thì bỏ qua kiểm tra
+  if (!JOIN_CHANNEL) {
+    return next();
+  }
+
+  // Cho phép xử lý nút kiểm tra tham gia
+  if (
+    ctx.callbackQuery?.data === "check_join_status"
+  ) {
+    return next();
+  }
+
+  // Cho phép callback đang cần xử lý để tránh làm nút bị treo
+  if (ctx.callbackQuery) {
+    return next();
+  }
+
+  const isMember = await checkUserSubscription(ctx);
+
+  if (!isMember) {
+    await sendJoinPrompt(ctx);
+    return;
+  }
+
   return next();
 });
 
@@ -111,60 +136,87 @@ async function getJoinChannelUrl(ctx) {
 
 async function checkUserSubscription(ctx) {
   if (!JOIN_CHANNEL) return true;
+
+  const userId = ctx.from?.id;
+  if (!userId) return false;
+
   try {
-    const userId = ctx.from?.id;
-    if (!userId) return false;
-    const member = await ctx.telegram.getChatMember(JOIN_CHANNEL, userId);
-    const status = member.status;
-    return ["creator", "administrator", "member"].includes(status);
-  } catch (e) {
-    logError("JOIN_CHECK", "Lỗi kiểm tra thành viên kênh", e);
-    return true; // Tránh block người dùng nếu bot gặp lỗi quyền hạn
+    const channel = JOIN_CHANNEL.trim();
+
+    // Chuẩn hóa username thành @username
+    const chatId = /^-?\d+$/.test(channel)
+      ? channel
+      : channel.startsWith("@")
+        ? channel
+        : channel.replace(/^https?:\/\/t\.me\//i, "").replace(/\/+$/, "").startsWith("+")
+          ? channel
+          : `@${channel.replace(/^https?:\/\/t\.me\//i, "").replace(/\/+$/, "")}`;
+
+    const member = await ctx.telegram.getChatMember(chatId, userId);
+
+    return [
+      "creator",
+      "administrator",
+      "member"
+    ].includes(member.status) || (
+      member.status === "restricted" &&
+      member.is_member === true
+    );
+  } catch (err) {
+    logError("JOIN_CHECK", "Không thể xác minh thành viên kênh", {
+      channel: JOIN_CHANNEL,
+      userId,
+      message: err.message,
+      description: err.response?.description
+    });
+
+    // Không cho sử dụng nếu không xác minh được
+    return false;
   }
 }
 
 async function sendJoinPrompt(ctx) {
   const url = await getJoinChannelUrl(ctx);
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.url("📢 Vào Kênh", url)],
-    [Markup.button.callback("✅ Check", "check_join_status")]
-  ]);
-  return ctx.reply("⚠️ Bạn cần tham gia kênh để tiếp tục sử dụng bot!", keyboard);
+
+  return ctx.reply(
+    "⚠️ Bạn cần tham gia kênh để tiếp tục sử dụng bot!",
+    Markup.inlineKeyboard([
+      [Markup.button.url("📢 Vào Kênh", url)],
+      [Markup.button.callback("✅ Check", "check_join_status")]
+    ])
+  );
 }
 
-// Middleware chặn người dùng chưa join kênh (chỉ áp dụng ở chat riêng)
-// bot.use(async (ctx, next) => {
-//   if (!JOIN_CHANNEL) return next();
-// 
-//   if (ctx.chat && ctx.chat.type === "private") {
-//     // Cho phép các nút tương tác xác nhận join hoặc nút đóng/trang hoạt động
-//     if (ctx.callbackQuery) {
-//       const data = ctx.callbackQuery.data;
-//       if (
-//         data === "check_join_status"
-//       ) {
-//         return next();
-//       }
-//     }
-// 
-//     const isMember = await checkUserSubscription(ctx);
-//     if (!isMember) {
-//       return sendJoinPrompt(ctx);
-//     }
-//   }
-//   return next();
-// });
-
 bot.action("check_join_status", async (ctx) => {
-  const isMember = await checkUserSubscription(ctx);
-  if (isMember) {
-    await ctx.answerCbQuery("✅ Bạn đã tham gia thành công!", { show_alert: true });
+  try {
+    const isMember = await checkUserSubscription(ctx);
+
+    if (!isMember) {
+      await ctx.answerCbQuery(
+        "❌ Chưa xác minh được bạn đã tham gia kênh!",
+        { show_alert: true }
+      );
+      return;
+    }
+
+    await ctx.answerCbQuery("✅ Đã xác nhận tham gia!");
+
     try {
       await ctx.deleteMessage();
-    } catch (e) {}
-    await ctx.reply("🎉 Cảm ơn bạn đã tham gia kênh! Bây giờ bạn có thể sử dụng bot.");
-  } else {
-    await ctx.answerCbQuery("❌ Bạn vẫn chưa tham gia kênh, vui lòng bấm vào nút 'Vào Kênh' để tham gia nhé!", { show_alert: true });
+    } catch {}
+
+    await ctx.reply(
+      "🎉 Bạn đã tham gia kênh thành công! Bây giờ bạn có thể sử dụng bot."
+    );
+  } catch (err) {
+    logError("JOIN_CHECK", "Lỗi xử lý nút xác nhận", err);
+
+    try {
+      await ctx.answerCbQuery(
+        "Không thể kiểm tra lúc này, hãy thử lại!",
+        { show_alert: true }
+      );
+    } catch {}
   }
 });
 
