@@ -1533,8 +1533,9 @@ async function generateAIWith9Router(
       role: "system",
       content:
         `${CUSTOM_PERSONALITY}\n\n` +
-        "Bạn là Chan. Khi người dùng hỏi về lịch sử nhóm, hãy dùng các công cụ lịch sử. " +
-        "Không được khẳng định đã đọc tin nhắn nếu công cụ báo không tìm thấy.",
+              "Bạn là Chan. Khi người dùng hỏi về lịch sử nhóm, hãy dùng các công cụ lịch sử. " +
+              "Không được khẳng định đã đọc tin nhắn nếu công cụ báo không tìm thấy. " +
+              "Nếu ID không có trong lịch sử đã lưu, hãy giải thích giới hạn của Telegram Bot API.",
     },
   ];
 
@@ -1809,22 +1810,89 @@ async function handleUpdate(update) {
   }
 
   if (command === "/addtoken" || command === "/checktoken") {
-    if (!isPrivate || !isAdmin(uid)) return;
+    if (!isPrivate || !isAdmin(uid)) {
+      if (isPrivate) {
+        await sendOrUpdateMessage(
+          chatId,
+          "Bạn không có quyền dùng lệnh này.",
+          null,
+          originalMessageId,
+          null,
+        );
+      }
+      return;
+    }
     if (command === "/addtoken") {
-      if (args.length < 2) return;
-      const balance = await addTokens(args[0], Number(args[1]));
-      await sendOrUpdateMessage(chatId, `Đã cập nhật token cho ${args[0]}. Số dư: ${balance}`, null, originalMessageId, null);
+      if (args.length < 2) {
+        await sendOrUpdateMessage(
+          chatId,
+          "Cú pháp: /addtoken <uid> <số_lượng>",
+          null,
+          originalMessageId,
+          null,
+        );
+        return;
+      }
+
+      const targetUid = args[0];
+      const amount = Number(args[1]);
+
+      if (!Number.isSafeInteger(amount) || amount === 0) {
+        await sendOrUpdateMessage(
+          chatId,
+          "Số lượng token không hợp lệ.",
+          null,
+          originalMessageId,
+          null,
+        );
+        return;
+      }
+
+      const balance = await addTokens(targetUid, amount);
+      await sendOrUpdateMessage(
+        chatId,
+        `Đã cập nhật token cho ${targetUid}. Số dư: ${balance}`,
+        null,
+        originalMessageId,
+        null,
+      );
       return;
     }
     if (command === "/checktoken") {
-      if (!args[0]) return;
+      if (!args[0]) {
+        await sendOrUpdateMessage(
+          chatId,
+          "Cú pháp: /checktoken <uid>",
+          null,
+          originalMessageId,
+          null,
+        );
+        return;
+      }
       const balance = await getUserTokens(args[0]);
-      await sendOrUpdateMessage(chatId, `UID ${args[0]} còn ${balance} token.`, null, originalMessageId, null);
+      const remaining = await getResetRemainingTimeString(args[0]);
+
+      await sendOrUpdateMessage(
+        chatId,
+        `UID ${args[0]} còn ${balance} token.${remaining ? `\nHồi token sau: ${remaining}` : ""}`,
+        null,
+        originalMessageId,
+        null,
+      );
       return;
     }
   }
 
   if (command === "/start" || command === "/c" || command === "/clearmy") {
+    if (
+      !isPrivate &&
+      commandText.includes("@") &&
+      commandText.split(/\s+/)[0].toLowerCase() !==
+        `/${command.replace("/", "")}@${botInfo.username}`
+    ) {
+      return;
+    }
+
     if (command === "/c") {
       const cancelled = cancelUserRequest(uid);
       await redis.del(`lock:user:${uid}`).catch(() => {});
@@ -1834,8 +1902,17 @@ async function handleUpdate(update) {
 
     if (command === "/start") {
       const tokens = await getUserTokens(uid);
-      let text = `Xin chào! Tôi là Chan, bot AI.\n\nBạn đang có ${tokens} token.\n\n/clearmy — Xóa bộ nhớ\n/token — Kiểm tra/mua token`;
-      if (isPrivate && isAdmin(uid)) text += `\n\nQuản trị: /addtoken <uid> <số> | /checktoken <uid>`;
+      let text =
+        "Xin chào! Tôi là Chan, bot AI.\n\n" +
+        `Bạn đang có ${tokens} token.\n\n` +
+        "Lệnh:\n" +
+        "/clearmy — Xóa bộ nhớ hội thoại\n" +
+        "/token — Kiểm tra/mua token";
+
+      if (isPrivate && isAdmin(uid)) {
+        text +=
+          "\n\nLệnh quản trị:\n/addtoken <uid> <số_lượng>\n/checktoken <uid>";
+      }
       await sendOrUpdateMessage(chatId, text, null, originalMessageId, null);
       return;
     }
@@ -1883,21 +1960,71 @@ async function handleUpdate(update) {
     if (!isPrivate) {
       const meta = await getChatMetadata(chatId);
       const admins = await getGroupAdminsList(chatId);
-      groupDetails = `\n[Nhóm: ${meta?.title || message.chat.title || "N/A"}]\n[Chủ nhóm: ${admins.owners.join("; ") || "Không rõ"}]`;
+      groupDetails =
+        `\n[Thông tin nhóm: ${meta?.title || message.chat.title || "N/A"}]` +
+        `\n[ID nhóm: ${chatId}]` +
+        `\n[Chủ nhóm: ${admins.owners.join("; ") || "Không rõ"}]` +
+        `\n[Quản trị viên: ${admins.admins.join("; ") || "Không có"}]`;
+    }
+
+    let replyContext = "";
+    if (message.reply_to_message) {
+      const reply = message.reply_to_message;
+      replyContext =
+        `\n[Đang reply ID ${reply.message_id}, người gửi: ${reply.from?.first_name || "Không rõ"}]` +
+        `\n[Nội dung reply: ${getMessageText(reply).slice(0, 1200)}]`;
     }
 
     let groupHistoryContext = "";
     if (!isPrivate) {
       const history = await getHistoryBeforeId(chatId, originalMessageId, 20);
       if (history.messages.length) {
-        groupHistoryContext = "\n[LỊCH SỬ HỘI THOẠI]\n" + history.messages.map(formatHistoryItem).join("\n\n");
+        groupHistoryContext =
+          "\n[LỊCH SỬ HỘI THOẠI]\n" +
+          "Các tin nhắn dưới đây được lấy từ lịch sử đã lưu trong database. " +
+          "Sử dụng chúng để hiểu ngữ cảnh, người nói và chuỗi hội thoại. " +
+          "Không được khẳng định đã đọc những tin nhắn không xuất hiện trong dữ liệu.\n\n" +
+          history.messages.map(formatHistoryItem).join("\n\n");
       }
     }
 
-    const userPromptText =
-      `[Thời gian: ${getVietnamTimeString()}]\n` +
-      `[Người gửi: ${senderName} (${senderHandle}) | UID: ${uid} | Vai trò: ${userRole}]\n` +
-      `${groupDetails}${groupHistoryContext}\n[Nội dung]: ${rawText || getMessageText(message)}`;
+    const tokensLeft = await getUserTokens(uid);
+
+    const userHeader =
+      `[Thời gian UTC+7: ${getVietnamTimeString()}]\n` +
+      `[Người gửi: ${senderName} | Username: ${senderHandle} | UID: ${uid} | Vai trò: ${userRole} | Token còn: ${tokensLeft}]\n` +
+      `${groupDetails}${replyContext}${groupHistoryContext}`;
+
+    let promptTextOnly = `${userHeader}\n[Nội dung tin nhắn]: ${rawText || getMessageText(message)}`;
+    const userParts = [{ text: promptTextOnly }];
+
+    let fileData = await getFileFromMessage(message);
+    if (!fileData && message.reply_to_message) {
+      fileData = await getFileFromMessage(message.reply_to_message);
+    }
+
+    if (fileData) {
+      if (fileData.kind === "frames") {
+        userParts.push({
+          text:
+            "Các ảnh tiếp theo là khung hình theo thứ tự thời gian của một sticker động. " +
+            "Hãy xem nội dung và sự thay đổi giữa các khung hình, " +
+            "không suy đoán những chi tiết không thể quan sát.",
+        });
+
+        userParts.push(...framesToGeminiParts(fileData.frames));
+
+        promptTextOnly +=
+          `\n[Sticker động: ${fileData.frames.length} khung hình, ` +
+          `${fileData.mimeType}, ${fileData.fileSize} bytes]`;
+      } else if (fileData.inlineData) {
+        userParts.push({ inlineData: fileData.inlineData });
+
+        promptTextOnly +=
+          `\n[File đính kèm: ${fileData.mimeType}, ` +
+          `${fileData.fileSize} bytes]`;
+      }
+    }
 
     const replyTargetId = message.from?.is_bot ? null : originalMessageId;
 
