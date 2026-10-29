@@ -1,5 +1,5 @@
 const https = require("https");
-const { OpenAI } = require("openai");
+const { OpenAI, toFile } = require("openai");
 const Redis = require("ioredis");
 const { waitUntil } = require("@vercel/functions");
 const fs = require("fs");
@@ -19,8 +19,16 @@ const redis = new Redis(process.env.REDIS_URL, {
 
 // Cấu hình 9router (OpenAI-compatible endpoint)
 const NINE_ROUTER_URL = process.env.NINE_ROUTER_URL || "http://localhost:20128/v1";
-const NINE_ROUTER_KEY = process.env.NINE_ROUTER_KEY || process.env.OPENAI_API_KEY || "dummy-key";
+const NINE_ROUTER_KEY = process.env.NINE_ROUTER_KEY || "dummy-key";
 const AI_MODEL = "chan";
+// Model/combos cho các dịch vụ khác của 9router (xem GET /v1/models/<loại>)
+const NINE_EMBEDDING_MODEL = "gemini/gemini-embedding-001";
+const NINE_IMAGE_MODEL = "gemini/gemini-2.5-flash-image";
+const NINE_STT_MODEL = "gemini/gemini-2.5-flash-lite";
+const NINE_TTS_MODEL = "google-tts/vi";
+const NINE_VIDEO_MODEL = "openrouter/google/veo-3.1";
+const NINE_SEARCH_MODEL = "search-combo";
+const NINE_FETCH_MODEL = "fetch-combo";
 
 const aiClient = new OpenAI({
   baseURL: NINE_ROUTER_URL,
@@ -62,6 +70,13 @@ const PROCESS_TIMEOUT_MS = 120000;
 const TOOL_TIMEOUT_MS = 20000;
 const TTS_TIMEOUT_MS = 20000;
 const AUTO_RESPONSE_CHANCE = 0.00001;
+const MAX_FETCH_CHARS = 6000;
+const STT_TIMEOUT_MS = 60000;
+const VIDEO_POLL_MS = 5000;
+const VIDEO_MAX_WAIT_MS = 10 * 60 * 1000;
+// Token trừ cho mỗi lần gọi tool (mặc định 1)
+const TOOL_COSTS = { text_to_image: 5, generate_video: 10 };
+const TOOL_TIMEOUTS = { text_to_image: 90000, web_fetch: 30000, generate_video: 30000 };
 
 let cachedBotInfo = null;
 
@@ -383,43 +398,210 @@ async function muteUser(chatId, userId, durationSeconds) {
   return duration;
 }
 
-async function searchDuckDuckGo(query) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TOOL_TIMEOUT_MS);
-
-  try {
-    const response = await fetch("https://lite.duckduckgo.com/lite/", {
+async function nineRouterPost(route, payload, timeoutMs = TOOL_TIMEOUT_MS) {
+  const response = await withTimeout(
+    fetch(`${NINE_ROUTER_URL}${route}`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${NINE_ROUTER_KEY}`,
       },
-      body: `q=${encodeURIComponent(query)}`,
-      signal: controller.signal,
-    });
+      body: JSON.stringify(payload),
+    }),
+    timeoutMs,
+    `9router ${route}`,
+  );
 
-    const html = await response.text();
-    const snippets = [
-      ...html.matchAll(/class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/gi),
-    ]
-      .slice(0, 5)
-      .map((match) =>
-        match[1]
-          .replace(/<[^>]+>/g, " ")
-          .replace(/\s+/g, " ")
-          .trim(),
-      )
-      .filter(Boolean);
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).slice(0, 200);
+    throw new Error(`9router HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return response;
+}
 
-    if (!snippets.length) {
-      return "Không tìm thấy kết quả hoặc dịch vụ tìm kiếm tạm thời bị chặn.";
+function requireModel(value, envName) {
+  if (!value) throw new Error(`Chưa cấu hình ${envName}`);
+  return value;
+}
+
+async function searchWeb(query) {
+  if (!query) throw new Error("Thiếu từ khóa tìm kiếm.");
+
+  const response = await nineRouterPost("/search", {
+    model: NINE_SEARCH_MODEL,
+    query,
+    max_results: 5,
+  });
+  const data = await response.json();
+  const results = (data.results || []).slice(0, 5);
+  if (!results.length) return `Không tìm thấy kết quả cho "${query}".`;
+
+  const lines = results.map((item, index) => {
+    const snippet = String(item.snippet || item.content || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300);
+    return `${index + 1}. ${item.title || "Không tiêu đề"}\n${item.url || ""}\n${snippet}`;
+  });
+  return `Kết quả tìm kiếm "${query}":\n\n${lines.join("\n\n")}`;
+}
+
+async function fetchWebPage(url) {
+  if (!/^https?:\/\//i.test(url)) throw new Error("URL phải bắt đầu bằng http:// hoặc https://");
+
+  const response = await nineRouterPost(
+    "/web/fetch",
+    { model: NINE_FETCH_MODEL, url, format: "markdown", max_characters: MAX_FETCH_CHARS },
+    30000,
+  );
+  const data = await response.json();
+  const body = data.data || data;
+  const content = typeof body.content === "string" ? body.content : body.content?.text || "";
+  if (!content) throw new Error("Không đọc được nội dung trang.");
+
+  return `${body.title ? `${body.title}\n\n` : ""}${content.slice(0, MAX_FETCH_CHARS)}`;
+}
+
+async function getEmbeddings(texts) {
+  const result = await aiClient.embeddings.create({
+    model: requireModel(NINE_EMBEDDING_MODEL, "NINE_EMBEDDING_MODEL"),
+    input: texts,
+    encoding_format: "float",
+  });
+  return result.data.map((item) => item.embedding);
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
+}
+
+async function generateImage(prompt) {
+  const response = await nineRouterPost(
+    "/images/generations",
+    { model: requireModel(NINE_IMAGE_MODEL, "NINE_IMAGE_MODEL"), prompt },
+    80000,
+  );
+  const data = await response.json();
+  const item = data.data?.[0];
+
+  if (item?.b64_json) return Buffer.from(item.b64_json, "base64");
+  if (item?.url) {
+    const image = await withTimeout(fetch(item.url), 20000, "Tải ảnh");
+    if (!image.ok) throw new Error(`Tải ảnh lỗi HTTP ${image.status}`);
+    return Buffer.from(await image.arrayBuffer());
+  }
+  throw new Error("9router không trả về ảnh.");
+}
+
+async function synthesizeSpeech(text, voice) {
+  const response = await nineRouterPost(
+    "/audio/speech?response_format=mp3",
+    { model: String(voice || "").trim() || NINE_TTS_MODEL, input: text },
+    TTS_TIMEOUT_MS,
+  );
+  return Buffer.from(await response.arrayBuffer());
+}
+
+// Trả về chuỗi phiên âm; ném lỗi nếu thất bại
+async function transcribeAudio(base64Data, mimeType) {
+  const model = requireModel(NINE_STT_MODEL, "NINE_STT_MODEL");
+  const ext = /mpeg|mp3/.test(mimeType)
+    ? "mp3"
+    : /mp4|m4a|aac/.test(mimeType)
+      ? "m4a"
+      : /wav/.test(mimeType)
+        ? "wav"
+        : /webm/.test(mimeType)
+          ? "webm"
+          : "ogg";
+  const file = await toFile(Buffer.from(base64Data, "base64"), `audio.${ext}`, { type: mimeType });
+  const result = await withTimeout(
+    aiClient.audio.transcriptions.create({ file, model }),
+    STT_TIMEOUT_MS,
+    "Speech to text",
+  );
+  return String(result.text || "").trim();
+}
+
+async function startVideoJob(prompt, duration, aspectRatio) {
+  const body = { model: NINE_VIDEO_MODEL, prompt };
+  const seconds = Number(duration);
+  if (Number.isFinite(seconds) && seconds > 0) body.duration = seconds;
+  if (["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"].includes(aspectRatio)) {
+    body.aspect_ratio = aspectRatio;
+  }
+
+  const response = await nineRouterPost("/videos/generations", body, 25000);
+  const data = await response.json();
+  if (!data.request_id) throw new Error("9router không trả về request_id.");
+
+  return {
+    requestId: data.request_id,
+    connectionId: response.headers.get("x-9router-connection-id") || "",
+  };
+}
+
+async function waitForVideo(job) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < VIDEO_MAX_WAIT_MS) {
+    await sleep(VIDEO_POLL_MS);
+
+    const headers = { Authorization: `Bearer ${NINE_ROUTER_KEY}` };
+    if (job.connectionId) headers["x-connection-id"] = job.connectionId;
+
+    const response = await withTimeout(
+      fetch(`${NINE_ROUTER_URL}/videos/${encodeURIComponent(job.requestId)}`, { headers }),
+      15000,
+      "Kiểm tra video",
+    );
+    if (!response.ok) {
+      if (response.status >= 500) continue;
+      throw new Error(`9router HTTP ${response.status}`);
     }
 
-    return `Kết quả tìm kiếm "${query}":\n- ${snippets.join("\n- ")}`;
+    const data = await response.json();
+    if (data.status === "done" && data.video?.url) return data.video.url;
+    if (data.status === "failed") {
+      throw new Error(data.error?.message || "Tạo video thất bại.");
+    }
+  }
+
+  throw new Error("Tạo video quá lâu.");
+}
+
+// Chạy nền sau khi tool trả lời: poll tới khi xong rồi gửi video vào chat
+async function deliverVideo(chatId, replyToMessageId, job, cost, uid) {
+  try {
+    const url = await waitForVideo(job);
+    try {
+      await telegramCall(
+        "sendVideo",
+        { chat_id: chatId, video: url, reply_to_message_id: replyToMessageId || undefined },
+        60000,
+      );
+    } catch (error) {
+      console.error("[Video send]", error.message);
+      await sendOrUpdateMessage(chatId, `Video xong rồi: ${url}`, null, replyToMessageId, null);
+    }
   } catch (error) {
-    return `Lỗi tìm kiếm: ${error.message}`;
-  } finally {
-    clearTimeout(timer);
+    console.error("[Video]", error.message);
+    await addTokens(uid, cost);
+    await sendOrUpdateMessage(
+      chatId,
+      `Tạo video lỗi: ${String(error.message).slice(0, 200)}\nĐã hoàn ${cost} token.`,
+      null,
+      replyToMessageId,
+      null,
+    );
   }
 }
 
@@ -783,6 +965,8 @@ function framesToImageParts(frames) {
     }));
 }
 
+const MULTIPART_FIELDS = { sendVoice: "voice", sendPhoto: "photo" };
+
 async function sendMultipart(
   method,
   chatId,
@@ -809,7 +993,7 @@ async function sendMultipart(
 
   parts.push(
     Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="${method === "sendVoice" ? "voice" : "document"}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="${MULTIPART_FIELDS[method] || "document"}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`,
     ),
   );
   parts.push(buffer);
@@ -854,30 +1038,12 @@ async function sendDocumentBuffer(chatId, buffer, filename, caption = "", replyT
   return sendMultipart("sendDocument", chatId, buffer, filename, "application/octet-stream", replyToMessageId, caption);
 }
 
-async function googleTranslateTTS(text, language = "vi") {
-  const chunks = String(text).match(/.{1,160}(?:\s|$)/g) || [String(text)];
-  const buffers = [];
-
-  for (const chunk of chunks) {
-    const response = await withTimeout(
-      fetch(
-        "https://translate.google.com/translate_tts" +
-          `?ie=UTF-8&client=tw-ob&tl=${encodeURIComponent(language)}` +
-          `&q=${encodeURIComponent(chunk)}`,
-      ),
-      TOOL_TIMEOUT_MS,
-      "Google TTS",
-    );
-
-    if (!response.ok) throw new Error(`Google TTS HTTP ${response.status}`);
-    buffers.push(Buffer.from(await response.arrayBuffer()));
-  }
-
-  return Buffer.concat(buffers);
+async function sendVoiceBuffer(chatId, buffer, replyToMessageId = null) {
+  return sendMultipart("sendVoice", chatId, buffer, "voice.mp3", "audio/mpeg", replyToMessageId);
 }
 
-async function sendVoiceBuffer(chatId, buffer, replyToMessageId = null) {
-  return sendMultipart("sendVoice", chatId, buffer, "voice.ogg", "audio/ogg", replyToMessageId);
+async function sendPhotoBuffer(chatId, buffer, replyToMessageId = null) {
+  return sendMultipart("sendPhoto", chatId, buffer, "image.png", "image/png", replyToMessageId);
 }
 
 function escapeText(value) {
@@ -1330,6 +1496,67 @@ const OPENAI_TOOLS = [
   {
     type: "function",
     function: {
+      name: "web_fetch",
+      description: "Đọc nội dung một trang web từ URL (trả về markdown).",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL bắt đầu bằng http:// hoặc https://" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "text_to_image",
+      description: "Tạo ảnh từ mô tả và gửi vào chat. Tốn 5 token.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "Mô tả ảnh cần tạo" },
+        },
+        required: ["prompt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_video",
+      description:
+        "Tạo video từ mô tả. Video được gửi vào chat sau khi xong (có thể mất vài phút). Tốn 10 token.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "Mô tả video" },
+          duration: { type: "number", description: "Độ dài (giây), tùy chọn" },
+          aspect_ratio: { type: "string", description: "16:9, 9:16, 1:1,... tùy chọn" },
+        },
+        required: ["prompt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "embedding",
+      description:
+        "Tạo embedding cho văn bản. Trả về số chiều và vài giá trị đầu; nếu có text2 thì trả thêm độ tương đồng cosine.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Văn bản thứ nhất" },
+          text2: { type: "string", description: "Văn bản thứ hai để so sánh (tùy chọn)" },
+        },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_weather",
       description: "Lấy thời tiết hiện tại.",
       parameters: {
@@ -1344,42 +1571,14 @@ const OPENAI_TOOLS = [
   {
     type: "function",
     function: {
-      name: "react_message",
-      description: "Thả reaction vào tin nhắn người dùng đang hỏi.",
-      parameters: {
-        type: "object",
-        properties: {
-          emoji: { type: "string", description: "Emoji reaction" },
-        },
-        required: ["emoji"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "send_sticker",
-      description: "Gửi sticker bằng Telegram file_id.",
-      parameters: {
-        type: "object",
-        properties: {
-          file_id: { type: "string", description: "File ID của sticker" },
-        },
-        required: ["file_id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "send_favorite_sticker",
-      description: "Chọn sticker từ pack yêu thích và gửi.",
+      description:
+        "Lấy danh sách sticker từ pack yêu thích để tự chọn. Chọn một file_id rồi gửi bằng thẻ <send_sticker>file_id</send_sticker> trong câu trả lời.",
       parameters: {
         type: "object",
         properties: {
-          reason: { type: "string", description: "Lý do gửi sticker" },
+          emoji: { type: "string", description: "Lọc theo emoji của sticker (tùy chọn)" },
         },
-        required: ["reason"],
       },
     },
   },
@@ -1423,7 +1622,7 @@ const OPENAI_TOOLS = [
         type: "object",
         properties: {
           text: { type: "string", description: "Văn bản cần đọc" },
-          language: { type: "string", description: "Mã ngôn ngữ (vi, en,...)" },
+          voice: { type: "string", description: "ID giọng 9router, ví dụ edge-tts/en-US-AriaNeural. Bỏ trống để dùng giọng mặc định" },
         },
         required: ["text"],
       },
@@ -1514,13 +1713,16 @@ async function executeTool(call, uid, chatId, originalMessageId) {
     args = {};
   }
 
-  await consumeExtraToken(uid, 1);
+  const cost = TOOL_COSTS[name] ?? 1;
+  if (!(await consumeExtraToken(uid, cost))) {
+    return { success: false, text: `Không đủ token (cần ${cost}) để dùng ${name}.` };
+  }
 
   try {
     const response = await withTimeout(
       (async () => {
         if (name === "web_search") {
-          return { text: await searchDuckDuckGo(String(args.query || "").trim()) };
+          return { text: await searchWeb(String(args.query || "").trim()) };
         }
         if (name === "get_weather") {
           return { text: await getWeather(String(args.location || "").trim()) };
@@ -1555,24 +1757,55 @@ async function executeTool(call, uid, chatId, originalMessageId) {
             note: "Chuỗi chỉ có thể truy tiếp khi tin nhắn đã được lưu và có replyToId.",
           };
         }
-        if (name === "react_message") {
-          if (!originalMessageId) return { success: false, text: "Không có ID tin nhắn." };
-          const emoji = String(args.emoji || "👍");
-          await setMessageReaction(chatId, originalMessageId, emoji);
-          return { success: true, text: `Đã thả reaction ${emoji}.` };
-        }
-        if (name === "send_sticker") {
-          const fileId = String(args.file_id || "").trim();
-          if (!fileId) return { success: false, text: "Thiếu file_id." };
-          await sendSticker(chatId, fileId, originalMessageId);
-          return { success: true, text: "Đã gửi sticker." };
-        }
         if (name === "send_favorite_sticker") {
-          const stickers = await getFavoriteStickers();
-          if (!stickers.length) return { success: false, text: "Không có sticker pack." };
-          const chosen = stickers[Math.floor(Math.random() * stickers.length)];
-          await sendSticker(chatId, chosen.file_id, originalMessageId);
-          return { success: true, text: `Đã gửi sticker từ pack ${chosen.pack}.` };
+          const all = await getFavoriteStickers();
+          if (!all.length) return { success: false, text: "Không có sticker pack." };
+
+          const emoji = String(args.emoji || "").trim();
+          const matched = emoji ? all.filter((s) => s.emoji.includes(emoji)) : [];
+          const pool = [...(matched.length ? matched : all)]
+            .sort(() => Math.random() - 0.5)
+            .slice(0, 30);
+
+          return {
+            success: true,
+            stickers: pool.map((s) => ({ file_id: s.file_id, emoji: s.emoji })),
+            note: "Chọn một file_id rồi viết <send_sticker>file_id</send_sticker> trong câu trả lời để gửi.",
+          };
+        }
+        if (name === "web_fetch") {
+          return { text: await fetchWebPage(String(args.url || "").trim()) };
+        }
+        if (name === "text_to_image") {
+          const prompt = String(args.prompt || "").trim();
+          if (!prompt) return { success: false, text: "Thiếu mô tả ảnh." };
+          await sendChatAction(chatId, "upload_photo");
+          const image = await generateImage(prompt);
+          await sendPhotoBuffer(chatId, image, originalMessageId);
+          return { success: true, text: "Đã gửi ảnh vào chat." };
+        }
+        if (name === "generate_video") {
+          const prompt = String(args.prompt || "").trim();
+          if (!prompt) return { success: false, text: "Thiếu mô tả video." };
+          const job = await startVideoJob(prompt, args.duration, String(args.aspect_ratio || ""));
+          waitUntil(deliverVideo(chatId, originalMessageId, job, TOOL_COSTS.generate_video, uid));
+          return {
+            success: true,
+            text: "Đã nhận yêu cầu. Video xong sẽ tự được gửi vào chat. Không gọi lại công cụ này.",
+          };
+        }
+        if (name === "embedding") {
+          const text = String(args.text || "").trim();
+          const text2 = String(args.text2 || "").trim();
+          if (!text) return { success: false, text: "Thiếu văn bản." };
+          const vectors = await getEmbeddings(text2 ? [text, text2] : [text]);
+          const result = {
+            success: true,
+            dimensions: vectors[0].length,
+            preview: vectors[0].slice(0, 8).map((v) => Number(v.toFixed(4))),
+          };
+          if (text2) result.cosine_similarity = Number(cosineSimilarity(vectors[0], vectors[1]).toFixed(4));
+          return result;
         }
         if (name === "mute_user") {
           const userId = Number(args.user_id);
@@ -1597,7 +1830,7 @@ async function executeTool(call, uid, chatId, originalMessageId) {
             await sendChatAction(chatId, "record_audio");
 
             const audio = await withTimeout(
-              googleTranslateTTS(text, String(args.language || "vi")),
+              synthesizeSpeech(text, args.voice),
               TTS_TIMEOUT_MS,
               "Tạo voice",
             );
@@ -1669,13 +1902,15 @@ async function executeTool(call, uid, chatId, originalMessageId) {
         }
         return { success: false, text: `Không tồn tại công cụ ${name}.` };
       })(),
-      TOOL_TIMEOUT_MS,
+      TOOL_TIMEOUTS[name] || TOOL_TIMEOUT_MS,
       `Tool ${name}`,
     );
 
+    if (response?.success === false) await addTokens(uid, cost);
     console.log(`[Tool OK] ${name}`);
     return response;
   } catch (error) {
+    await addTokens(uid, cost);
     console.error(`[Tool ERROR] ${name}:`, error.message);
     return {
       success: false,
@@ -1709,7 +1944,11 @@ async function generateAIWith9Router(
         `${CUSTOM_PERSONALITY}\n\n` +
         "Bạn là Chan. Khi người dùng hỏi về lịch sử nhóm, hãy dùng các công cụ lịch sử. " +
         "Không được khẳng định đã đọc tin nhắn nếu công cụ báo không tìm thấy. " +
-        "Nếu ID không có trong lịch sử đã lưu, hãy giải thích giới hạn của Telegram Bot API.",
+        "Nếu ID không có trong lịch sử đã lưu, hãy giải thích giới hạn của Telegram Bot API. " +
+        "Để thả reaction vào tin nhắn người dùng, viết <react_message>emoji</react_message> ngay trong câu trả lời. " +
+        "Để gửi sticker, viết <send_sticker>file_id</send_sticker> (lấy file_id từ công cụ send_favorite_sticker). " +
+        "Các thẻ này tự bị xóa khỏi tin nhắn hiển thị. " +
+        "Muốn tách sang tin nhắn mới, viết --- hoặc *** trên một dòng riêng.",
     },
   ];
 
@@ -1814,6 +2053,58 @@ async function generateAIWith9Router(
   return fullText;
 }
 
+const ACTION_TAG_RE = /<(react_message|send_sticker)>([\s\S]*?)<\/\1>/gi;
+const ACTION_TAG_OPENERS = ["<react_message>", "<send_sticker>"];
+
+function parseActionTags(text) {
+  return [...String(text || "").matchAll(ACTION_TAG_RE)].map((match) => ({
+    type: match[1].toLowerCase(),
+    value: match[2].trim(),
+  }));
+}
+
+// Xóa thẻ hành động, kể cả thẻ đang viết dở ở cuối chuỗi khi stream
+function stripActionTags(text) {
+  let clean = String(text || "").replace(ACTION_TAG_RE, "");
+
+  const unclosed = clean.search(/<(?:react_message|send_sticker)>/i);
+  if (unclosed !== -1) clean = clean.slice(0, unclosed);
+
+  const lt = clean.lastIndexOf("<");
+  if (lt !== -1) {
+    const tail = clean.slice(lt).toLowerCase();
+    if (ACTION_TAG_OPENERS.some((opener) => opener.startsWith(tail))) clean = clean.slice(0, lt);
+  }
+  return clean;
+}
+
+// --- hoặc *** trên một dòng riêng = sang tin nhắn mới
+function splitMessageParts(text) {
+  return String(text || "")
+    .split(/^[ \t]*(?:-{3,}|\*{3,})[ \t]*$/m)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+async function runActionTags(chatId, replyToMessageId, actions) {
+  let reacted = false;
+  let stickers = 0;
+
+  for (const action of actions) {
+    try {
+      if (action.type === "react_message" && !reacted && replyToMessageId) {
+        reacted = true;
+        await setMessageReaction(chatId, replyToMessageId, action.value || "👍");
+      } else if (action.type === "send_sticker" && action.value && stickers < 3) {
+        stickers++;
+        await sendSticker(chatId, action.value, replyToMessageId);
+      }
+    } catch (error) {
+      console.error(`[Action ${action.type}]`, error.message);
+    }
+  }
+}
+
 // userContent: parts gửi cho AI (có thể kèm ảnh)
 // promptTextOnly: chỉ văn bản, dùng để lưu vào bộ nhớ Redis
 async function processAIResponse(
@@ -1825,15 +2116,14 @@ async function processAIResponse(
   senderHandle = "",
 ) {
   const startedAt = Date.now();
-  let telegramMessageId = null;
-  let lastText = "";
+  const segments = []; // mỗi phần ngăn bởi --- / *** là một tin nhắn: { id, text }
   let finished = false;
 
   const abortController = new AbortController();
   activeRequests.set(String(uid), { abortController, chatId });
 
   let suggestTimer = setTimeout(async () => {
-    if (finished || lastText) return;
+    if (finished || segments.length) return;
     try {
       const suggestId = await sendOrUpdateMessage(
         chatId,
@@ -1852,22 +2142,32 @@ async function processAIResponse(
 
   const deadline = createDeadline(PROCESS_TIMEOUT_MS);
 
-  const updateTelegram = async (text) => {
-    if (finished || !text || text === lastText) return;
+  const updateTelegram = async (rawText) => {
+    if (finished) return;
+
+    const parts = splitMessageParts(stripActionTags(rawText));
+    if (!parts.length) return;
+
     if (suggestTimer) {
       clearTimeout(suggestTimer);
       suggestTimer = null;
     }
-    lastText = text;
 
-    try {
-      if (!telegramMessageId) {
-        telegramMessageId = await sendStreamingMessage(chatId, text, null, originalMessageId);
-      } else {
-        telegramMessageId = await sendStreamingMessage(chatId, text, telegramMessageId, null);
+    for (let i = 0; i < parts.length; i++) {
+      const text = parts[i];
+      const segment = segments[i];
+
+      try {
+        if (!segment) {
+          const id = await sendStreamingMessage(chatId, text, null, originalMessageId);
+          segments[i] = { id, text };
+        } else if (segment.text !== text) {
+          segment.text = text;
+          segment.id = (await sendStreamingMessage(chatId, text, segment.id, null)) || segment.id;
+        }
+      } catch (error) {
+        console.error("[Stream -> Telegram]", error.message);
       }
-    } catch (error) {
-      console.error("[Stream -> Telegram]", error.message);
     }
   };
 
@@ -1894,10 +2194,9 @@ async function processAIResponse(
       history.push({ role: "assistant", content: aiResponse });
       await saveChatMemory(chatId, history);
 
-      if (aiResponse !== lastText) {
-        await updateTelegram(aiResponse);
-      }
-    } else if (!telegramMessageId) {
+      await updateTelegram(aiResponse);
+      await runActionTags(chatId, originalMessageId, parseActionTags(aiResponse));
+    } else if (!segments.length) {
       await sendOrUpdateMessage(
         chatId,
         "Chan đã xử lý xong nhưng không nhận được văn bản trả lời.",
@@ -2341,6 +2640,22 @@ async function handleUpdate(update) {
             type: "text",
             text: `[Nội dung file đính kèm]\n${fileText}`,
           });
+        } else if (mimeType.startsWith("audio/")) {
+          let transcript;
+          if (!(await consumeExtraToken(uid, 1))) {
+            transcript = "[Người dùng gửi âm thanh nhưng không đủ token để phiên âm.]";
+          } else {
+            try {
+              const text = await transcribeAudio(data, mimeType);
+              transcript = text ? `[Phiên âm giọng nói]: ${text}` : "[Âm thanh không có lời nói nhận diện được.]";
+            } catch (error) {
+              console.error("[STT]", error.message);
+              await addTokens(uid, 1);
+              transcript = `[Không phiên âm được âm thanh: ${String(error.message).slice(0, 150)}]`;
+            }
+          }
+          userParts.push({ type: "text", text: transcript });
+          promptTextOnly += `\n${transcript}`;
         } else {
           userParts.push({
             type: "text",
