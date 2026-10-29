@@ -48,14 +48,15 @@ const STICKER_FAVORITE_PACKS = (process.env.STICKER_FAVORITE_PACKS_BOT || "")
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_GENERATED_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_TEXT_CHARS = 8000;
 const DEFAULT_FREE_TOKENS = 50;
 const RESET_DURATION_MS = 12 * 60 * 60 * 1000;
 const REDIS_TTL_SEC = 24 * 60 * 60;
 const MAX_MESSAGES = 15;
-const MAX_HISTORY_MESSAGES = 3;
+const MAX_HISTORY_MESSAGES = 100;
 const MAX_HISTORY_TEXT = 300;
 const MAX_CONTEXT_HISTORY = 12;
-const MAX_REPLY_CHAIN = 5;
+const MAX_REPLY_CHAIN = 15;
 const MAX_OUTPUT_CHARS = 4000;
 const PROCESS_TIMEOUT_MS = 120000;
 const TOOL_TIMEOUT_MS = 20000;
@@ -764,6 +765,24 @@ async function getTelegramRawFile(fileId) {
   }
 }
 
+// Đổi khung hình sticker sang định dạng ảnh của OpenAI-compatible API
+function framesToImageParts(frames) {
+  if (!Array.isArray(frames) || frames.length === 0) return [];
+
+  return frames
+    .filter(
+      (frame) =>
+        frame &&
+        typeof frame.data === "string" &&
+        frame.data.length > 0 &&
+        typeof frame.mimeType === "string",
+    )
+    .map((frame) => ({
+      type: "image_url",
+      image_url: { url: `data:${frame.mimeType};base64,${frame.data}` },
+    }));
+}
+
 async function sendMultipart(
   method,
   chatId,
@@ -861,6 +880,13 @@ async function sendVoiceBuffer(chatId, buffer, replyToMessageId = null) {
   return sendMultipart("sendVoice", chatId, buffer, "voice.ogg", "audio/ogg", replyToMessageId);
 }
 
+function escapeText(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function getMessageText(message) {
   if (!message) return "";
   if (message.text) return message.text;
@@ -931,6 +957,8 @@ async function storeHistoryMessage(chatId, message) {
         await pipeline.exec();
       }
     }
+
+    ramCache.delete(`group:${chatId}:latest`);
   } catch (error) {
     console.error("[Group history save]", error.message);
   }
@@ -987,6 +1015,59 @@ async function getHistoryBeforeId(chatId, beforeId, count = 20) {
   }
 }
 
+async function getHistoryAroundId(chatId, messageId, count = 10) {
+  const targetId = Number(messageId);
+  const limit = Math.max(1, Math.min(Number(count) || 10, 40));
+
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) return [];
+
+  const beforeCount = Math.floor((limit - 1) / 2);
+  const afterCount = limit - beforeCount - 1;
+
+  const before = await getHistoryBeforeId(chatId, targetId, beforeCount);
+  const target = await getStoredMessage(chatId, targetId);
+
+  let after = [];
+  try {
+    const ids = await redis.zrangebyscore(
+      historyIndexKey(chatId),
+      `(${targetId}`,
+      "+inf",
+      "LIMIT",
+      0,
+      afterCount,
+    );
+
+    if (ids.length) {
+      const pipeline = redis.pipeline();
+      for (const id of ids) pipeline.get(historyMessageKey(chatId, id));
+      const rows = await pipeline.exec();
+
+      after = (rows || [])
+        .filter((row) => row && !row[0] && row[1])
+        .map((row) => {
+          try {
+            return JSON.parse(row[1]);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+    }
+  } catch (error) {
+    console.error("[History around]", error.message);
+  }
+
+  const combined = [...before.messages];
+  if (target) combined.push(target);
+  combined.push(...after);
+
+  const unique = new Map();
+  for (const item of combined) unique.set(item.id, item);
+
+  return [...unique.values()].sort((a, b) => a.id - b.id).slice(-limit);
+}
+
 async function traceReplyChain(chatId, messageId, maxDepth = MAX_REPLY_CHAIN) {
   let currentId = Number(messageId);
   const chain = [];
@@ -1033,10 +1114,14 @@ async function getChatMemory(chatId) {
 
 async function saveChatMemory(chatId, messages) {
   const safe = messages
-    .filter((item) => item && (item.role === "user" || item.role === "assistant"))
+    .filter(
+      (item) =>
+        item &&
+        (item.role === "user" || item.role === "assistant" || item.role === "model"),
+    )
     .slice(-MAX_MESSAGES)
     .map((item) => ({
-      role: item.role,
+      role: item.role === "model" ? "assistant" : item.role,
       content: String(item.content || "").slice(0, MAX_HISTORY_TEXT * 2),
     }));
 
@@ -1392,7 +1477,8 @@ const OPENAI_TOOLS = [
     type: "function",
     function: {
       name: "get_bot_profile",
-      description: "Lấy hồ sơ tài khoản Telegram của chính bot Chan.",
+      description:
+        "Lấy hồ sơ tài khoản Telegram của chính bot Chan, bao gồm ID, tên, username, trạng thái bot và mô tả hồ sơ nếu Telegram cho phép truy cập.",
       parameters: {
         type: "object",
         properties: {},
@@ -1403,11 +1489,16 @@ const OPENAI_TOOLS = [
     type: "function",
     function: {
       name: "get_user_profile",
-      description: "Lấy thông tin Telegram của người dùng.",
+      description:
+        "Lấy thông tin Telegram của người dùng. Ưu tiên người đang hỏi nếu không cung cấp user_id. Có thể lấy ID, tên, username, ngôn ngữ và trạng thái bot từ dữ liệu tin nhắn đã nhận. Có thể kiểm tra tư cách thành viên trong nhóm hiện tại khi Telegram cho phép.",
       parameters: {
         type: "object",
         properties: {
-          user_id: { type: "number", description: "ID Telegram cần tra cứu." },
+          user_id: {
+            type: "number",
+            description:
+              "ID Telegram cần tra cứu. Bỏ trống để lấy thông tin người đang hỏi.",
+          },
         },
       },
     },
@@ -1438,17 +1529,31 @@ async function executeTool(call, uid, chatId, originalMessageId) {
           const item = await getStoredMessage(chatId, args.message_id);
           return {
             found: Boolean(item),
-            message: item ? formatHistoryItem(item) : "Không tìm thấy ID trong lịch sử đã lưu.",
+            message: item
+              ? formatHistoryItem(item)
+              : "Không tìm thấy ID trong lịch sử đã lưu.",
+            note: "Bot API không thể tải tin nhắn bất kỳ chỉ bằng ID. Kết quả chỉ dựa trên lịch sử đã lưu.",
           };
         }
         if (name === "scan_group_history") {
           const count = Math.max(1, Math.min(Number(args.count) || 20, 60));
           const result = await getHistoryBeforeId(chatId, args.before_message_id, count);
-          return { scanned: result.scanned, messages: result.messages.map(formatHistoryItem) };
+          return {
+            scanned: result.scanned,
+            messages: result.messages.map(formatHistoryItem),
+            note: "Chỉ quét các tin nhắn đã được bot lưu.",
+          };
         }
         if (name === "trace_reply_chain") {
-          const chain = await traceReplyChain(chatId, args.message_id, Math.max(1, Math.min(Number(args.max_depth) || MAX_REPLY_CHAIN, MAX_REPLY_CHAIN)));
-          return { chain: chain.map(formatHistoryItem) };
+          const chain = await traceReplyChain(
+            chatId,
+            args.message_id,
+            Math.max(1, Math.min(Number(args.max_depth) || MAX_REPLY_CHAIN, MAX_REPLY_CHAIN)),
+          );
+          return {
+            chain: chain.map(formatHistoryItem),
+            note: "Chuỗi chỉ có thể truy tiếp khi tin nhắn đã được lưu và có replyToId.",
+          };
         }
         if (name === "react_message") {
           if (!originalMessageId) return { success: false, text: "Không có ID tin nhắn." };
@@ -1486,29 +1591,97 @@ async function executeTool(call, uid, chatId, originalMessageId) {
         }
         if (name === "text_to_speech") {
           const text = String(args.text || "").trim();
-          if (!text) return { success: false, text: "Không có văn bản." };
-          await sendChatAction(chatId, "record_audio");
-          const audio = await withTimeout(googleTranslateTTS(text, String(args.language || "vi")), TTS_TIMEOUT_MS, "Tạo voice");
-          await withTimeout(sendVoiceBuffer(chatId, audio, originalMessageId), TTS_TIMEOUT_MS, "Gửi voice");
-          return { success: true, text: "Voice đã được gửi thành công." };
+          if (!text) return { success: false, text: "Không có văn bản để đọc." };
+
+          try {
+            await sendChatAction(chatId, "record_audio");
+
+            const audio = await withTimeout(
+              googleTranslateTTS(text, String(args.language || "vi")),
+              TTS_TIMEOUT_MS,
+              "Tạo voice",
+            );
+
+            if (!audio || !audio.length) {
+              return { success: false, text: "Không tạo được dữ liệu âm thanh." };
+            }
+
+            await withTimeout(
+              sendVoiceBuffer(chatId, audio, originalMessageId),
+              TTS_TIMEOUT_MS,
+              "Gửi voice",
+            );
+
+            console.log("[TTS OK] Voice đã gửi thành công.");
+
+            return {
+              success: true,
+              text: "Voice đã được gửi thành công. Không gửi lại voice.",
+            };
+          } catch (error) {
+            console.error("[TTS ERROR]", error.message);
+            return {
+              success: false,
+              text: `Tạo hoặc gửi voice thất bại: ${error.message}`,
+            };
+          }
         }
         if (name === "get_bot_profile") {
           return await getBotProfile();
         }
         if (name === "get_user_profile") {
           const requestedId = Number(args.user_id);
-          if (!Number.isSafeInteger(requestedId) || requestedId <= 0) return { success: false, text: "Thiếu user_id." };
-          const member = await telegramCall("getChatMember", { chat_id: chatId, user_id: requestedId }, 5000).catch(() => null);
-          return { user_id: requestedId, group_membership: member ? { status: member.status } : null, user: member?.user || null };
+
+          if (!Number.isSafeInteger(requestedId) || requestedId <= 0) {
+            return {
+              success: false,
+              text:
+                "Không có user_id hợp lệ. Hãy sử dụng thông tin người đang hỏi " +
+                "đã có trong ngữ cảnh tin nhắn.",
+            };
+          }
+
+          let member = null;
+
+          try {
+            member = await telegramCall(
+              "getChatMember",
+              { chat_id: chatId, user_id: requestedId },
+              5000,
+            );
+          } catch (error) {
+            console.error("[User profile]", error.message);
+          }
+
+          return {
+            user_id: requestedId,
+            group_membership: member
+              ? {
+                  status: member.status,
+                  is_anonymous: Boolean(member.is_anonymous),
+                }
+              : null,
+            user: member?.user || null,
+            note:
+              "Chỉ trả về dữ liệu Telegram cho phép bot truy cập. " +
+              "Không được tự suy đoán thông tin cá nhân.",
+          };
         }
         return { success: false, text: `Không tồn tại công cụ ${name}.` };
       })(),
       TOOL_TIMEOUT_MS,
       `Tool ${name}`,
     );
+
+    console.log(`[Tool OK] ${name}`);
     return response;
   } catch (error) {
-    return { success: false, error: error.message, text: `Lỗi tool ${name}: ${error.message}` };
+    console.error(`[Tool ERROR] ${name}:`, error.message);
+    return {
+      success: false,
+      error: error.message,
+      text: `Công cụ ${name} lỗi: ${error.message}`,
+    };
   }
 }
 
@@ -1519,9 +1692,10 @@ function throwIfAborted(signal) {
 }
 
 // Xử lý AI qua 9router (OpenAI-compatible client)
+// userContent: string hoặc mảng parts [{type:"text"},{type:"image_url"}]
 async function generateAIWith9Router(
   historyMessages,
-  userPromptText,
+  userContent,
   uid,
   chatId,
   originalMessageId,
@@ -1533,25 +1707,36 @@ async function generateAIWith9Router(
       role: "system",
       content:
         `${CUSTOM_PERSONALITY}\n\n` +
-              "Bạn là Chan. Khi người dùng hỏi về lịch sử nhóm, hãy dùng các công cụ lịch sử. " +
-              "Không được khẳng định đã đọc tin nhắn nếu công cụ báo không tìm thấy. " +
-              "Nếu ID không có trong lịch sử đã lưu, hãy giải thích giới hạn của Telegram Bot API.",
+        "Bạn là Chan. Khi người dùng hỏi về lịch sử nhóm, hãy dùng các công cụ lịch sử. " +
+        "Không được khẳng định đã đọc tin nhắn nếu công cụ báo không tìm thấy. " +
+        "Nếu ID không có trong lịch sử đã lưu, hãy giải thích giới hạn của Telegram Bot API.",
     },
   ];
 
+  const past = [];
   for (const item of historyMessages || []) {
     if (!item) continue;
     const role = item.role === "model" || item.role === "assistant" ? "assistant" : "user";
     const text = String(item.content || "").slice(0, MAX_HISTORY_TEXT * 2);
-    if (text.trim()) messages.push({ role, content: text });
+    if (text.trim()) past.push({ role, content: text });
   }
+  messages.push(...past.slice(-MAX_CONTEXT_HISTORY));
 
-  messages.push({ role: "user", content: userPromptText });
+  const finalContent =
+    Array.isArray(userContent) &&
+    userContent.length === 1 &&
+    userContent[0].type === "text"
+      ? userContent[0].text
+      : userContent;
+
+  messages.push({ role: "user", content: finalContent });
+
+  console.log(`[AI] Model ${AI_MODEL} @ ${NINE_ROUTER_URL}`);
 
   let callCount = 0;
   let fullText = "";
 
-  while (callCount < 8) {
+  while (true) {
     throwIfAborted(signal);
 
     const stream = await aiClient.chat.completions.create(
@@ -1597,6 +1782,10 @@ async function generateAIWith9Router(
 
     if (toolCalls.length > 0) {
       callCount++;
+      if (callCount > 8) {
+        throw new Error("Vượt giới hạn 8 vòng gọi công cụ.");
+      }
+
       messages.push({
         role: "assistant",
         content: currentChunkText || null,
@@ -1625,10 +1814,13 @@ async function generateAIWith9Router(
   return fullText;
 }
 
+// userContent: parts gửi cho AI (có thể kèm ảnh)
+// promptTextOnly: chỉ văn bản, dùng để lưu vào bộ nhớ Redis
 async function processAIResponse(
   chatId,
   uid,
-  userPromptText,
+  userContent,
+  promptTextOnly,
   originalMessageId,
   senderHandle = "",
 ) {
@@ -1686,32 +1878,40 @@ async function processAIResponse(
     const aiResponse = await withTimeout(
       generateAIWith9Router(
         history,
-        userPromptText,
+        userContent,
         uid,
         chatId,
         originalMessageId,
         updateTelegram,
-        deadline.signal,
+        combineSignals(abortController.signal, deadline.signal),
       ),
       PROCESS_TIMEOUT_MS,
       "Xử lý",
     );
 
     if (aiResponse && aiResponse.trim()) {
-      history.push({ role: "user", content: userPromptText });
+      history.push({ role: "user", content: promptTextOnly });
       history.push({ role: "assistant", content: aiResponse });
       await saveChatMemory(chatId, history);
 
       if (aiResponse !== lastText) {
         await updateTelegram(aiResponse);
       }
+    } else if (!telegramMessageId) {
+      await sendOrUpdateMessage(
+        chatId,
+        "Chan đã xử lý xong nhưng không nhận được văn bản trả lời.",
+        null,
+        originalMessageId,
+        null,
+      );
     }
+
     console.log(`[Chan] Hoàn tất sau ${Date.now() - startedAt}ms`);
   } catch (error) {
-    // FIX: Nếu yêu cầu bị hủy bởi người dùng qua /c, không gửi thông báo lỗi về chat
+    // Nếu yêu cầu bị hủy bởi người dùng qua /c, không gửi thông báo lỗi về chat
     if (
       abortController.signal.aborted ||
-      deadline.signal.aborted ||
       /hủy|aborted|canceled|cancel/i.test(error.message)
     ) {
       console.log(`[Chan] Yêu cầu của UID ${uid} đã bị hủy.`);
@@ -1724,9 +1924,30 @@ async function processAIResponse(
     await sendOrUpdateMessage(chatId, message, null, originalMessageId, null);
   } finally {
     finished = true;
+    if (suggestTimer) clearTimeout(suggestTimer);
     deadline.close();
     activeRequests.delete(String(uid));
   }
+}
+
+// Gộp nhiều AbortSignal thành một (hủy khi bất kỳ signal nào bị hủy)
+function combineSignals(...signals) {
+  const controller = new AbortController();
+
+  for (const signal of signals) {
+    if (!signal) continue;
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    signal.addEventListener(
+      "abort",
+      () => controller.abort(signal.reason),
+      { once: true },
+    );
+  }
+
+  return controller.signal;
 }
 
 async function claimUpdate(updateId) {
@@ -1734,9 +1955,84 @@ async function claimUpdate(updateId) {
   try {
     const result = await redis.set(`telegram:update:${updateId}`, "1", "NX", "EX", 86400);
     return result === "OK";
-  } catch {
+  } catch (error) {
+    console.error("[Update dedupe]", error.message);
     return true;
   }
+}
+
+async function handleHistoryCommand(message, command, args) {
+  const chatId = message.chat.id;
+  const replyTo = message.message_id;
+  const targetId = Number(args[0]);
+
+  if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+    await sendOrUpdateMessage(
+      chatId,
+      "Cú pháp:\n/msgid <id>\n/history <id> [số tin]\n/chain <id>",
+      null,
+      replyTo,
+      null,
+    );
+    return true;
+  }
+
+  if (command === "/msgid") {
+    const item = await getStoredMessage(chatId, targetId);
+
+    await sendOrUpdateMessage(
+      chatId,
+      item
+        ? formatHistoryItem(item)
+        : `Không tìm thấy ID ${targetId} trong lịch sử đã lưu.\nTelegram Bot API không thể tự tải tin nhắn cũ chỉ bằng ID.`,
+      null,
+      replyTo,
+      null,
+    );
+    return true;
+  }
+
+  if (command === "/history") {
+    const count = Math.max(1, Math.min(Number(args[1]) || 20, 60));
+    const result = await getHistoryBeforeId(chatId, targetId, count);
+
+    if (!result.messages.length) {
+      await sendOrUpdateMessage(
+        chatId,
+        `Không tìm thấy tin nhắn đã lưu trước ID ${targetId}.`,
+        null,
+        replyTo,
+        null,
+      );
+      return true;
+    }
+
+    const output = result.messages.map(formatHistoryItem).join("\n\n");
+    await sendOrUpdateMessage(
+      chatId,
+      `Lịch sử quét ngược trước ID ${targetId} (${result.messages.length} tin):\n\n${output}`,
+      null,
+      replyTo,
+      null,
+    );
+    return true;
+  }
+
+  if (command === "/chain") {
+    const chain = await traceReplyChain(chatId, targetId);
+    const output = chain.map(formatHistoryItem).join("\n\n");
+
+    await sendOrUpdateMessage(
+      chatId,
+      output || `Không có chuỗi trả lời cho ID ${targetId}.`,
+      null,
+      replyTo,
+      null,
+    );
+    return true;
+  }
+
+  return false;
 }
 
 async function handleUpdate(update) {
@@ -1746,7 +2042,9 @@ async function handleUpdate(update) {
         pre_checkout_query_id: update.pre_checkout_query.id,
         ok: true,
       });
-    } catch {}
+    } catch (error) {
+      console.error("[Pre checkout]", error.message);
+    }
     return;
   }
 
@@ -1766,7 +2064,10 @@ async function handleUpdate(update) {
   }
 
   const permission = await checkBotCanSend(chatId);
-  if (permission.canSend === false) return;
+  if (permission.canSend === false) {
+    console.log(`[MuteCheck] Chat ${chatId}: ${permission.reason}`);
+    return;
+  }
   if (!uid) return;
 
   if (message.successful_payment) {
@@ -1803,7 +2104,8 @@ async function handleUpdate(update) {
         currency: "XTR",
         prices: [{ label: "100 Tokens", amount: 10 }],
       });
-    } catch {
+    } catch (error) {
+      console.error("[Token invoice]", error.message);
       await sendOrUpdateMessage(chatId, "Không thể gửi hóa đơn ở đây. Hãy dùng /token trong chat riêng với bot.", null, originalMessageId, null);
     }
     return;
@@ -1883,6 +2185,10 @@ async function handleUpdate(update) {
     }
   }
 
+  if (["/msgid", "/history", "/chain"].includes(command)) {
+    if (await handleHistoryCommand(message, command, args)) return;
+  }
+
   if (command === "/start" || command === "/c" || command === "/clearmy") {
     if (
       !isPrivate &&
@@ -1940,7 +2246,8 @@ async function handleUpdate(update) {
   let acquiredLock;
   try {
     acquiredLock = await redis.set(lockKey, "processing", "NX", "EX", 90);
-  } catch {
+  } catch (error) {
+    console.error("[User lock]", error.message);
     return;
   }
 
@@ -1996,7 +2303,7 @@ async function handleUpdate(update) {
       `${groupDetails}${replyContext}${groupHistoryContext}`;
 
     let promptTextOnly = `${userHeader}\n[Nội dung tin nhắn]: ${rawText || getMessageText(message)}`;
-    const userParts = [{ text: promptTextOnly }];
+    const userParts = [{ type: "text", text: promptTextOnly }];
 
     let fileData = await getFileFromMessage(message);
     if (!fileData && message.reply_to_message) {
@@ -2006,19 +2313,40 @@ async function handleUpdate(update) {
     if (fileData) {
       if (fileData.kind === "frames") {
         userParts.push({
+          type: "text",
           text:
             "Các ảnh tiếp theo là khung hình theo thứ tự thời gian của một sticker động. " +
             "Hãy xem nội dung và sự thay đổi giữa các khung hình, " +
             "không suy đoán những chi tiết không thể quan sát.",
         });
 
-        userParts.push(...framesToGeminiParts(fileData.frames));
+        userParts.push(...framesToImageParts(fileData.frames));
 
         promptTextOnly +=
           `\n[Sticker động: ${fileData.frames.length} khung hình, ` +
           `${fileData.mimeType}, ${fileData.fileSize} bytes]`;
       } else if (fileData.inlineData) {
-        userParts.push({ inlineData: fileData.inlineData });
+        const { mimeType, data } = fileData.inlineData;
+
+        if (mimeType.startsWith("image/")) {
+          userParts.push({
+            type: "image_url",
+            image_url: { url: `data:${mimeType};base64,${data}` },
+          });
+        } else if (mimeType.startsWith("text/") || mimeType === "application/json") {
+          const fileText = Buffer.from(data, "base64")
+            .toString("utf8")
+            .slice(0, MAX_FILE_TEXT_CHARS);
+          userParts.push({
+            type: "text",
+            text: `[Nội dung file đính kèm]\n${fileText}`,
+          });
+        } else {
+          userParts.push({
+            type: "text",
+            text: `[Người dùng đính kèm file ${mimeType} nhưng định dạng này chưa đọc trực tiếp được.]`,
+          });
+        }
 
         promptTextOnly +=
           `\n[File đính kèm: ${fileData.mimeType}, ` +
@@ -2031,7 +2359,8 @@ async function handleUpdate(update) {
     await processAIResponse(
       chatId,
       uid,
-      userPromptText,
+      userParts,
+      promptTextOnly,
       replyTargetId,
       senderHandle,
     );
@@ -2052,7 +2381,8 @@ module.exports = async (req, res) => {
     if (update.update_id && !(await claimUpdate(update.update_id))) {
       return res.status(200).json({ ok: true, duplicate: true });
     }
-  } catch {
+  } catch (error) {
+    console.error("[Webhook dedupe]", error.message);
     return res.status(503).json({ ok: false });
   }
 
