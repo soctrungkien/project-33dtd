@@ -7,7 +7,8 @@ const TOKEN = process.env.BOT_TOKEN_VIDEO;
 const API = `https://api.telegram.org/bot${TOKEN}`;
 const MAX_BYTES = 49 * 1024 * 1024;
 const JOB_BUDGET_MS = 3 * 60 * 1000;
-const YTDLP_PATH = "/tmp/yt-dlp";
+const BIN_CACHE = "/tmp/bin-cache";
+const YTDLP_PATH = path.join(BIN_CACHE, "yt-dlp");
 let binaryPromise = null;
 const URL_RE = /https?:\/\/[^\s<>"']+/i;
 const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@([a-zA-Z0-9_]+))?(?:\s+([\s\S]*))?$/;
@@ -17,19 +18,30 @@ try { ffmpegSrc = require("ffmpeg-static"); } catch {}
 
 /* ------------------------------ Helpers ------------------------------ */
 
+const BIN_CACHE = "/tmp/bin-cache";
+
 function prepareBin(src, name) {
-  const dst = path.join("/tmp", name);
-  if (fs.existsSync(dst)) return dst;
+  fs.mkdirSync(BIN_CACHE, { recursive: true });
+
+  const dst = path.join(BIN_CACHE, name);
+
+  if (fs.existsSync(dst) && fs.statSync(dst).size > 0) {
+    return dst;
+  }
+
   const tmp = `${dst}.${process.pid}.${Date.now()}`;
   fs.copyFileSync(src, tmp);
   fs.chmodSync(tmp, 0o755);
   fs.renameSync(tmp, dst);
+
   return dst;
 }
 
 async function getYtdlpPath() {
   if (!binaryPromise) {
     binaryPromise = (async () => {
+      await fs.promises.mkdir(BIN_CACHE, { recursive: true });
+
       if (fs.existsSync(YTDLP_PATH)) {
         await fs.promises.chmod(YTDLP_PATH, 0o755);
         return YTDLP_PATH;
@@ -253,7 +265,9 @@ async function processJob({ chatId, messageId, url, mode }) {
     // Khi tải xong, chuyển sang trạng thái native "Đang gửi video/audio"
     action.set(isMusic ? "upload_voice" : "upload_video");
 
-    const title = info.track || info.title || info.fulltitle || "Video";
+    const title = isMusic
+      ? info.track || info.title || info.fulltitle || "Audio"
+      : info.title || info.fulltitle || info.track || "Video";
     const link = info.webpage_url || url;
     const duration = info.duration ? Math.round(info.duration) : undefined;
     const thumbFile = thumb ? { thumbnail: { path: thumb, name: "thumb.jpg" } } : {};
