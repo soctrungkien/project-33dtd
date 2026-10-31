@@ -237,7 +237,7 @@ const SOURCES = [
     name: 'EvolutionX',
     type: 'xml',
     url: 'https://git.evolution-x.org/EvoX/keybox/raw/branch/main/keybox.xml',
-    commitApi: 'https://api.github.com/repos/EvoX/keybox/commits?path=keybox.xml&page=1&per_page=1'
+    commitApi: 'https://git.evolution-x.org/repos/EvoX/keybox/commits?path=keybox.xml&page=1&per_page=1'
   },
   {
     id: 'anhtran',
