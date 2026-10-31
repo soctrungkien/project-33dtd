@@ -1,7 +1,7 @@
 const BOT_TOKEN = process.env.BOT_TOKEN_NOTE;
 const PASTEFY_API_KEYS = process.env.PASTEFY_API_KEYS;
 const HIDDEN_MARKER = "　";
-const MAX_CHAR_LIMIT = 3600; // Giới hạn số ký tự
+const MAX_CHAR_LIMIT = 4096; // Giới hạn số ký tự
 
 // Hàm bóc tách ID / URL linh hoạt từ văn bản
 function extractNoteId(input) {
