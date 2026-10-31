@@ -216,12 +216,11 @@ const SOURCES = [
     name: 'DavidePalma',
     type: 'xml',
     url: 'https://www.davidepalma.it/pib/keybox.xml',
-    commitApi: null,
-    extraHeaders: { 'Upgrade-Insecure-Requests': '1' }
+    commitApi: null
   },
   {
-    id: 'tricky',
-    name: 'TrickyBox',
+    id: 'trick',
+    name: 'TrickBox',
     type: 'base64',
     url: 'https://raw.githubusercontent.com/GueRapii/randommodulesfiles/main/file.enc',
     commitApi: 'https://api.github.com/repos/GueRapii/randommodulesfiles/commits?path=file.enc&page=1&per_page=1'
@@ -232,6 +231,27 @@ const SOURCES = [
     type: 'xml',
     url: 'https://raw.githubusercontent.com/zuri1503/Toolbox-Database/refs/heads/main/keybox.xml',
     commitApi: 'https://api.github.com/repos/zuri1503/Toolbox-Database/commits?path=keybox.xml&page=1&per_page=1'
+  },
+  {
+    id: 'evox',
+    name: 'EvolutionX',
+    type: 'xml',
+    url: 'https://git.evolution-x.org/EvoX/keybox/raw/branch/main/keybox.xml',
+    commitApi: 'https://api.github.com/repos/EvoX/keybox/commits?path=keybox.xml&page=1&per_page=1'
+  },
+  {
+    id: 'anhtran',
+    name: 'AnhTran1006',
+    type: 'xml',
+    url: 'https://raw.githubusercontent.com/zuri1503/Toolbox-Database/main/keybox.xml',
+    commitApi: 'https://api.github.com/repos/zuri1503/Toolbox-Database/commits?path=keybox.xml&page=1&per_page=1'
+  },
+  {
+    id: 'mywoopies',
+    name: 'mywoopies',
+    type: 'xml',
+    url: 'https://raw.githubusercontent.com/mywoopies/mejson/refs/heads/main/keystore.xml',
+    commitApi: 'https://api.github.com/repos/mywoopies/mejson/commits?path=keystore.xml&page=1&per_page=1'
   }
 ];
 
