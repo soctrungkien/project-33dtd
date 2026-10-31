@@ -1,86 +1,30 @@
-
 const { waitUntil } = require("@vercel/functions");
+const { execFile } = require("child_process");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
-const crypto = require("crypto");
-const { spawn } = require("child_process");
 
 const TOKEN = process.env.BOT_TOKEN_VIDEO;
-const API = `https://api.telegram.org/bot${TOKEN || ""}`;
-const MAX_SIZE = 45 * 1024 * 1024;
-const MAX_DURATION = 300;
-const MAX_ACTIVE = 2;
-const JOB_TTL = 10 * 60 * 1000;
-const INFO_TTL = 2 * 60 * 1000;
-const YTDLP_PATH = path.join(os.tmpdir(), "yt-dlp");
-const FFMPEG_PATH = require("ffmpeg-static");
-
-const JOBS = new Map();
-const INFO_CACHE = new Map();
-
+const API = `https://api.telegram.org/bot${TOKEN}`;
+const MAX_BYTES = 49 * 1024 * 1024;
+const JOB_BUDGET_MS = 3 * 60 * 1000;
+const YTDLP_PATH = "/tmp/yt-dlp";
 let binaryPromise = null;
-let activeJobs = 0;
-const queue = [];
+const URL_RE = /https?:\/\/[^\s<>"']+/i;
+const CMD_RE = /^\/([a-zA-Z0-9_]+)(?:@([a-zA-Z0-9_]+))?(?:\s+([\s\S]*))?$/;
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+let ffmpegSrc = null;
+try { ffmpegSrc = require("ffmpeg-static"); } catch {}
 
-async function telegram(method, data = {}, timeout = 25000) {
-  const response = await fetch(`${API}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(data),
-    signal: AbortSignal.timeout(timeout)
-  });
+/* ------------------------------ Helpers ------------------------------ */
 
-  const result = await response.json();
-
-  if (!response.ok || !result.ok) {
-    throw new Error(result.description || `Telegram API ${method} failed`);
-  }
-
-  return result.result;
-}
-
-function html(value = "") {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function extractUrl(text = "") {
-  const matches = text.match(/https?:\/\/[^\s<>]+/gi) || [];
-
-  for (const match of matches) {
-    const candidate = match.replace(/[),.!?]+$/, "");
-
-    if (validUrl(candidate)) return candidate;
-  }
-
-  return null;
-}
-
-function validUrl(value) {
-  try {
-    const url = new URL(value);
-
-    if (url.protocol !== "https:") return false;
-
-    const host = url.hostname.toLowerCase();
-
-    return (
-      host === "youtu.be" ||
-      host === "youtube.com" ||
-      host.endsWith(".youtube.com") ||
-      host === "youtube-nocookie.com" ||
-      host.endsWith(".youtube-nocookie.com") ||
-      host === "tiktok.com" ||
-      host.endsWith(".tiktok.com")
-    );
-  } catch {
-    return false;
-  }
+function prepareBin(src, name) {
+  const dst = path.join("/tmp", name);
+  if (fs.existsSync(dst)) return dst;
+  const tmp = `${dst}.${process.pid}.${Date.now()}`;
+  fs.copyFileSync(src, tmp);
+  fs.chmodSync(tmp, 0o755);
+  fs.renameSync(tmp, dst);
+  return dst;
 }
 
 async function getYtdlpPath() {
@@ -121,11 +65,13 @@ async function getYtdlpPath() {
         throw new Error("Binary yt-dlp tải về không hợp lệ.");
       }
 
-      await fs.promises.writeFile(YTDLP_PATH, buffer, { mode: 0o755 });
-      await fs.promises.chmod(YTDLP_PATH, 0o755);
+      const tmp = `${YTDLP_PATH}.${process.pid}.${Date.now()}`;
+      await fs.promises.writeFile(tmp, buffer, { mode: 0o755 });
+      await fs.promises.chmod(tmp, 0o755);
+      await fs.promises.rename(tmp, YTDLP_PATH);
 
       return YTDLP_PATH;
-    })().catch(error => {
+    })().catch((error) => {
       binaryPromise = null;
       throw error;
     });
@@ -134,541 +80,295 @@ async function getYtdlpPath() {
   return binaryPromise;
 }
 
-async function runYtdlp(args, timeout = 60000) {
-  const binary = await getYtdlpPath();
-
+function withSignal(promise, signal) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, {
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(new Error("yt-dlp hết thời gian xử lý."));
-    }, timeout);
-
-    function finish(error, result) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-
-      if (error) reject(error);
-      else resolve(result);
-    }
-
-    child.stdout.on("data", chunk => {
-      stdout += chunk.toString();
-
-      if (stdout.length > 8 * 1024 * 1024) {
-        child.kill("SIGKILL");
-        finish(new Error("Dữ liệu đầu ra yt-dlp quá lớn."));
-      }
-    });
-
-    child.stderr.on("data", chunk => {
-      stderr += chunk.toString();
-
-      if (stderr.length > 12000) {
-        stderr = stderr.slice(-12000);
-      }
-    });
-
-    child.on("error", error => finish(error));
-
-    child.on("close", code => {
-      if (code === 0) {
-        finish(null, stdout);
-      } else {
-        finish(
-          new Error(stderr.slice(-1600) || `yt-dlp thoát với mã ${code}`)
-        );
-      }
-    });
+    if (signal.aborted) return reject(new Error("aborted"));
+    const onAbort = () => reject(new Error("aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
 }
 
-async function getInfo(url) {
-  const cached = INFO_CACHE.get(url);
-
-  if (cached && Date.now() - cached.time < INFO_TTL) {
-    return cached.info;
-  }
-
-  const output = await runYtdlp([
-    "--dump-single-json",
-    "--no-warnings",
-    "--no-playlist",
-    "--skip-download",
-    "--socket-timeout", "12",
-    "--retries", "1",
-    url
-  ]);
-
-  let info;
-
-  try {
-    info = JSON.parse(output);
-  } catch {
-    throw new Error("Không thể đọc thông tin video.");
-  }
-
-  if (!info?.title || !info?.webpage_url) {
-    throw new Error("Không tìm thấy video có thể tải.");
-  }
-
-  if (info.is_live) {
-    throw new Error("Không hỗ trợ tải livestream.");
-  }
-
-  if (info.duration != null && info.duration > MAX_DURATION) {
-    throw new Error("Video dài quá 5 phút.");
-  }
-
-  INFO_CACHE.set(url, { info, time: Date.now() });
-
-  if (INFO_CACHE.size > 200) {
-    const oldest = INFO_CACHE.keys().next().value;
-    INFO_CACHE.delete(oldest);
-  }
-
-  return info;
+async function toBlob(p) {
+  return fs.openAsBlob ? await fs.openAsBlob(p) : new Blob([fs.readFileSync(p)]);
 }
 
-function menuKeyboard(id, url) {
-  return {
-    inline_keyboard: [
-      [
-        { text: "Video tốt nhất", callback_data: `dl:${id}:best` },
-        { text: "1080p", callback_data: `dl:${id}:1080` }
-      ],
-      [
-        { text: "4K", callback_data: `dl:${id}:4k` },
-        { text: "MP3", callback_data: `dl:${id}:mp3` }
-      ],
-      [{ text: "Mở video gốc", url }]
-    ]
-  };
-}
-
-function sourceKeyboard(url) {
-  return {
-    inline_keyboard: [
-      [{ text: "Mở video gốc", url }]
-    ]
-  };
-}
-
-async function editStatus(chatId, messageId, text, keyboard) {
-  try {
-    return await telegram("editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
-      text,
-      parse_mode: "HTML",
-      ...(keyboard ? { reply_markup: keyboard } : {})
-    });
-  } catch (error) {
-    console.error("[STATUS]", error.message);
-  }
-}
-
-async function downloadVideo(url, quality, dir) {
-  const output = path.join(dir, "%(id)s.%(ext)s");
-
-  const formats = {
-    best: "bv*+ba/b",
-    "1080": "bv*[height<=1080]+ba/b[height<=1080]",
-    "4k": "bv*[height<=2160][height>1080]+ba/b[height<=2160][height>1080]",
-    mp3: "ba/b"
-  };
-
-  const args = [
-    url,
-    "--output", output,
-    "--format", formats[quality],
-    "--no-playlist",
-    "--no-warnings",
-    "--no-progress",
-    "--socket-timeout", "15",
-    "--retries", "2",
-    "--fragment-retries", "2",
-    "--concurrent-fragments", "4",
-    "--max-filesize", "45M",
-    "--no-part"
-  ];
-
-  if (quality === "mp3") {
-    args.push("--extract-audio", "--audio-format", "mp3");
+async function tg(method, params = {}, files = {}, signal) {
+  let body, headers;
+  if (Object.keys(files).length) {
+    body = new FormData();
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === null) continue;
+      body.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+    }
+    for (const [k, f] of Object.entries(files)) body.append(k, await toBlob(f.path), f.name);
   } else {
-    args.push("--merge-output-format", "mp4");
+    body = JSON.stringify(params);
+    headers = { "Content-Type": "application/json" };
   }
-
-  if (FFMPEG_PATH && fs.existsSync(FFMPEG_PATH)) {
-    args.push("--ffmpeg-location", FFMPEG_PATH);
-  }
-
-  await runYtdlp(args, 180000);
-
-  const files = await fs.promises.readdir(dir);
-  const media = [];
-
-  for (const name of files) {
-    const fullPath = path.join(dir, name);
-    const stat = await fs.promises.stat(fullPath);
-
-    if (
-      stat.isFile() &&
-      /\.(mp4|m4v|webm|mov|mp3|m4a|opus|ogg|wav)$/i.test(name)
-    ) {
-      media.push({ path: fullPath, size: stat.size });
-    }
-  }
-
-  media.sort((a, b) => b.size - a.size);
-
-  if (!media.length) {
-    throw new Error("Không tìm thấy tệp video hoặc âm thanh đầu ra.");
-  }
-
-  if (media[0].size > MAX_SIZE) {
-    throw new Error("Tệp vượt quá giới hạn gửi 45 MB.");
-  }
-
-  return media[0].path;
+  const r = await fetch(`${API}/${method}`, { method: "POST", headers, body, signal });
+  const j = await r.json().catch(() => ({}));
+  if (!j.ok) throw new Error(`${method}: ${j.description || r.status}`);
+  return j.result;
 }
 
-async function uploadMedia(chatId, replyTo, file, title, url, quality) {
-  const isAudio = quality === "mp3";
-  const ext = path.extname(file).toLowerCase();
-  const isMp4 = ext === ".mp4" || ext === ".m4v";
+// Giữ trạng thái native của Telegram (lặp lại mỗi 4 giây vì telegram tự tắt sau 5s)
+function keepAction(chat_id, first = "typing") {
+  let action = first;
+  const send = () => tg("sendChatAction", { chat_id, action }).catch(() => {});
+  send();
+  const timer = setInterval(send, 4000);
+  return {
+    set(a) { action = a; send(); },
+    stop() { clearInterval(timer); },
+  };
+}
 
-  const method = isAudio
-    ? "sendAudio"
-    : isMp4
-      ? "sendVideo"
-      : "sendDocument";
+let cachedUsername = process.env.BOT_USERNAME || null;
+async function getBotUsername() {
+  if (!cachedUsername) cachedUsername = (await tg("getMe")).username;
+  return cachedUsername;
+}
 
-  const field = isAudio
-    ? "audio"
-    : isMp4
-      ? "video"
-      : "document";
+function extractUrl(s) {
+  const m = (s || "").match(URL_RE);
+  return m ? m[0].replace(/[)\].,;!?]+$/, "") : null;
+}
 
-  const filename = path.basename(file);
-  const buffer = await fs.promises.readFile(file);
-
-  const form = new FormData();
-
-  form.append("chat_id", String(chatId));
-  form.append("reply_to_message_id", String(replyTo));
-  form.append(
-    "caption",
-    `${String(title).slice(0, 650)}\n\nNguồn: ${url}`.slice(0, 1000)
-  );
-  form.append("reply_markup", JSON.stringify(sourceKeyboard(url)));
-
-  if (isMp4) form.append("supports_streaming", "true");
-  if (isAudio) form.append("title", String(title).slice(0, 200));
-
-  form.append(
-    field,
-    new Blob([buffer]),
-    filename
-  );
-
-  const response = await fetch(`${API}/${method}`, {
-    method: "POST",
-    body: form,
-    signal: AbortSignal.timeout(90000)
+function run(bin, args, signal, timeout) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      bin,
+      args,
+      {
+        signal,
+        timeout,
+        maxBuffer: 32 * 1024 * 1024,
+        env: { ...process.env, HOME: "/tmp", XDG_CACHE_HOME: "/tmp/.cache" },
+      },
+      (err, stdout, stderr) => {
+        if (err) { err.stderr = stderr; return reject(err); }
+        resolve({ stdout, stderr });
+      }
+    );
   });
-
-  const result = await response.json();
-
-  if (!response.ok || !result.ok) {
-    throw new Error(result.description || "Telegram không gửi được tệp.");
-  }
-
-  return result.result;
 }
 
-async function withSlot(task) {
-  if (activeJobs >= MAX_ACTIVE) {
-    await new Promise(resolve => queue.push(resolve));
+function shortError(e) {
+  const lines = String(e.stderr || e.message || "").split("\n").filter((l) => /ERROR/i.test(l));
+  const msg = (lines.pop() || e.message || "Lỗi không xác định").replace(/^ERROR:\s*/i, "");
+  return msg.slice(0, 300);
+}
+
+const safeName = (s) => (s || "file").replace(/[\\/:*?"<>|\n\r]+/g, " ").trim().slice(0, 100) || "file";
+
+/* ------------------------------ Tải media ------------------------------ */
+
+async function download({ url, mode, dir, deadline, signal }) {
+  const ytdlp = await withSignal(getYtdlpPath(), signal);
+  const ffmpeg = ffmpegSrc ? prepareBin(ffmpegSrc, "ffmpeg") : null;
+
+  const base = [
+    "--no-playlist", "--no-warnings", "--no-progress", "--no-mtime", "--restrict-filenames",
+    "--socket-timeout", "20", "--retries", "3",
+    "--cache-dir", "/tmp/.cache/yt-dlp",
+    "--js-runtimes", `node:${process.execPath}`,
+    "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg",
+    "-o", path.join(dir, "%(id)s.%(ext)s"),
+  ];
+  if (ffmpeg) base.push("--ffmpeg-location", ffmpeg);
+
+  if (process.env.YT_COOKIES) {
+    const cf = path.join(dir, "cookies.txt");
+    fs.writeFileSync(cf, process.env.YT_COOKIES.replace(/\\n/g, "\n"));
+    base.push("--cookies", cf);
   }
 
-  activeJobs++;
+  const clean = () => {
+    for (const f of fs.readdirSync(dir)) if (f !== "cookies.txt") fs.rmSync(path.join(dir, f), { force: true });
+  };
+  const caps = mode === "music" ? [null] : [720, 480, 360, 240];
+
+  for (const cap of caps) {
+    const remaining = deadline - Date.now();
+    if (remaining < 10000) throw new Error("Hết thời gian xử lý (video quá dài/nặng)");
+    clean();
+
+    const args =
+      mode === "music"
+        ? ["-f", "ba/b", "-x", "--audio-format", "mp3", "--audio-quality", "128K", "--embed-metadata", "--max-filesize", "80M"]
+        : [
+            "-f", `bv*[height<=${cap}]+ba/b[height<=${cap}]/b`,
+            "-S", "vcodec:h264,res,acodec:m4a",
+            "--merge-output-format", "mp4",
+            "--max-filesize", "49M",
+          ];
+
+    await run(ytdlp, [...base, ...args, url], signal);
+
+    const files = fs.readdirSync(dir);
+    const mediaRe = mode === "music" ? /\.mp3$/i : /\.(mp4|mkv|webm|mov|m4v)$/i;
+    const media = files.find((f) => mediaRe.test(f));
+    if (!media) continue;
+    const mediaPath = path.join(dir, media);
+    if (fs.statSync(mediaPath).size > MAX_BYTES) continue;
+
+    const infoFile = files.find((f) => f.endsWith(".info.json"));
+    const info = infoFile ? JSON.parse(fs.readFileSync(path.join(dir, infoFile), "utf8")) : {};
+    let thumb = files.find((f) => /\.(jpg|jpeg|png|webp)$/i.test(f));
+    thumb = thumb ? path.join(dir, thumb) : null;
+
+    if (thumb && ffmpeg) {
+      const out = path.join(dir, "thumb_small.jpg");
+      try {
+        await run(ffmpeg, ["-y", "-i", thumb, "-vf", "scale=320:320:force_original_aspect_ratio=decrease", "-q:v", "6", out], signal, 20000);
+        thumb = out;
+      } catch { thumb = null; }
+    }
+    return { mediaPath, info, thumb };
+  }
+  throw new Error("File vượt quá 50MB ngay cả ở chất lượng thấp nhất (giới hạn của Telegram Bot API)");
+}
+
+/* ------------------------------ Xử lý job ------------------------------ */
+
+async function processJob({ chatId, messageId, url, mode }) {
+  const deadline = Date.now() + JOB_BUDGET_MS;
+  const reply_parameters = { message_id: messageId, allow_sending_without_reply: true };
+  const dir = fs.mkdtempSync("/tmp/job-");
+  const isMusic = mode === "music";
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), JOB_BUDGET_MS);
+  const signal = ac.signal;
+
+  // Bật trạng thái native "Đang nhập/gõ..." khi bắt đầu xử lý
+  const action = keepAction(chatId, "typing");
 
   try {
-    return await task();
-  } finally {
-    activeJobs--;
-    const next = queue.shift();
-    if (next) next();
-  }
-}
+    // Chuyển sang trạng thái native "Đang tải video/audio"
+    action.set(isMusic ? "upload_voice" : "upload_video");
 
-async function processDownload(chatId, replyTo, url, quality, statusId) {
-  return withSlot(async () => {
-    const dir = path.join(os.tmpdir(), `tgdl-${crypto.randomUUID()}`);
+    const { mediaPath, info, thumb } = await download({ url, mode, dir, deadline, signal });
 
-    try {
-      await fs.promises.mkdir(dir, { recursive: true });
+    // Khi tải xong, chuyển sang trạng thái native "Đang gửi video/audio"
+    action.set(isMusic ? "upload_voice" : "upload_video");
 
-      await editStatus(
-        chatId,
-        statusId,
-        "🔎 <b>Đang phân tích video...</b>"
+    const title = info.track || info.title || info.fulltitle || "Video";
+    const link = info.webpage_url || url;
+    const duration = info.duration ? Math.round(info.duration) : undefined;
+    const thumbFile = thumb ? { thumbnail: { path: thumb, name: "thumb.jpg" } } : {};
+
+    if (isMusic) {
+      await tg(
+        "sendAudio",
+        {
+          chat_id: chatId,
+          title: title.slice(0, 200),
+          performer: (info.artist || info.creator || info.uploader || info.channel || "").slice(0, 200) || undefined,
+          duration,
+          reply_parameters,
+        },
+        { audio: { path: mediaPath, name: `${safeName(title)}.mp3` }, ...thumbFile },
+        signal
       );
-
-      const info = await getInfo(url);
-
-      await editStatus(
-        chatId,
-        statusId,
-        `⏬ <b>Đang tải video</b>\n` +
-        `🎬 ${html(info.title)}\n` +
-        `🎞 Chất lượng: ${html(quality)}\n` +
-        `⏳ Đang xử lý, vui lòng chờ...`
-      );
-
-      const file = await downloadVideo(
-        info.webpage_url || url,
-        quality,
-        dir
-      );
-
-      await editStatus(
-        chatId,
-        statusId,
-        "📤 <b>Đang gửi tệp lên Telegram...</b>"
-      );
-
-      await uploadMedia(
-        chatId,
-        replyTo,
-        file,
-        info.title,
-        info.webpage_url || url,
-        quality
-      );
-
-      await editStatus(
-        chatId,
-        statusId,
-        "✅ <b>Đã tải và gửi tệp thành công.</b>"
-      );
-    } catch (error) {
-      console.error("[DOWNLOAD]", error);
-
-      await editStatus(
-        chatId,
-        statusId,
-        `❌ <b>Tải thất bại</b>\n${html(error.message).slice(0, 1300)}`
-      );
-    } finally {
-      await fs.promises.rm(dir, { recursive: true, force: true });
+    } else {
+      const common = {
+        chat_id: chatId,
+        caption: title.slice(0, 1024),
+        reply_markup: { inline_keyboard: [[{ text: "Link video", url: link }]] },
+        reply_parameters,
+      };
+      const file = { path: mediaPath, name: `${safeName(title)}.mp4` };
+      try {
+        await tg(
+          "sendVideo",
+          {
+            ...common,
+            duration,
+            width: info.width || info.requested_downloads?.[0]?.width,
+            height: info.height || info.requested_downloads?.[0]?.height,
+            supports_streaming: true,
+          },
+          { video: file, ...thumbFile },
+          signal
+        );
+      } catch (e) {
+        console.error("sendVideo failed, fallback sendDocument:", e.message);
+        if (signal.aborted) throw e;
+        await tg("sendDocument", common, { document: file, ...thumbFile }, signal);
+      }
     }
-  });
-}
-
-function cleanJobs() {
-  const now = Date.now();
-
-  for (const [id, job] of JOBS) {
-    if (job.expires < now) JOBS.delete(id);
-  }
-
-  while (JOBS.size > 300) {
-    JOBS.delete(JOBS.keys().next().value);
+  } catch (e) {
+    console.error("job error:", e.message, e.stderr || "");
+    // Nếu lỗi xảy ra, gửi một tin nhắn báo lỗi gọn gàng cho người dùng biết
+    const errText = signal.aborted ? "Quá 3 phút nên đã huỷ tác vụ." : `Không tải được.\n${shortError(e)}`;
+    await tg("sendMessage", { chat_id: chatId, text: errText, reply_parameters }).catch(() => {});
+  } finally {
+    clearTimeout(timer);
+    action.stop(); // Tắt trạng thái native ngay khi hoàn thành hoặc lỗi
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+/* ------------------------------ Điều phối ------------------------------ */
+
+const HELP = [
+  "Xin chào, tôi là bot tải video",
+  "",
+  "Gửi thẳng link video (chỉ chat riêng) -> bot gửi lại video",
+  "/dl <link> -> tải video",
+  "/music <link> -> tải âm thanh dạng MP3",
+  "/start -> xem hướng dẫn này",
+].join("\n");
 
 async function handleUpdate(update) {
-  if (update.callback_query) {
-    const query = update.callback_query;
-    const match = /^dl:([a-f0-9-]+):(best|1080|4k|mp3)$/.exec(
-      query.data || ""
-    );
+  const msg = update.message;
+  if (!msg || typeof msg.text !== "string") return;
 
-    if (!match) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: query.id,
-        text: "Nút không hợp lệ."
-      });
-      return;
-    }
+  const text = msg.text.trim();
+  const chatId = msg.chat.id;
+  const isPrivate = msg.chat.type === "private";
+  let cmd = null;
+  let args = text;
 
-    const [, id, quality] = match;
-    const job = JOBS.get(id);
-
-    if (!job || job.expires < Date.now()) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: query.id,
-        text: "Link đã hết hạn. Hãy gửi lại /dl + link."
-      });
-      return;
-    }
-
-    if (job.busy) {
-      await telegram("answerCallbackQuery", {
-        callback_query_id: query.id,
-        text: "Tác vụ này đang được xử lý."
-      });
-      return;
-    }
-
-    job.busy = true;
-
-    await telegram("answerCallbackQuery", {
-      callback_query_id: query.id,
-      text: "Đã nhận lựa chọn."
-    });
-
-    const statusMessage = await telegram("sendMessage", {
-      chat_id: job.chatId,
-      reply_to_message_id: job.replyTo,
-      text: "⏳ Đang chuẩn bị tải..."
-    });
-
-    waitUntil(
-      processDownload(
-        job.chatId,
-        job.replyTo,
-        job.url,
-        quality,
-        statusMessage.message_id
-      ).finally(() => {
-        job.busy = false;
-      })
-    );
-
+  if (text.startsWith("/")) {
+    const m = text.match(CMD_RE);
+    if (!m) return;
+    if (m[2] && m[2].toLowerCase() !== (await getBotUsername()).toLowerCase()) return;
+    cmd = m[1].toLowerCase();
+    args = m[3] || "";
+  } else if (!isPrivate) {
     return;
   }
 
-  const message = update.message;
-  if (!message?.chat || !message.from || message.from.is_bot) return;
-
-  const chatId = message.chat.id;
-  const messageText = message.text || message.caption || "";
-  const first = messageText.trim().split(/\s+/)[0] || "";
-  const command = first.split("@")[0].toLowerCase();
-
-  if (command === "/start" || command === "/help") {
-    await telegram("sendMessage", {
-      chat_id: chatId,
-      reply_to_message_id: message.message_id,
-      text:
-        "🎬 Bot tải video TikTok & YouTube\n\n" +
-        "• Dán link video để tải nhanh.\n" +
-        "• /dl + link để chọn định dạng.\n\n" +
-        "Các lựa chọn: Video tốt nhất, 1080p, 4K và MP3.\n" +
-        "Giới hạn: video tối đa 5 phút, tệp tối đa 45 MB."
-    });
+  if (cmd === "start" || cmd === "help") {
+    await tg("sendMessage", { chat_id: chatId, text: HELP });
     return;
   }
+  if (cmd && cmd !== "dl" && cmd !== "music") return;
 
-  const isDl = command === "/dl";
-  const url = extractUrl(
-    isDl
-      ? messageText.replace(/^\/dl(?:@\S+)?/i, "")
-      : messageText
-  );
-
+  const url = extractUrl(args) || extractUrl(msg.reply_to_message?.text || msg.reply_to_message?.caption);
   if (!url) {
-    if (isDl) {
-      await telegram("sendMessage", {
+    if (cmd) {
+      await tg("sendMessage", {
         chat_id: chatId,
-        reply_to_message_id: message.message_id,
-        text: "❌ Hãy dùng /dl + link TikTok hoặc YouTube hợp lệ."
+        text: `Thiếu link. Ví dụ: /${cmd} https://...`,
+        reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
       });
     }
     return;
   }
 
-  cleanJobs();
-
-  if (isDl) {
-    const id = crypto.randomUUID();
-
-    JOBS.set(id, {
-      chatId,
-      replyTo: message.message_id,
-      url,
-      busy: false,
-      expires: Date.now() + JOB_TTL
-    });
-
-    const statusMessage = await telegram("sendMessage", {
-      chat_id: chatId,
-      reply_to_message_id: message.message_id,
-      text: "🔎 Đang lấy thông tin video..."
-    });
-
-    waitUntil((async () => {
-      try {
-        const info = await getInfo(url);
-
-        await editStatus(
-          chatId,
-          statusMessage.message_id,
-          `🎬 <b>${html(info.title)}</b>\n\n` +
-          `⏱ Thời lượng: ${info.duration ?? "Không rõ"} giây\n` +
-          `👤 Kênh: ${html(info.uploader || "Không rõ")}\n\n` +
-          "Chọn định dạng muốn tải:",
-          menuKeyboard(id, info.webpage_url || url)
-        );
-      } catch (error) {
-        await editStatus(
-          chatId,
-          statusMessage.message_id,
-          `❌ <b>Không thể lấy thông tin video.</b>\n${html(error.message).slice(0, 1200)}`
-        );
-      }
-    })());
-
-    return;
-  }
-
-  const statusMessage = await telegram("sendMessage", {
-    chat_id: chatId,
-    reply_to_message_id: message.message_id,
-    text: "🔎 Đang kiểm tra link video..."
+  await processJob({
+    chatId,
+    messageId: msg.message_id,
+    url,
+    mode: cmd === "music" ? "music" : "video",
   });
-
-  waitUntil(
-    processDownload(
-      chatId,
-      message.message_id,
-      url,
-      "best",
-      statusMessage.message_id
-    )
-  );
 }
 
-module.exports = async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(200).send("Telegram downloader is running.");
-  }
-
-  if (!TOKEN) {
-    return res.status(500).json({
-      ok: false,
-      error: "Missing BOT_TOKEN"
-    });
-  }
-
+module.exports = async (req, res) => {
+  if (req.method !== "POST") return res.status(200).send("OK");
+  waitUntil(handleUpdate(req.body).catch((e) => console.error("handleUpdate:", e)));
   res.status(200).json({ ok: true });
-
-  if (req.body) {
-    waitUntil(
-      handleUpdate(req.body).catch(error => {
-        console.error("[BOT ERROR]", error);
-      })
-    );
-  }
 };
