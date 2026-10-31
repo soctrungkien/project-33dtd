@@ -266,7 +266,7 @@ async function processJob({ chatId, messageId, url, mode }) {
     action.set(isMusic ? "upload_voice" : "upload_video");
 
     const title = isMusic
-      ? info.track || info.title || info.fulltitle || "Audio"
+      ? info.title || info.fulltitle || info.track || "Audio"
       : info.title || info.fulltitle || info.track || "Video";
     const link = info.webpage_url || url;
     const duration = info.duration ? Math.round(info.duration) : undefined;
