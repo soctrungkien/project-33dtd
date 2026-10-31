@@ -18,8 +18,6 @@ try { ffmpegSrc = require("ffmpeg-static"); } catch {}
 
 /* ------------------------------ Helpers ------------------------------ */
 
-const BIN_CACHE = "/tmp/bin-cache";
-
 function prepareBin(src, name) {
   fs.mkdirSync(BIN_CACHE, { recursive: true });
 
